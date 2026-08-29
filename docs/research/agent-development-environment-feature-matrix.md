@@ -8,6 +8,28 @@ Human-readable companion to the [backing CSV](./agent-development-environment-fe
 - Status labels: `[YES]`, `[PARTIAL]`, `[EXPERIMENTAL]`, `[NO]`, and `[NOT EVIDENCED]`
 - `[NOT EVIDENCED]` means the capability was not found in the reviewed first-party material; it is not proof of absence.
 
+## Scope and evidence corpus
+
+The four-product comparison cohort (Orca ADE, cmux, Conductor, and T3 Code) was
+named by the user; Wardian is included as the first-party baseline. The cohort
+was not sampled from the market. The selection criterion was verifiability:
+these are the open-source ADEs that can be checked against first-party source.
+Cursor and Devin are serious competitors, but they are excluded because they
+cannot be verified on that same source basis. This file is therefore not a
+survey of the field; a Cursor/Devin comparison would belong in a separately
+scoped, claims-based tier.
+
+The evidence corpus differs by product. The original Wardian assessment was
+documentation-first; this correction pass adds repository source and metadata.
+Orca ADE is assessed against its product documentation and public repository
+pages; cmux against its product site/documentation and public repository pages;
+Conductor against its public product documentation; and T3 Code against its
+documentation and public repository pages. The source-inclusive Wardian recheck
+moved four of the 19 previously `NOT EVIDENCED` rows: License and openness and
+Agent Client Protocol provider transport moved to `YES`, while Custom agent registration
+and fork/resume templates and AI versus human line attribution moved to
+`PARTIAL`; 15 remain `NOT EVIDENCED` at the claimed scope.
+
 ## Count analytics
 
 ### Feature type coverage
@@ -38,11 +60,16 @@ Counts are calculated across all 173 feature rows. The three `Description-only` 
 
 | ADE | YES | PARTIAL | EXPERIMENTAL | NO | NOT EVIDENCED | Description-only |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Wardian | 98 | 53 | 0 | 0 | 19 | 3 |
+| Wardian | 100 | 55 | 0 | 0 | 15 | 3 |
 | Orca ADE | 93 | 63 | 0 | 0 | 14 | 3 |
 | cmux | 60 | 59 | 3 | 3 | 45 | 3 |
 | Conductor | 55 | 90 | 0 | 2 | 23 | 3 |
 | T3 Code | 90 | 62 | 0 | 0 | 18 | 3 |
+
+Read each `YES` count alongside that product's `PARTIAL`, `NO`, and `NOT
+EVIDENCED` counts. Evidence coverage is uneven: cmux carries 45 `NOT
+EVIDENCED` rows, 26% of the matrix. This is a scoped first-party evidence
+matrix with uneven coverage, not a leaderboard.
 
 ## Coverage by area
 
@@ -462,13 +489,14 @@ Counts are calculated across all 173 feature rows. The three `Description-only` 
 
 | Product | Assessment |
 | --- | --- |
-| Wardian | [NOT EVIDENCED] as a Wardian ACP implementation |
+| Wardian | [YES] - OpenCode ACP provider transport (`opencode_acp`), including ACP JSON-RPC permission handling |
 | Orca ADE | [NOT EVIDENCED] in reviewed first-party sources |
 | cmux | [NOT EVIDENCED] as an ACP implementation; supports arbitrary CLIs through terminals |
 | Conductor | [NOT EVIDENCED] in reviewed first-party sources |
 | T3 Code | [YES] - ACP package/runtime and Cursor/Grok ACP provider support coexist with CLI drivers |
 
-**Comparison note:** T3's ACP support is provider transport infrastructure, distinct from its general RPC client protocol.
+**Comparison note:** Wardian and T3 expose ACP as provider transport infrastructure, distinct from a general RPC client protocol.
+**Wardian sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/src-tauri/src/delivery/native_session.rs), [source 2](https://github.com/wardian-app/Wardian/blob/main/src-tauri/src/delivery/native_broker.rs), [source 3](https://github.com/wardian-app/Wardian/blob/main/docs/developer/provider-runtimes.md)
 **Sources:** [source 1](https://github.com/pingdotgg/t3code/tree/main/packages/effect-acp), [source 2](https://github.com/pingdotgg/t3code/tree/main/apps/server/src/provider/acp), [source 3](https://github.com/pingdotgg/t3code/blob/main/docs/internals/providers.md)
 
 #### Claude context compaction
@@ -886,13 +914,14 @@ Counts are calculated across all 173 feature rows. The three `Description-only` 
 
 | Product | Assessment |
 | --- | --- |
-| Wardian | [NOT EVIDENCED] in reviewed first-party Wardian docs |
+| Wardian | [PARTIAL] - source-backed Custom Clone flow can choose a new name, provider, class, folder, selected profile files, and skills; generic provider registration and fork/resume command templates are not evidenced |
 | Orca ADE | [PARTIAL] - any-CLI support and skills; custom agent registration schema not evidenced |
 | cmux | [YES] - Vault supports custom agent registration with session-ID source, resume command, fork command, session directory, and icons |
 | Conductor | [NOT EVIDENCED] in reviewed first-party docs |
 | T3 Code | [PARTIAL] - provider driver registry and session configuration; generic custom agent registration not evidenced |
 
-**Comparison note:** cmux Vault is a lower-level extensibility mechanism for making arbitrary agents restorable.
+**Comparison note:** cmux Vault is a lower-level extensibility mechanism for making arbitrary agents restorable; Wardian's related clone flow is narrower and provider-aware.
+**Wardian sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/src/features/agents/CustomCloneModal.tsx), [source 2](https://github.com/wardian-app/Wardian/blob/main/src-tauri/src/commands/agent.rs)
 **Sources:** [source 1](https://github.com/manaflow-ai/cmux/blob/main/docs/vault.md), [source 2](https://github.com/stablyai/orca), [source 3](https://github.com/pingdotgg/t3code/blob/main/docs/internals/providers.md)
 
 #### Team/project skill sharing and administration
@@ -966,13 +995,14 @@ Counts are calculated across all 173 feature rows. The three `Description-only` 
 
 | Product | Assessment |
 | --- | --- |
-| Wardian | [NOT EVIDENCED] as a native Wardian feature |
+| Wardian | [PARTIAL] - change review attributes file paths to agent turns or inferred workspace writes; individual lines are not attributed as AI or human |
 | Orca ADE | [YES] - local provenance of AI/human lines and export metadata |
 | cmux | [NOT EVIDENCED]  |
 | Conductor | [NOT EVIDENCED]  |
 | T3 Code | [NOT EVIDENCED]  |
 
-**Comparison note:** Orca attribution is unique in the reviewed feature set.
+**Comparison note:** Orca remains the only product here with explicit line-level AI/human attribution.
+**Wardian sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/src-tauri/src/commands/change_review.rs), [source 2](https://github.com/wardian-app/Wardian/blob/main/src/features/changes/ChangesPanel.tsx)
 **Sources:** [source 1](https://www.onorca.dev/docs/review/attribution)
 
 #### Commit and push workflow
@@ -1639,13 +1669,14 @@ Counts are calculated across all 173 feature rows. The three `Description-only` 
 
 | Product | Assessment |
 | --- | --- |
-| Wardian | [NOT EVIDENCED] in the reviewed Wardian feature docs; repository availability is separate from license |
+| Wardian | [YES] - public repository under the MIT license |
 | Orca ADE | [YES] - MIT |
 | cmux | [YES] - GPL |
 | Conductor | [NOT EVIDENCED] in reviewed first-party product docs |
 | T3 Code | [YES] - MIT in the repository metadata |
 
-**Comparison note:** License is included where the first-party repository or site states it.
+**Comparison note:** License is included where the first-party repository or site states it; Wardian's repository metadata reports a public MIT-licensed repository.
+**Wardian sources:** [source 1](https://github.com/wardian-app/Wardian/blob/main/LICENSE), [source 2](https://github.com/wardian-app/Wardian/blob/main/package.json), [source 3](https://github.com/wardian-app/Wardian/blob/main/src-tauri/Cargo.toml)
 **Sources:** [source 1](https://github.com/stablyai/orca), [source 2](https://github.com/manaflow-ai/cmux), [source 3](https://github.com/pingdotgg/t3code)
 
 #### Core architecture boundary
