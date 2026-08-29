@@ -25,7 +25,6 @@ use wardian_core::control::{
 use wardian_core::conversations::ConversationLoggingSetting;
 use wardian_core::identity::{normalize_status, AgentIdentity, StatusSource};
 use wardian_core::models::{AgentChatEvent, AgentChatEventKind, AgentChatRole};
-
 const STRUCTURED_ASK_INLINE_MESSAGE_MAX_BYTES: usize = 4096;
 const STRUCTURED_ASK_REQUESTS_DIR: &str = "requests";
 const PROVIDER_TURN_START_TIMEOUT_MS: u64 = 10_000;

@@ -11,7 +11,6 @@ mod memory;
 mod output;
 mod telemetry;
 mod watchlist;
-
 use args::{
     AgentArgs, AgentCommand, AgentWorktreeCommand, ApprovalArg, AskArgs, Cli, Command,
     ConversationArgs, ConversationCommand, NotifyArgs, NotifyCommand, QueuePolicyArg, ReplyArgs,
