@@ -178,19 +178,33 @@ fn mutate_ui<R: tauri::Runtime>(
     }
     audit_topology_mutation(
         &home,
-        "operator",
-        op,
-        &outcome.a,
-        &outcome.b,
-        &created_at,
-        if outcome.changed {
-            "applied"
-        } else {
-            "unchanged"
+        TopologyAuditInput {
+            caller: "operator",
+            op,
+            a: &outcome.a,
+            b: &outcome.b,
+            at: &created_at,
+            outcome: if outcome.changed {
+                "applied"
+            } else {
+                "unchanged"
+            },
+            error_code: None,
         },
-        None,
     );
     Ok(outcome.changed)
+}
+
+/// Bundles [`audit_topology_mutation`]'s fields so the function stays under
+/// clippy's argument-count lint instead of carrying eight positional params.
+struct TopologyAuditInput<'a> {
+    caller: &'a str,
+    op: TopologyOperation,
+    a: &'a str,
+    b: &'a str,
+    at: &'a str,
+    outcome: &'a str,
+    error_code: Option<&'a str>,
 }
 
 /// Appends one record to the topology audit log. Logs, rather than
@@ -199,25 +213,16 @@ fn mutate_ui<R: tauri::Runtime>(
 /// silent failure here would contradict the "every attempt is audited"
 /// contract just as much as never calling this function, so it is not
 /// swallowed either.
-fn audit_topology_mutation(
-    home: &Path,
-    caller: &str,
-    op: TopologyOperation,
-    a: &str,
-    b: &str,
-    at: &str,
-    outcome: &str,
-    error_code: Option<&str>,
-) {
+fn audit_topology_mutation(home: &Path, input: TopologyAuditInput) {
     let record = crate::topology_audit::TopologyAuditRecord {
         schema_version: crate::topology_audit::TOPOLOGY_AUDIT_SCHEMA_VERSION,
-        at: at.to_string(),
-        caller: caller.to_string(),
-        operation: op.action().to_string(),
-        a: a.to_string(),
-        b: b.to_string(),
-        outcome: outcome.to_string(),
-        error_code: error_code.map(str::to_string),
+        at: input.at.to_string(),
+        caller: input.caller.to_string(),
+        operation: input.op.action().to_string(),
+        a: input.a.to_string(),
+        b: input.b.to_string(),
+        outcome: input.outcome.to_string(),
+        error_code: input.error_code.map(str::to_string),
     };
     if let Err(error) = crate::topology_audit::append_topology_audit_record(home, &record) {
         crate::manager::log_debug(&format!("[WARDIAN] topology audit append failed: {error}"));
@@ -270,13 +275,15 @@ pub async fn dispatch_topology_mutation<R: tauri::Runtime>(
         };
         audit_topology_mutation(
             &home,
-            &caller_label,
-            op,
-            &a,
-            &b,
-            &chrono::Utc::now().to_rfc3339(),
-            "denied",
-            Some(error_code),
+            TopologyAuditInput {
+                caller: &caller_label,
+                op,
+                a: &a,
+                b: &b,
+                at: &chrono::Utc::now().to_rfc3339(),
+                outcome: "denied",
+                error_code: Some(error_code),
+            },
         );
         return Err(match denied {
             TopologyAuthDenied::UnknownCaller => TopologyControlError::UnknownCaller,
@@ -297,17 +304,19 @@ pub async fn dispatch_topology_mutation<R: tauri::Runtime>(
 
     audit_topology_mutation(
         &home,
-        &caller_label,
-        op,
-        &outcome.a,
-        &outcome.b,
-        &created_at,
-        if outcome.changed {
-            "applied"
-        } else {
-            "unchanged"
+        TopologyAuditInput {
+            caller: &caller_label,
+            op,
+            a: &outcome.a,
+            b: &outcome.b,
+            at: &created_at,
+            outcome: if outcome.changed {
+                "applied"
+            } else {
+                "unchanged"
+            },
+            error_code: None,
         },
-        None,
     );
 
     Ok(wardian_core::control::TopologyMutationResponse {

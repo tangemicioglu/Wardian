@@ -405,6 +405,21 @@ test(
     assert.equal(JSON.parse(unignoreResult.stdout).changed, true);
     await watchStep(harness, "Ignore/unignore round trip completed via the CLI");
 
+    // Self-serve denial over the real wire: delta asks to link epsilon<->zeta,
+    // a pair that excludes delta. The control plane must deny it and the CLI
+    // must map that denial to self_serve_required / exit 1 (this is the one
+    // authorization-path error mapping no in-process test reaches, since it
+    // requires a real denial to travel back over the live socket).
+    const deniedResult = runCliWithEnv(
+      cliPath,
+      harness,
+      ["graph", "link", epsilonId, zetaId],
+      { WARDIAN_SESSION_ID: deltaId },
+    );
+    assert.equal(deniedResult.status, 1, `expected self-serve denial\nstdout:\n${deniedResult.stdout}\nstderr:\n${deniedResult.stderr}`);
+    assert.match(deniedResult.stderr, /self_serve_required/);
+    await watchStep(harness, "Verified a real self-serve denial maps to exit 1 over the live socket");
+
     // Create a team containing delta and epsilon (CLI-local state; no app
     // round trip), then unlink delta<->epsilon through the CLI/control plane.
     const teamName = `E2E-Topology-Team-${RUN_ID}`;
