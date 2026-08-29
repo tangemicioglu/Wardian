@@ -3,10 +3,10 @@
   "file_lines": {
     "src-tauri/src/commands/agent.rs": 10759,
     "src-tauri/src/control.rs": 10014,
-    "src-tauri/src/state/file_resources.rs": 9024,
+    "src-tauri/src/state/file_resources.rs": 47,
     "src-tauri/src/manager/telemetry.rs": 2827,
     "src-tauri/src/commands/git.rs": 3896,
-    "crates/wardian-cli/src/main.rs": 3156,
+    "crates/wardian-cli/src/main.rs": 3145,
     "src/views/App.tsx": 2086
   },
   "clippy_allow_too_many_arguments": 46,
