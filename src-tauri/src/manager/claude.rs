@@ -1,4 +1,4 @@
-use crate::providers::claude::{ClaudeUserEventKind, classify_claude_user_event};
+use crate::providers::claude::{classify_claude_user_event, ClaudeUserEventKind};
 
 /// Converts a workspace absolute path into Claude Code's project directory name.
 /// Claude replaces each of `:`, `\`, `/`, `.` with `-`.

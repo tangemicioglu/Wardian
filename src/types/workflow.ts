@@ -4,7 +4,7 @@ export interface WorkflowTelemetryEvent {
   workflow_id: string;
   node_id: string;
   status: NodeStatus;
-  output?: any;
+  output?: unknown;
   error?: string;
 }
 

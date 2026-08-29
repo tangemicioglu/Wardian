@@ -1,7 +1,5 @@
 use crate::atomic_file::write_json_atomic;
-use crate::conversations::{
-    read_jsonl_records, ConversationIndexEntry, ConversationStatus,
-};
+use crate::conversations::{read_jsonl_records, ConversationIndexEntry, ConversationStatus};
 use crate::db::{self, AgentUpsert};
 use crate::models::AgentConfig;
 use crate::paths::{agent_conversations_dir, state_db_path, wardian_home};
@@ -279,7 +277,10 @@ fn recover_record(record: &PendingAgentReplacement) -> io::Result<bool> {
             record.replacement_created_at.as_deref(),
         )
     } else {
-        (&record.original_config, record.original_created_at.as_deref())
+        (
+            &record.original_config,
+            record.original_created_at.as_deref(),
+        )
     };
 
     let current = current_state_config(&record.session_id)?;
@@ -747,11 +748,9 @@ mod tests {
             pending_replacement_status().unwrap(),
             PendingReplacementStatus::Pending(_)
         ));
-        assert!(complete_recovered_replacement(
-            "agent-boundary-crash",
-            &next_generation_id
-        )
-        .unwrap());
+        assert!(
+            complete_recovered_replacement("agent-boundary-crash", &next_generation_id).unwrap()
+        );
         assert_eq!(
             pending_replacement_status().unwrap(),
             PendingReplacementStatus::None
@@ -796,7 +795,9 @@ mod tests {
 
         let error = recover_pending_replacements(true)
             .expect_err("recovery must reject an unexpected newer config");
-        assert!(error.to_string().contains("changed after its replacement journal"));
+        assert!(error
+            .to_string()
+            .contains("changed after its replacement journal"));
         let state: Vec<AgentConfig> = serde_json::from_str(
             &fs::read_to_string(home.path().join("settings").join("state.json")).unwrap(),
         )

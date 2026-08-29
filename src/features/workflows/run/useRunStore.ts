@@ -43,10 +43,10 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     if (loadRunsInFlight) return loadRunsInFlight;
 
     const request = (async () => {
-      const result = await invoke<RunSummaryListResult | RunSummary[]>('workflow_list_runs');
-      const runs = Array.isArray(result) ? result : result.runs;
-      const runsTruncated = Array.isArray(result) ? false : result.truncated;
-      const runsNextOffset = Array.isArray(result) ? null : result.next_offset ?? null;
+      const result = await invoke<RunSummaryListResult>('workflow_list_runs');
+      const runs = result.runs;
+      const runsTruncated = result.truncated;
+      const runsNextOffset = result.next_offset ?? null;
       if (runSummariesEqual(get().runs, runs) && get().runsTruncated === runsTruncated && get().runsNextOffset === runsNextOffset) return;
       set({ runs, runsTruncated, runsNextOffset });
     })();

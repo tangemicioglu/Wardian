@@ -1,3 +1,4 @@
+// @tier nightly — Runs on the nightly schedule; too slow or too broad for every pull request.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { By, until } from "selenium-webdriver";

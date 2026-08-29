@@ -51,7 +51,9 @@ jobs:
         run: |
           PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}" --jq .body)" \
             npm run check:frontend-screenshot -- origin/${{ github.base_ref }} HEAD
-      - name: Lint (TypeScript)
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
         run: npm run lint
       - name: Unit Tests
         run: npm run test
@@ -59,6 +61,14 @@ jobs:
         run: npm run build
       - name: Verify Workbench Cutover
         run: npm run check:workbench-cutover
+      - name: Verify Test Reachability
+        run: npm run check:test-reachability
+      - name: Verify Dead Code
+        run: npm run check:deadcode
+      - name: Verify Debt Budgets
+        run: npm run check:budgets
+      - name: Verify Page Fixtures
+        run: npm run check:page-fixtures
       - name: Coverage Report
         run: npm run test:coverage
       - name: Upload Frontend Coverage
@@ -84,8 +94,19 @@ jobs:
           workspaces: .
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
+      - name: Format
+        run: cargo fmt --all -- --check
       - name: Test
         run: cargo test --workspace -- --test-threads=1
+      # The browser-session suite drives a real Chromium and is `#[ignore]`d so
+      # a machine without one still runs the rest. This runner ships Edge, and
+      # `engine_candidates()` looks for Edge first, so the 44 tests need no
+      # setup here. Set WARDIAN_BROWSER_BINARY if the runner image ever drops
+      # it. Without this step the in-app browser has no automated coverage at
+      # any layer, which is how it shipped broken twice (#962, #964).
+      - name: Test (browser engine)
+        run: cargo test --lib browser_session::tests -- --ignored --test-threads=1
+        working-directory: src-tauri
       - name: Check Compilation
         run: cargo check --workspace
 
@@ -181,13 +202,11 @@ jobs:
             -Value "--remote-debugging-port=0" `
             -PropertyType String `
             -Force | Out-Null
-      - name: Run focused workbench native suite
-        run: >-
-          npm run test:e2e:native:fast --
-          e2e-native/tests/workbench-persistence-native.test.mjs
-          e2e-native/tests/terminal-presentation-broker-native.test.mjs
-          e2e-native/tests/workbench-runtime-lifecycle-native.test.mjs
-          e2e-native/tests/remote-gateway-native.test.mjs
+      # Selects the `ci` tier rather than naming files, so a new native test
+      # joins a job by declaring `// @tier ci` instead of being forgotten.
+      # `check:test-reachability` fails any native test with no tier at all.
+      - name: Run CI-tier native suite
+        run: npm run test:e2e:native:ci
         env:
           WARDIAN_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-native-workbench
           WARDIAN_E2E_NATIVE_HOME: ${{ github.workspace }}\.tmp\e2e-native\wardian-e2e-native-workbench

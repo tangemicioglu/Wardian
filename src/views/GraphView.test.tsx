@@ -1,3 +1,4 @@
+import { pairPage } from "../test/pageFixtures";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -373,7 +374,7 @@ describe("GraphView", () => {
         };
       }
       if (command === "get_pair_activity") {
-        return [];
+        return pairPage([]);
       }
       return undefined;
     });
@@ -456,9 +457,9 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -484,9 +485,9 @@ describe("GraphView", () => {
         }
         if (command === "get_pair_activity") {
           // Ghost edge with recent activity
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -513,9 +514,9 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -545,9 +546,9 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [
+          return pairPage([
             { a: "a", b: "b", last_message_at: new Date(Date.now() - 60000).toISOString(), active_ask: false },
-          ];
+          ]);
         }
         return undefined;
       });
@@ -577,7 +578,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -607,7 +608,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -638,7 +639,7 @@ describe("GraphView", () => {
         if (command === "get_topology") {
           return { edges: [{ a: "a", b: "b", origin: "manual" }], ignored_pairs: [] };
         }
-        if (command === "get_pair_activity") return [];
+        if (command === "get_pair_activity") return pairPage([]);
         return undefined;
       });
       const view = render(
@@ -668,7 +669,7 @@ describe("GraphView", () => {
           };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -701,7 +702,7 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -751,7 +752,7 @@ describe("GraphView", () => {
           return { edges: [], ignored_pairs: [] };
         }
         if (command === "get_pair_activity") {
-          return [];
+          return pairPage([]);
         }
         return undefined;
       });
@@ -795,7 +796,7 @@ describe("GraphView", () => {
         if (command === "get_topology") {
           return { edges, ignored_pairs: [], fallback_groups: [] };
         }
-        if (command === "get_pair_activity") return [];
+        if (command === "get_pair_activity") return pairPage([]);
         return undefined;
       });
 

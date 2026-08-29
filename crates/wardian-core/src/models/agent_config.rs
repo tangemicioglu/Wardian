@@ -1452,7 +1452,10 @@ mod tests {
 
         let decoded: AgentConfig = serde_json::from_value(value).expect("deserialize Pi config");
         assert!(matches!(decoded.provider_config, ProviderConfig::Pi(_)));
-        assert_eq!(decoded.pi_config().tools, Some(vec!["read".into(), "bash".into()]));
+        assert_eq!(
+            decoded.pi_config().tools,
+            Some(vec!["read".into(), "bash".into()])
+        );
         assert_eq!(decoded.pi_config().offline, Some(true));
     }
 

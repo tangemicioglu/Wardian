@@ -181,24 +181,25 @@ pub fn run() {
     if let Err(e) = db_init_result {
         eprintln!("Failed to initialize database: {}", e);
     }
-    let (replacement_recovery_error, recovered_replacements) = match wardian_core::agent_replacement::recover_pending_replacements(true) {
-        Ok(wardian_core::agent_replacement::RecoveryStatus::Recovered(recovered)) => {
-            eprintln!(
-                "Recovered interrupted agent replacement state for: {}",
-                recovered
-                    .iter()
-                    .map(|record| record.session_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            (None, recovered)
-        }
-        Ok(_) => (None, Vec::new()),
-        Err(error) => {
-            eprintln!("Failed to recover interrupted agent replacement state: {error}");
-            (Some(error.to_string()), Vec::new())
-        }
-    };
+    let (replacement_recovery_error, recovered_replacements) =
+        match wardian_core::agent_replacement::recover_pending_replacements(true) {
+            Ok(wardian_core::agent_replacement::RecoveryStatus::Recovered(recovered)) => {
+                eprintln!(
+                    "Recovered interrupted agent replacement state for: {}",
+                    recovered
+                        .iter()
+                        .map(|record| record.session_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                (None, recovered)
+            }
+            Ok(_) => (None, Vec::new()),
+            Err(error) => {
+                eprintln!("Failed to recover interrupted agent replacement state: {error}");
+                (Some(error.to_string()), Vec::new())
+            }
+        };
 
     // One-time topology migration: seed team cliques as manual edges.
     if let Some(home) = crate::utils::fs::get_wardian_home() {

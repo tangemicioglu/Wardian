@@ -49,10 +49,14 @@ describe("loadGardenWorkflowInputs", () => {
   it("reuses parsed blueprints across repeated loads while refreshing run status", async () => {
     const invoke = vi.fn(async (command: string, args?: { path?: string }) => {
       if (command === "workflow_list_blueprints") {
-        return [
-          { id: "w1", path: "<absolute-workspace-path>/library/workflows/build.md" },
-          { id: "w2", path: "<absolute-workspace-path>/library/workflows/ship.md" },
-        ];
+        return {
+          blueprints: [
+            { id: "w1", path: "<absolute-workspace-path>/library/workflows/build.md" },
+            { id: "w2", path: "<absolute-workspace-path>/library/workflows/ship.md" },
+          ],
+          truncated: false,
+          next_offset: null,
+        };
       }
       if (command === "workflow_parse") {
         return {
@@ -64,9 +68,10 @@ describe("loadGardenWorkflowInputs", () => {
         };
       }
       if (command === "workflow_list_runs") {
-        return invoke.mock.calls.filter(([calledCommand]) => calledCommand === "workflow_list_runs").length === 1
+        const runs = invoke.mock.calls.filter(([calledCommand]) => calledCommand === "workflow_list_runs").length === 1
           ? [run({ blueprint_id: "w1", status: "completed", updated_at: "2026-06-01T00:00:00Z" })]
           : [run({ blueprint_id: "w1", status: "running", updated_at: "2026-06-02T00:00:00Z" })];
+        return { runs, truncated: false, next_offset: null };
       }
       return [];
     });

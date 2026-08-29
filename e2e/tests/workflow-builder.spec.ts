@@ -111,8 +111,8 @@ async function installWorkflowBuilderIpcMock(page: Page) {
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
 
-        if (command === "workflow_list_blueprints") return [];
-        if (command === "workflow_list_runs") return [];
+        if (command === "workflow_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
+        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
         if (command === "workflow_read_run") return { state: null, events: [], blueprint: null };
         if (command === "schedule_list") return [];
         if (command === "workflow_validate") {

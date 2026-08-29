@@ -287,12 +287,9 @@ pub async fn apply_remote_inbox_action(
         }
         "mark_all_read" => {
             let mut persisted = persisted_queue_items();
-            for item in persisted
-                .iter_mut()
-                .filter(|item| {
-                    is_legacy_queue_item(item) && !provider_choice_acknowledgement_unresolved(item)
-                })
-            {
+            for item in persisted.iter_mut().filter(|item| {
+                is_legacy_queue_item(item) && !provider_choice_acknowledgement_unresolved(item)
+            }) {
                 item["read"] = serde_json::Value::Bool(true);
             }
             let known_acknowledgements = persisted
@@ -1057,7 +1054,10 @@ mod tests {
             "provider_choice_pending": "1"
         }))
         .expect_err("pending provider choice must remain unread");
-        assert_eq!(error, "provider_choice_delivery_uncertain_cannot_be_marked_read");
+        assert_eq!(
+            error,
+            "provider_choice_delivery_uncertain_cannot_be_marked_read"
+        );
 
         assert!(validate_remote_mark_read(&serde_json::json!({
             "type": "action_needed",

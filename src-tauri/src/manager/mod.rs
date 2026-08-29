@@ -209,18 +209,14 @@ fn status_arc_key(current_status: &std::sync::Arc<std::sync::Mutex<String>>) -> 
 }
 
 /// Prevents late provider events from reviving an agent after a user interrupt.
-pub(crate) fn mark_agent_interrupted(
-    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
-) {
+pub(crate) fn mark_agent_interrupted(current_status: &std::sync::Arc<std::sync::Mutex<String>>) {
     let mut interrupted = interrupted_status_arcs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     interrupted.insert(status_arc_key(current_status));
 }
 
-pub(crate) fn clear_agent_interrupted(
-    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
-) {
+pub(crate) fn clear_agent_interrupted(current_status: &std::sync::Arc<std::sync::Mutex<String>>) {
     let mut interrupted = interrupted_status_arcs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

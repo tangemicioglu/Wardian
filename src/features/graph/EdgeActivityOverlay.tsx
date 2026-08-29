@@ -37,7 +37,7 @@ export const EdgeActivityOverlay: React.FC<EdgeActivityOverlayProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rAFRef = useRef<number | null>(null);
-  const cameraListenerRef = useRef<((state: any) => void) | null>(null);
+  const cameraListenerRef = useRef<((state: unknown) => void) | null>(null);
 
   // Initialize canvas and sizing
   useEffect(() => {

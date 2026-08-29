@@ -65,7 +65,7 @@ export const ConfigureAgentPanel: React.FC<Props> = ({
 
   const descriptionLength = config.description?.length ?? 0;
 
-  const updateField = (field: keyof AgentConfig, value: any) => {
+  const updateField = (field: keyof AgentConfig, value: AgentConfig[keyof AgentConfig]) => {
     setConfig(prev => prev ? { ...prev, [field]: value } : null);
   };
 

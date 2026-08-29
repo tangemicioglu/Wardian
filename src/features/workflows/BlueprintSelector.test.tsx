@@ -1,3 +1,4 @@
+import { blueprintPage } from "../../test/pageFixtures";
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +16,7 @@ describe('BlueprintSelector', () => {
   });
 
   it('lists blueprints from workflow_list_blueprints and opens one', async () => {
-    invokeMock.mockResolvedValueOnce([{ id: 'wf', name: 'WF', path: '/x/wf.md' }]);
+    invokeMock.mockResolvedValueOnce(blueprintPage([{ id: 'wf', name: 'WF', path: '/x/wf.md' }]));
     const onOpen = vi.fn();
 
     render(<BlueprintSelector onOpen={onOpen} onNew={() => {}} />);
@@ -27,7 +28,7 @@ describe('BlueprintSelector', () => {
   });
 
   it('fires onNew', async () => {
-    invokeMock.mockResolvedValueOnce([]);
+    invokeMock.mockResolvedValueOnce(blueprintPage([]));
     const onNew = vi.fn();
 
     render(<BlueprintSelector onOpen={() => {}} onNew={onNew} />);

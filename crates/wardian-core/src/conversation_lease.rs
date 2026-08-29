@@ -144,7 +144,10 @@ pub fn find_active_execution_conflict<'a>(
 /// conversation, rather than a short lifecycle transition that excludes such a
 /// process from starting.
 pub fn is_headless_execution_lease(lease: &ConversationLease) -> bool {
-    matches!(lease.mode.as_str(), "background_resume" | "background_fresh")
+    matches!(
+        lease.mode.as_str(),
+        "background_resume" | "background_fresh"
+    )
 }
 
 fn lease_conflicts(
@@ -195,8 +198,9 @@ fn acquire_lease_file_lock() -> Result<ConversationLeaseFileLock, String> {
     let path = lease_lock_path()
         .ok_or_else(|| "failed to resolve conversation lease lock path".to_string())?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create conversation lease lock directory: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create conversation lease lock directory: {error}")
+        })?;
     }
     let file = OpenOptions::new()
         .create(true)
@@ -255,7 +259,9 @@ pub fn try_acquire_lease(
     if let Some(conflict) =
         find_active_conflict(&leases, &lease.agent_id, &lease.resume_session, now_rfc3339)
     {
-        return Ok(ConversationLeaseAcquireOutcome::Conflict(Box::new(conflict.clone())));
+        return Ok(ConversationLeaseAcquireOutcome::Conflict(Box::new(
+            conflict.clone(),
+        )));
     }
     add_or_replace_owner(&mut leases, lease);
     save_leases(&leases).map_err(|error| format!("failed to save conversation lease: {error}"))?;
@@ -400,8 +406,9 @@ mod tests {
         lifecycle.mode = "lifecycle_transition".to_string();
         let leases = vec![lifecycle];
 
-        assert!(find_active_conflict(&leases, "agent-1", "resume-1", "2026-06-01T00:05:00Z")
-            .is_some());
+        assert!(
+            find_active_conflict(&leases, "agent-1", "resume-1", "2026-06-01T00:05:00Z").is_some()
+        );
         assert!(find_active_execution_conflict(
             &leases,
             "agent-1",
@@ -493,15 +500,14 @@ mod tests {
         let previous_home = std::env::var_os("WARDIAN_HOME");
         std::env::set_var("WARDIAN_HOME", dir.path());
         let file_lock = acquire_lease_file_lock().expect("parent file lock");
-        let mut child = std::process::Command::new(
-            std::env::current_exe().expect("current test executable"),
-        )
-        .arg("--exact")
-        .arg(TEST_NAME)
-        .env(CHILD_ENV, "1")
-        .env("WARDIAN_HOME", dir.path())
-        .spawn()
-        .expect("spawn child lease attempt");
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .arg("--exact")
+                .arg(TEST_NAME)
+                .env(CHILD_ENV, "1")
+                .env("WARDIAN_HOME", dir.path())
+                .spawn()
+                .expect("spawn child lease attempt");
 
         std::thread::sleep(std::time::Duration::from_millis(150));
         assert!(
@@ -573,14 +579,12 @@ mod tests {
         let replacement_owner = replacement.owner();
         acquire_lease(replacement, "2026-06-01T00:05:00Z").expect("replacement lease");
 
-        assert!(
-            !renew_lease_owner_persisted(
-                &stale_owner,
-                "2026-06-01T00:06:00Z",
-                "2026-06-01T00:16:00Z",
-            )
-            .expect("stale renewal should be a clean loss")
-        );
+        assert!(!renew_lease_owner_persisted(
+            &stale_owner,
+            "2026-06-01T00:06:00Z",
+            "2026-06-01T00:16:00Z",
+        )
+        .expect("stale renewal should be a clean loss"));
         release_lease_owner_persisted(&stale_owner).expect("stale release is harmless");
 
         let leases = load_leases();

@@ -19,10 +19,10 @@ use tauri::State;
 // the same way this does. Two independent implementations of the flooring rule
 // would let two surfaces quote different figures for the same question.
 use wardian_core::telemetry::horizon::{resolve_horizon, Horizon, HorizonWindow};
+use wardian_core::telemetry::matrix::{matrix_at, totals_at, Measure};
 use wardian_core::telemetry::models::{
     ActiveTime, BreakdownRow, IntervalFact, LimitObservation, TelemetrySummary, TokenCounts,
 };
-use wardian_core::telemetry::matrix::{matrix_at, totals_at, Measure};
 use wardian_core::telemetry::query::{
     activity_intervals, breakdown, latest_limits, series, summary, Dimension, SeriesPoint,
 };
@@ -208,8 +208,8 @@ const SPARK_BUCKETS: usize = 48;
 /// but the caller's own latency.
 #[tauri::command(async)]
 pub fn telemetry_overview(horizon: String) -> Result<TelemetryOverviewDto, String> {
-    let horizon = Horizon::parse(&horizon)
-        .ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
+    let horizon =
+        Horizon::parse(&horizon).ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
     let window = resolve_horizon(horizon, Utc::now());
     let labels = agent_labels();
 
@@ -340,26 +340,31 @@ pub fn telemetry_dashboard(
         // Account gauges are keyed by provider, so they attach to the provider
         // row rather than floating beside the table with nothing to belong to.
         let all_limits = latest_limits(conn)?;
-        let providers: Vec<TelemetryProviderRowDto> =
-            breakdown(conn, Dimension::Provider, &window.from, &window.to, usize::MAX)?
-                .into_iter()
-                .map(|row| TelemetryProviderRowDto {
-                    active_ms: row.active.measured_ms + row.active.clustered_ms,
-                    turns: row.turns,
-                    total_tokens: row.tokens.processed_total(),
-                    files_touched: row.files_touched,
-                    lines_added: row.lines_added,
-                    lines_removed: row.lines_removed,
-                    tokens_reported: row.tokens_reported,
-                    agent_count: row.agent_count,
-                    limits: all_limits
-                        .iter()
-                        .filter(|limit| limit.provider == row.key)
-                        .cloned()
-                        .collect(),
-                    provider: row.key,
-                })
-                .collect();
+        let providers: Vec<TelemetryProviderRowDto> = breakdown(
+            conn,
+            Dimension::Provider,
+            &window.from,
+            &window.to,
+            usize::MAX,
+        )?
+        .into_iter()
+        .map(|row| TelemetryProviderRowDto {
+            active_ms: row.active.measured_ms + row.active.clustered_ms,
+            turns: row.turns,
+            total_tokens: row.tokens.processed_total(),
+            files_touched: row.files_touched,
+            lines_added: row.lines_added,
+            lines_removed: row.lines_removed,
+            tokens_reported: row.tokens_reported,
+            agent_count: row.agent_count,
+            limits: all_limits
+                .iter()
+                .filter(|limit| limit.provider == row.key)
+                .cloned()
+                .collect(),
+            provider: row.key,
+        })
+        .collect();
 
         Ok(TelemetryDashboardDto {
             providers,
@@ -643,7 +648,9 @@ pub fn telemetry_fleet(
 
         let mut maxima = TelemetryFleetMaximaDto::default();
         for row in &rows {
-            maxima.tokens_per_hour = maxima.tokens_per_hour.max(row.tokens_per_hour.unwrap_or(0.0));
+            maxima.tokens_per_hour = maxima
+                .tokens_per_hour
+                .max(row.tokens_per_hour.unwrap_or(0.0));
             maxima.turns_per_hour = maxima.turns_per_hour.max(row.turns_per_hour);
             maxima.turns = maxima.turns.max(row.turns);
             maxima.active_ms = maxima.active_ms.max(row.active_ms);
@@ -837,7 +844,9 @@ fn provider_maxima(providers: &[TelemetryFleetProviderDto]) -> TelemetryFleetMax
         maxima.total_tokens = maxima.total_tokens.max(card.total_tokens.unwrap_or(0));
         maxima.files_touched = maxima.files_touched.max(card.files_touched);
         maxima.lines = maxima.lines.max(card.lines_added + card.lines_removed);
-        maxima.spark = maxima.spark.max(card.spark.iter().copied().max().unwrap_or(0));
+        maxima.spark = maxima
+            .spark
+            .max(card.spark.iter().copied().max().unwrap_or(0));
     }
     maxima
 }
@@ -1071,9 +1080,8 @@ pub fn telemetry_matrix(
     let row_limit = limit.unwrap_or(MATRIX_ROW_LIMIT).clamp(1, MATRIX_ROW_CAP);
 
     wardian_core::db::get_db_conn(|conn| {
-        let grid = wardian_core::telemetry::matrix::matrix(
-            conn, &window, dimension, measure, row_limit,
-        )?;
+        let grid =
+            wardian_core::telemetry::matrix::matrix(conn, &window, dimension, measure, row_limit)?;
         Ok(TelemetryMatrixDto {
             dimension: dimension.as_str().to_string(),
             measure: measure.as_str().to_string(),
@@ -1107,8 +1115,8 @@ const MATRIX_ROW_CAP: usize = 200;
 /// See [`telemetry_overview`] for why this is `(async)`.
 #[tauri::command(async)]
 pub fn telemetry_series(horizon: String, dimension: String) -> Result<Vec<SeriesPoint>, String> {
-    let horizon = Horizon::parse(&horizon)
-        .ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
+    let horizon =
+        Horizon::parse(&horizon).ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
     let dimension = Dimension::parse(&dimension)
         .ok_or_else(|| format!("unknown telemetry dimension: {dimension}"))?;
     let window = resolve_horizon(horizon, Utc::now());
@@ -1120,8 +1128,8 @@ pub fn telemetry_series(horizon: String, dimension: String) -> Result<Vec<Series
 /// See [`telemetry_overview`] for why this is `(async)`.
 #[tauri::command(async)]
 pub fn telemetry_activity(horizon: String) -> Result<Vec<IntervalFact>, String> {
-    let horizon = Horizon::parse(&horizon)
-        .ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
+    let horizon =
+        Horizon::parse(&horizon).ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
     let window = resolve_horizon(horizon, Utc::now());
 
     wardian_core::db::get_db_conn(|conn| Ok(activity_intervals(conn, &window.from, &window.to)?))
@@ -1325,7 +1333,13 @@ mod tests {
             "INSERT INTO telemetry_turns
              (event_key, session_id, provider, turn_id, ended_at, source_key, source_path)
              VALUES (?1, ?2, ?3, ?4, ?5, 'k', 'p')",
-            rusqlite::params![format!("{provider}-{session}-{turn}"), session, provider, turn, at],
+            rusqlite::params![
+                format!("{provider}-{session}-{turn}"),
+                session,
+                provider,
+                turn,
+                at
+            ],
         )
         .unwrap();
     }
@@ -1404,7 +1418,10 @@ mod tests {
         ];
         order_provider_cards(&mut providers);
 
-        let order: Vec<&str> = providers.iter().map(|card| card.provider.as_str()).collect();
+        let order: Vec<&str> = providers
+            .iter()
+            .map(|card| card.provider.as_str())
+            .collect();
         assert_eq!(order, vec!["codex", "claude", "opencode"]);
     }
 
@@ -1416,7 +1433,10 @@ mod tests {
         let mut providers = vec![card("gemini", 9, 0), card("codex", 2, 40)];
         order_provider_cards(&mut providers);
 
-        let order: Vec<&str> = providers.iter().map(|card| card.provider.as_str()).collect();
+        let order: Vec<&str> = providers
+            .iter()
+            .map(|card| card.provider.as_str())
+            .collect();
         assert_eq!(order, vec!["codex", "gemini"]);
     }
 
@@ -1556,16 +1576,27 @@ mod tests {
         let present = active
             .get("codex")
             .is_none_or(|agents: &std::collections::HashSet<String>| agents.is_empty());
-        assert!(!present, "a provider with a recorded agent must not read as idle");
+        assert!(
+            !present,
+            "a provider with a recorded agent must not read as idle"
+        );
     }
 
     #[test]
     fn work_outside_the_window_is_not_counted() {
         let conn = telemetry_db();
         add_turn(&conn, "codex", "uuid-1", "t1", "2026-08-19T23:00:00.000Z");
-        add_edit(&conn, "codex", "uuid-1", "src/lib.rs", "2026-08-20T02:00:00.000Z");
+        add_edit(
+            &conn,
+            "codex",
+            "uuid-1",
+            "src/lib.rs",
+            "2026-08-20T02:00:00.000Z",
+        );
 
-        assert!(active_agents_by_provider(&conn, FROM, TO).unwrap().is_empty());
+        assert!(active_agents_by_provider(&conn, FROM, TO)
+            .unwrap()
+            .is_empty());
         assert_eq!(distinct_turns(&conn, FROM, TO).unwrap(), 0);
         assert_eq!(distinct_files(&conn, FROM, TO).unwrap(), 0);
     }

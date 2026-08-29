@@ -105,12 +105,12 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
       setLoading(true);
     }
     try {
-      const result = await invoke<DirectoryTreeResult | FileNode[]>(
+      const result = await invoke<DirectoryTreeResult>(
         'get_directory_tree',
         offset > 0 ? { path, offset } : { path },
       );
       if (isMounted()) {
-        const page = Array.isArray(result) ? result : result.nodes;
+        const page = result.nodes;
         setNodes((current) => {
           if (!append) return page;
           const byPath = new Map(current.map((node) => [node.path, node]));
@@ -119,8 +119,8 @@ const FileTreeBranch: React.FC<FileTreeBranchProps> = ({
             Number(right.is_dir) - Number(left.is_dir) || left.name.localeCompare(right.name),
           );
         });
-        setListingTruncated(Array.isArray(result) ? false : result.truncated);
-        setListingNextOffset(Array.isArray(result) ? null : result.next_offset ?? null);
+        setListingTruncated(result.truncated);
+        setListingNextOffset(result.next_offset ?? null);
         setError(null);
       }
     } catch (err) {

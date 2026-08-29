@@ -99,14 +99,14 @@ async function installRunParamsIpcMock(page: Page) {
         if (command === "sync_provider_theme_settings") return null;
 
         if (command === "workflow_list_blueprints") {
-          return [{ id: "wf", name: "Parameterized WF", path: "/x/wf.md" }];
+          return { blueprints: [{ id: "wf", name: "Parameterized WF", path: "/x/wf.md" }], truncated: false, next_offset: null };
         }
         if (command === "workflow_parse") return { blueprint: blueprintFixture, diagnostics: [] };
         if (command === "workflow_validate") return { ok: true, diagnostics: [] };
         if (command === "workflow_run") {
           return { ok: true, run_id: "run-params-1", blueprint_id: "wf", run_dir: "/runs/run-params-1" };
         }
-        if (command === "workflow_list_runs") return [];
+        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
         if (command === "workflow_read_run") {
           return {
             state: {

@@ -1,3 +1,4 @@
+use crate::limits::{MAX_LIBRARY_DEPTH, MAX_LIBRARY_NODES_PER_SECTION};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,9 +20,6 @@ enum SectionShape {
     SkillDirs,
     MarkdownFiles,
 }
-
-const MAX_LIBRARY_NODES_PER_SECTION: usize = 1_000;
-const MAX_LIBRARY_DEPTH: usize = 64;
 
 struct LibraryBuildBudget {
     remaining: usize,

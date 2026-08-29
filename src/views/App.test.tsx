@@ -214,8 +214,12 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
       case "save_queue_preferences":
         currentQueuePreferences = args?.preferences;
         return null;
+      // The workflow list commands return pages; only `schedule_list` is a
+      // bare collection.
       case "workflow_list_blueprints":
+        return { blueprints: [], truncated: false, next_offset: null };
       case "workflow_list_runs":
+        return { runs: [], truncated: false, next_offset: null };
       case "schedule_list":
         return [];
       case "pause_agent":

@@ -152,7 +152,11 @@ pub fn sessions_in_directory(
 }
 
 fn normalize_directory(directory: &str) -> String {
-    directory.trim().replace('\\', "/").trim_end_matches('/').to_lowercase()
+    directory
+        .trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
 }
 
 fn map_sqlite_error(err: rusqlite::Error) -> SourceError {
@@ -204,11 +208,7 @@ pub(crate) fn read_since_conn(
 ///
 /// A table holding nothing for this session imposes no constraint; otherwise a
 /// session that never produced parts could never advance at all.
-fn next_cursor_value(
-    conn: &Connection,
-    session: &str,
-    current: i64,
-) -> Result<i64, SourceError> {
+fn next_cursor_value(conn: &Connection, session: &str, current: i64) -> Result<i64, SourceError> {
     let mut bound: Option<i64> = None;
     for table in ["message", "part"] {
         let max: Option<i64> = conn
@@ -267,7 +267,10 @@ fn read_messages(
         let created = time.and_then(|t| t.get("created")).and_then(Value::as_i64);
         // An in-flight message has no completion time. Skipping it is safe:
         // finishing bumps `time_updated`, so it returns on a later pass.
-        let Some(completed) = time.and_then(|t| t.get("completed")).and_then(Value::as_i64) else {
+        let Some(completed) = time
+            .and_then(|t| t.get("completed"))
+            .and_then(Value::as_i64)
+        else {
             continue;
         };
         let Some(ended_at) = format_epoch_ms(completed) else {
@@ -514,8 +517,16 @@ fn count_lines(content: &str) -> i64 {
 /// contiguous edit to the same figures a unified diff would report, keeping
 /// opencode's line counts comparable with codex's.
 fn changed_line_counts(old: &str, new: &str) -> (i64, i64) {
-    let old_lines: Vec<&str> = if old.is_empty() { Vec::new() } else { old.lines().collect() };
-    let new_lines: Vec<&str> = if new.is_empty() { Vec::new() } else { new.lines().collect() };
+    let old_lines: Vec<&str> = if old.is_empty() {
+        Vec::new()
+    } else {
+        old.lines().collect()
+    };
+    let new_lines: Vec<&str> = if new.is_empty() {
+        Vec::new()
+    } else {
+        new.lines().collect()
+    };
 
     let mut prefix = 0;
     while prefix < old_lines.len()
@@ -667,7 +678,8 @@ mod tests {
     fn assistant_message_becomes_a_turn_with_split_tokens() {
         let conn = seed_db();
         insert_message(&conn, "msg_1", 1786644345306, ASSISTANT);
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
 
         assert_eq!(facts.turns.len(), 1);
         let turn = &facts.turns[0];
@@ -693,11 +705,12 @@ mod tests {
         // caused a 49x overstatement the first time round.
         let conn = seed_db();
         insert_message(&conn, "msg_1", 1786644345306, ASSISTANT);
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         let turn = &facts.turns[0];
 
-        let declared_total: i64 = serde_json::from_str::<serde_json::Value>(ASSISTANT)
-            .unwrap()["tokens"]["total"]
+        let declared_total: i64 = serde_json::from_str::<serde_json::Value>(ASSISTANT).unwrap()
+            ["tokens"]["total"]
             .as_i64()
             .unwrap();
         assert_eq!(
@@ -715,7 +728,8 @@ mod tests {
     fn opencode_intervals_are_measured_not_clustered() {
         let conn = seed_db();
         insert_message(&conn, "msg_1", 1786644345306, ASSISTANT);
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
 
         assert_eq!(facts.intervals.len(), 1);
         assert_eq!(facts.intervals[0].method, ActivityMethod::Measured);
@@ -727,7 +741,8 @@ mod tests {
     fn interval_spans_the_real_turn_duration() {
         let conn = seed_db();
         insert_message(&conn, "msg_1", 1786644345306, ASSISTANT);
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         let duration = crate::telemetry::activity::interval_duration_ms(&facts.intervals[0]);
         assert_eq!(duration, 1786644345306 - 1786644338919);
     }
@@ -735,8 +750,14 @@ mod tests {
     #[test]
     fn user_messages_are_not_turns() {
         let conn = seed_db();
-        insert_message(&conn, "msg_1", 100, r#"{"role":"user","time":{"created":90}}"#);
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        insert_message(
+            &conn,
+            "msg_1",
+            100,
+            r#"{"role":"user","time":{"created":90}}"#,
+        );
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert!(facts.turns.is_empty());
     }
 
@@ -749,7 +770,8 @@ mod tests {
             100,
             r#"{"role":"assistant","time":{"created":90}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert!(facts.turns.is_empty());
     }
 
@@ -772,7 +794,8 @@ mod tests {
             rusqlite::params![ASSISTANT],
         )
         .unwrap();
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert!(facts.turns.is_empty());
     }
 
@@ -794,7 +817,8 @@ mod tests {
             r#"{"type":"tool","tool":"edit","state":{"status":"completed",
                 "input":{"filePath":"D:/repo/a.md","oldString":"one\ntwo","newString":"1\n2\n3"}}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert_eq!(facts.edits.len(), 1);
         assert_eq!(facts.edits[0].op, EditOp::Update);
         assert_eq!(facts.edits[0].lines_added, Some(3));
@@ -813,7 +837,8 @@ mod tests {
             r#"{"type":"tool","tool":"edit","state":{"status":"completed",
                 "input":{"filePath":"a.md","oldString":"a\nb\nOLD\nd","newString":"a\nb\nNEW\nd"}}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert_eq!(facts.edits[0].lines_added, Some(1));
         assert_eq!(facts.edits[0].lines_removed, Some(1));
     }
@@ -848,7 +873,8 @@ mod tests {
             r#"{"type":"tool","tool":"write","state":{"status":"completed",
                 "input":{"filePath":"D:/repo/new.md","content":"a\nb\nc\nd"}}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert_eq!(facts.edits[0].op, EditOp::Add);
         assert_eq!(facts.edits[0].lines_added, Some(4));
     }
@@ -863,7 +889,8 @@ mod tests {
             r#"{"type":"tool","tool":"edit","state":{"status":"running",
                 "input":{"filePath":"a.md","oldString":"x","newString":"y"}}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert!(facts.edits.is_empty());
     }
 
@@ -876,7 +903,8 @@ mod tests {
             100,
             r#"{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"a.md"}}}"#,
         );
-        let (facts, _) = read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
+        let (facts, _) =
+            read_since_conn(&conn, &ctx(), Cursor::start(CursorKind::EpochMs)).unwrap();
         assert!(facts.edits.is_empty());
     }
 

@@ -136,9 +136,10 @@ impl Measure {
             | Measure::ReasoningTokens
             | Measure::TotalTokens
             | Measure::CacheHitRate => MeasureSource::Turns,
-            Measure::Files | Measure::LinesAdded | Measure::LinesRemoved | Measure::LinesChanged => {
-                MeasureSource::Edits
-            }
+            Measure::Files
+            | Measure::LinesAdded
+            | Measure::LinesRemoved
+            | Measure::LinesChanged => MeasureSource::Edits,
         }
     }
 
@@ -673,7 +674,11 @@ fn rollup_active_cells(
     collect_cells(conn, &sql, window)
 }
 
-fn collect_cells(conn: &Connection, sql: &str, window: &HorizonWindow) -> rusqlite::Result<CellMap> {
+fn collect_cells(
+    conn: &Connection,
+    sql: &str,
+    window: &HorizonWindow,
+) -> rusqlite::Result<CellMap> {
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![window.from, window.to], |row| {
         Ok((
@@ -785,7 +790,10 @@ pub fn totals_at(
         for row in rows {
             let (key, values) = row?;
             for (measure, value) in batch.iter().zip(values) {
-                answers.entry(*measure).or_default().insert(key.clone(), value);
+                answers
+                    .entry(*measure)
+                    .or_default()
+                    .insert(key.clone(), value);
             }
         }
 
@@ -940,9 +948,16 @@ mod tests {
             462_954,
         )]);
         let total = |measure| {
-            matrix_at(&conn, &window(), Dimension::Agent, measure, usize::MAX, None)
-                .unwrap()
-                .rows[0]
+            matrix_at(
+                &conn,
+                &window(),
+                Dimension::Agent,
+                measure,
+                usize::MAX,
+                None,
+            )
+            .unwrap()
+            .rows[0]
                 .total
         };
 
@@ -1065,7 +1080,9 @@ mod tests {
     }
 
     fn at(text: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&Utc)
+        DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     #[test]
@@ -1076,7 +1093,10 @@ mod tests {
         let (from, to) = (at("2026-08-13T12:00:00Z"), at("2026-08-13T16:00:00Z"));
         assert_eq!(Grain::for_window(from, to), Grain::Minute5);
         assert_eq!(Grain::for_window_within(from, to, 48), Grain::Minute5);
-        assert_eq!(Grain::for_window_within(from, to, 48).bucket_count(from, to), 48);
+        assert_eq!(
+            Grain::for_window_within(from, to, 48).bucket_count(from, to),
+            48
+        );
     }
 
     #[test]
@@ -1183,24 +1203,43 @@ mod tests {
         };
         let grid = matrix(&ingested(), &today, Dimension::Agent, Measure::ActiveMs, 40).unwrap();
         assert_eq!(grid.grain, Grain::Minute5);
-        assert_eq!(grid.buckets.len(), 48, "a four-hour today has 48 columns, not 5");
+        assert_eq!(
+            grid.buckets.len(),
+            48,
+            "a four-hour today has 48 columns, not 5"
+        );
     }
 
     #[test]
     fn the_axis_is_dense_including_buckets_where_nothing_happened() {
-        let grid =
-            matrix(&ingested(), &window(), Dimension::Agent, Measure::TotalTokens, 24).unwrap();
+        let grid = matrix(
+            &ingested(),
+            &window(),
+            Dimension::Agent,
+            Measure::TotalTokens,
+            24,
+        )
+        .unwrap();
         assert_eq!(grid.grain, Grain::Minute5);
         assert_eq!(grid.buckets.len(), 24);
         assert_eq!(grid.buckets[0], "2026-08-13T14:00:00.000Z");
         assert_eq!(grid.buckets[1], "2026-08-13T14:05:00.000Z");
-        assert!(grid.rows.iter().all(|r| r.cells.len() == grid.buckets.len()));
+        assert!(grid
+            .rows
+            .iter()
+            .all(|r| r.cells.len() == grid.buckets.len()));
     }
 
     #[test]
     fn cells_carry_the_selected_measure() {
-        let grid =
-            matrix(&ingested(), &window(), Dimension::Agent, Measure::TotalTokens, 24).unwrap();
+        let grid = matrix(
+            &ingested(),
+            &window(),
+            Dimension::Agent,
+            Measure::TotalTokens,
+            24,
+        )
+        .unwrap();
         let row = &grid.rows[0];
         assert_eq!(row.key, "agent-1");
         // Fresh input 100,544 plus output 5,254.
@@ -1238,7 +1277,11 @@ mod tests {
 
         // 14:02-14:18 touches the 14:00, 14:05, 14:10 and 14:15 buckets.
         assert_eq!(occupied, vec![0, 1, 2, 3]);
-        assert_eq!(row.cells[0], 3 * 60_000, "only the tail of the first bucket");
+        assert_eq!(
+            row.cells[0],
+            3 * 60_000,
+            "only the tail of the first bucket"
+        );
         assert_eq!(row.cells[1], 5 * 60_000, "a fully covered bucket");
         assert_eq!(row.cells[3], 3 * 60_000, "only the head of the last bucket");
         assert_eq!(row.cells.iter().sum::<i64>(), 16 * 60_000);
@@ -1289,7 +1332,14 @@ mod tests {
         )
         .unwrap();
 
-        let grid = matrix(&conn, &window(), Dimension::Agent, Measure::LinesChanged, 24).unwrap();
+        let grid = matrix(
+            &conn,
+            &window(),
+            Dimension::Agent,
+            Measure::LinesChanged,
+            24,
+        )
+        .unwrap();
         assert_eq!(grid.rows[0].key, "agent-1");
         assert_eq!(grid.rows[1].key, "agent-0");
         assert!(grid.rows[0].total > grid.rows[1].total);
@@ -1342,7 +1392,9 @@ mod tests {
             ] {
                 let grid = matrix(&conn, &window(), dimension, measure, 24).unwrap();
                 assert!(
-                    grid.rows.iter().all(|r| r.cells.len() == grid.buckets.len()),
+                    grid.rows
+                        .iter()
+                        .all(|r| r.cells.len() == grid.buckets.len()),
                     "{dimension:?}/{measure:?} produced a ragged grid"
                 );
             }
@@ -1354,7 +1406,14 @@ mod tests {
         // Activity facts carry no model, so this one combination cannot be
         // answered at fine resolution. Falling back is honest; fabricating an
         // attribution would not be.
-        let grid = matrix(&ingested(), &window(), Dimension::Model, Measure::ActiveMs, 24).unwrap();
+        let grid = matrix(
+            &ingested(),
+            &window(),
+            Dimension::Model,
+            Measure::ActiveMs,
+            24,
+        )
+        .unwrap();
         assert_eq!(grid.grain, Grain::Hour);
         assert!(!grid.rows.is_empty());
     }
@@ -1378,9 +1437,11 @@ mod tests {
         let grid = matrix(&conn, &window(), Dimension::Model, Measure::Files, 24).unwrap();
         let attributed: i64 = grid.rows.iter().map(|r| r.total).sum();
         let distinct: i64 = conn
-            .query_row("SELECT COUNT(DISTINCT path) FROM telemetry_edits", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(DISTINCT path) FROM telemetry_edits",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(
             attributed, distinct,
@@ -1407,9 +1468,11 @@ mod tests {
         let grid = matrix(&conn, &window(), Dimension::Agent, Measure::Files, 24).unwrap();
         let summed: i64 = grid.rows.iter().map(|r| r.total).sum();
         let distinct: i64 = conn
-            .query_row("SELECT COUNT(DISTINCT path) FROM telemetry_edits", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(DISTINCT path) FROM telemetry_edits",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(grid.rows.len(), 2);
         assert!(

@@ -52,8 +52,8 @@ pub fn load_source_state(
          FROM telemetry_sources WHERE source_key = ?1",
         params![source_key],
         |row| {
-            let cursor_kind = CursorKind::parse(&row.get::<_, String>(6)?)
-                .unwrap_or(CursorKind::ByteOffset);
+            let cursor_kind =
+                CursorKind::parse(&row.get::<_, String>(6)?).unwrap_or(CursorKind::ByteOffset);
             let source_kind = if row.get::<_, String>(5)? == "sqlite" {
                 SourceKind::Sqlite
             } else {
@@ -375,10 +375,7 @@ fn replace_overlapping_clustered(
     Ok(superseded)
 }
 
-fn insert_limit(
-    conn: &rusqlite::Connection,
-    limit: &LimitObservation,
-) -> rusqlite::Result<()> {
+fn insert_limit(conn: &rusqlite::Connection, limit: &LimitObservation) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO telemetry_limits (
              provider, limit_id, observed_at, used_percent, window_minutes, resets_at, plan_type
@@ -459,11 +456,7 @@ fn mark_dirty_span(dirty: &mut DirtyBuckets, session_id: &str, started_at: &str,
 /// Truncate an RFC 3339 timestamp to its hour bucket.
 pub fn hour_bucket(timestamp: &str) -> Option<String> {
     let parsed = crate::telemetry::activity::parse_timestamp(timestamp)?;
-    Some(
-        parsed
-            .format("%Y-%m-%dT%H:00:00.000Z")
-            .to_string(),
-    )
+    Some(parsed.format("%Y-%m-%dT%H:00:00.000Z").to_string())
 }
 
 pub fn now_rfc3339() -> String {
@@ -523,7 +516,9 @@ mod tests {
     fn source_state_round_trips() {
         let conn = db();
         save_source_state(&conn, &state()).unwrap();
-        let loaded = load_source_state(&conn, &source_key("codex", "agent-1", "rollout.jsonl")).unwrap().unwrap();
+        let loaded = load_source_state(&conn, &source_key("codex", "agent-1", "rollout.jsonl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.cursor, Cursor::new(CursorKind::ByteOffset, 128));
         assert_eq!(loaded.provider, "codex");
         assert_eq!(loaded.source_kind, SourceKind::Jsonl);
@@ -540,7 +535,9 @@ mod tests {
         sqlite_state.cursor = Cursor::new(CursorKind::EpochMs, 1786644345306);
         save_source_state(&conn, &sqlite_state).unwrap();
 
-        let loaded = load_source_state(&conn, &sqlite_state.source_key).unwrap().unwrap();
+        let loaded = load_source_state(&conn, &sqlite_state.source_key)
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.cursor.kind, CursorKind::EpochMs);
         assert_eq!(loaded.cursor.value, 1786644345306);
     }
@@ -590,7 +587,9 @@ mod tests {
         };
         save_source_state(&conn, &carried).unwrap();
 
-        let loaded = load_source_state(&conn, &carried.source_key).unwrap().unwrap();
+        let loaded = load_source_state(&conn, &carried.source_key)
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.carry, carried.carry);
     }
 
@@ -607,7 +606,9 @@ mod tests {
             .query_row("SELECT count(*) FROM telemetry_turns", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
-        let loaded = load_source_state(&conn, &source_key("codex", "agent-1", "rollout.jsonl")).unwrap().unwrap();
+        let loaded = load_source_state(&conn, &source_key("codex", "agent-1", "rollout.jsonl"))
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.cursor.value, 128);
     }
 
@@ -850,7 +851,9 @@ mod tests {
         let dirty = purge_source_facts(&conn, &state().source_key).unwrap();
 
         let rows: i64 = conn
-            .query_row("SELECT count(*) FROM telemetry_activity", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(rows, 0);
         // The span crossed an hour boundary, so both hours are stale.

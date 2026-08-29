@@ -67,11 +67,7 @@ pub fn normalize_chat_lines(
                 if let Some(root_id) = root_id {
                     for index in pending_context_events.drain(..) {
                         if let Some(context) = events.get_mut(index) {
-                            set_metadata_string(
-                                &mut context.metadata,
-                                "request_root_id",
-                                &root_id,
-                            );
+                            set_metadata_string(&mut context.metadata, "request_root_id", &root_id);
                             if metadata_string(&context.metadata, "causal_ref").is_none() {
                                 set_metadata_string(
                                     &mut context.metadata,
@@ -198,16 +194,14 @@ fn normalize_pi(
             msg_type,
             parsed,
         )),
-        "agent_start" | "turn_start" | "message_start" | "message_update" => {
-            Some(status_event(
-                session_id,
-                provider,
-                sequence,
-                AgentChatStatus::Processing,
-                msg_type,
-                parsed,
-            ))
-        }
+        "agent_start" | "turn_start" | "message_start" | "message_update" => Some(status_event(
+            session_id,
+            provider,
+            sequence,
+            AgentChatStatus::Processing,
+            msg_type,
+            parsed,
+        )),
         "agent_end" => Some(status_event(
             session_id,
             provider,
@@ -242,9 +236,9 @@ fn normalize_pi(
                             "message",
                         );
                     }
-                    let tool = content_array(message)?.iter().find(|block| {
-                        str_field(block, "type") == Some("toolCall")
-                    })?;
+                    let tool = content_array(message)?
+                        .iter()
+                        .find(|block| str_field(block, "type") == Some("toolCall"))?;
                     let tool_name = str_field(tool, "name").unwrap_or("tool");
                     let input = tool.get("arguments").or_else(|| tool.get("input"));
                     let mut event = tool_call_event(
@@ -275,15 +269,14 @@ fn normalize_pi(
                         title: str_field(message, "toolName")
                             .or_else(|| str_field(message, "name"))
                             .map(str::to_string),
-                        status: Some(if message.get("isError").and_then(Value::as_bool) == Some(true) {
-                            AgentChatStatus::Failed
-                        } else {
-                            AgentChatStatus::Succeeded
-                        }),
-                        turn_id: first_string(&[
-                            message.get("toolCallId"),
-                            message.get("id"),
-                        ]),
+                        status: Some(
+                            if message.get("isError").and_then(Value::as_bool) == Some(true) {
+                                AgentChatStatus::Failed
+                            } else {
+                                AgentChatStatus::Succeeded
+                            },
+                        ),
+                        turn_id: first_string(&[message.get("toolCallId"), message.get("id")]),
                         source: Some(msg_type.into()),
                         metadata: json!({"raw_type": "toolResult"}),
                         ..Default::default()
@@ -318,11 +311,13 @@ fn normalize_pi(
                 role: Some(AgentChatRole::Tool),
                 text: text_from_value(parsed),
                 title: str_field(parsed, "toolName").map(str::to_string),
-                status: Some(if parsed.get("isError").and_then(Value::as_bool) == Some(true) {
-                    AgentChatStatus::Failed
-                } else {
-                    AgentChatStatus::Succeeded
-                }),
+                status: Some(
+                    if parsed.get("isError").and_then(Value::as_bool) == Some(true) {
+                        AgentChatStatus::Failed
+                    } else {
+                        AgentChatStatus::Succeeded
+                    },
+                ),
                 turn_id: first_string(&[parsed.get("toolCallId"), parsed.get("id")]),
                 source: Some(msg_type.into()),
                 metadata: json!({"raw_type": msg_type}),
@@ -1090,7 +1085,10 @@ fn antigravity_tool_metadata(
 ) -> Value {
     let mut metadata = serde_json::Map::new();
     metadata.insert("raw_type".to_string(), Value::String(tool_name.to_string()));
-    metadata.insert("tool_name".to_string(), Value::String(tool_name.to_string()));
+    metadata.insert(
+        "tool_name".to_string(),
+        Value::String(tool_name.to_string()),
+    );
     if let Some(args) = args {
         metadata.insert("tool_input".to_string(), args.clone());
     }
@@ -1582,8 +1580,7 @@ fn message_event(
             set_metadata_string(
                 &mut metadata,
                 "context_observation",
-                if provider.eq_ignore_ascii_case("claude")
-                    || provider.eq_ignore_ascii_case("codex")
+                if provider.eq_ignore_ascii_case("claude") || provider.eq_ignore_ascii_case("codex")
                 {
                     "provider_native"
                 } else {
@@ -1601,14 +1598,7 @@ fn message_event(
         AgentChatRole::Assistant | AgentChatRole::Tool => {}
     }
     message_event_with_metadata(
-        session_id,
-        provider,
-        sequence,
-        role,
-        text,
-        source,
-        turn_id,
-        metadata,
+        session_id, provider, sequence, role, text, source, turn_id, metadata,
     )
 }
 
@@ -2136,9 +2126,15 @@ mod tests {
         );
 
         assert_eq!(tool.title.as_deref(), Some("exec"));
-        assert_eq!(tool.command.as_deref(), Some("rg -n AgentChatView src/features"));
+        assert_eq!(
+            tool.command.as_deref(),
+            Some("rg -n AgentChatView src/features")
+        );
         assert_eq!(tool.language.as_deref(), Some("shell"));
-        assert_eq!(tool.metadata["tool_input"]["cmd"], "rg -n AgentChatView src/features");
+        assert_eq!(
+            tool.metadata["tool_input"]["cmd"],
+            "rg -n AgentChatView src/features"
+        );
     }
 
     #[test]

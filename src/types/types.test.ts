@@ -117,7 +117,7 @@ describe("TypeScript Interface Shape Tests", () => {
         session_id: "abc-123",
         data: { type: "progress", content: "Analyzing code..." },
       };
-      expect(event.data.type).toBe("progress");
+      expect((event.data as { type: string }).type).toBe("progress");
     });
   });
 });

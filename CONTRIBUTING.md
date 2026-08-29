@@ -25,7 +25,7 @@ Wardian follows a strict **Modular Domain Design**.
 
 ### 2. Verification
 Before submitting a PR, ensure all quality gates pass:
-- **Frontend**: `npm run lint` and `npm run test`
+- **Frontend**: `npm run typecheck`, `npm run lint`, and `npm run test`
 - **Backend**: `cargo clippy` and `cargo test`
 
 ### 3. Pull Request Guidelines

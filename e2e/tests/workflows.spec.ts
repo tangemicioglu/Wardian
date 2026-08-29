@@ -189,7 +189,7 @@ async function installWorkflowsIpcMock(
         if (command === "sync_provider_theme_settings") return null;
 
         if (command === "workflow_list_blueprints") {
-          return [{ id: "wf", name: "WF", path: "/x/wf.md" }];
+          return { blueprints: [{ id: "wf", name: "WF", path: "/x/wf.md" }], truncated: false, next_offset: null };
         }
         if (command === "workflow_parse") {
           return { blueprint: blueprintFixture, diagnostics: [] };
@@ -201,14 +201,14 @@ async function installWorkflowsIpcMock(
           return { ok: true, run_id: "run-1", blueprint_id: "wf", run_dir: "/runs/run-1" };
         }
         if (command === "workflow_list_runs") {
-          return [{
+          return { runs: [{
             run_id: "run-1",
             blueprint_id: "wf",
             status: "completed",
             node_count: 3,
             failure: null,
             path: "/x/wf.md",
-          }];
+          }], truncated: false, next_offset: null };
         }
         if (command === "workflow_read_run") {
           return {

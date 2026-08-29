@@ -2859,14 +2859,7 @@ pub async fn delete_agent(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    remove_agent(
-        session_id,
-        Some(confirm_name.as_str()),
-        state,
-        app,
-        !force,
-    )
-    .await
+    remove_agent(session_id, Some(confirm_name.as_str()), state, app, !force).await
 }
 
 /// Internal desktop/remote compatibility alias for forced deletion.
@@ -3014,10 +3007,12 @@ async fn remove_agent<R: tauri::Runtime>(
             }
         }
         if let Some(home) = crate::utils::fs::get_wardian_home() {
-            if let Err(error) = crate::commands::change_review::remove_change_review_watermarks_for_agent(
-                &home,
-                &session_id,
-            ) {
+            if let Err(error) =
+                crate::commands::change_review::remove_change_review_watermarks_for_agent(
+                    &home,
+                    &session_id,
+                )
+            {
                 manager::log_debug(&format!(
                     "[WARDIAN] Failed to clean change review watermarks for {}: {}",
                     session_id, error
@@ -3200,25 +3195,42 @@ pub async fn resume_agent(
     let status_before_resume = snapshot.current_status.clone();
     let mut config = snapshot.config.clone();
     let starts_fresh = resolved_session_persistence(&config) == AgentSessionPersistence::Fresh;
-    let fresh_pending_boundary = if starts_fresh {
-        let snapshot = match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id).await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                restore_agent_status_after_failed_runtime_start(
-                    &state,
-                    &app,
-                    &session_id,
-                    &status_before_resume,
-                )
-                .await;
-                return Err(format!(
+    let fresh_pending_boundary =
+        if starts_fresh {
+            let snapshot =
+                match crate::commands::chat::agent_archive_capture_snapshot(&state, &session_id)
+                    .await
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        restore_agent_status_after_failed_runtime_start(
+                            &state,
+                            &app,
+                            &session_id,
+                            &status_before_resume,
+                        )
+                        .await;
+                        return Err(format!(
                     "Failed to capture the closing conversation before fresh resume: {error}"
                 ));
-            }
-        };
-        let pending = match prepare_conversation_boundary(snapshot) {
-            Ok(pending) => pending,
-            Err(error) => {
+                    }
+                };
+            let pending = match prepare_conversation_boundary(snapshot) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    restore_agent_status_after_failed_runtime_start(
+                        &state,
+                        &app,
+                        &session_id,
+                        &status_before_resume,
+                    )
+                    .await;
+                    return Err(format!(
+                        "Failed to prepare the closing conversation before fresh resume: {error}"
+                    ));
+                }
+            };
+            if let Err(error) = stage_conversation_boundary(&state, &pending) {
                 restore_agent_status_after_failed_runtime_start(
                     &state,
                     &app,
@@ -3227,26 +3239,13 @@ pub async fn resume_agent(
                 )
                 .await;
                 return Err(format!(
-                    "Failed to prepare the closing conversation before fresh resume: {error}"
+                    "Failed to stage the closing conversation before fresh resume: {error}"
                 ));
             }
+            Some(pending)
+        } else {
+            None
         };
-        if let Err(error) = stage_conversation_boundary(&state, &pending) {
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                &status_before_resume,
-            )
-            .await;
-            return Err(format!(
-                "Failed to stage the closing conversation before fresh resume: {error}"
-            ));
-        }
-        Some(pending)
-    } else {
-        None
-    };
     if let Err(error) = prepare_resume_config_for_runtime(&mut config, snapshot.query_count) {
         restore_agent_status_after_failed_runtime_start(
             &state,
@@ -3368,7 +3367,8 @@ pub async fn resume_agent(
         terminal_cleared_payload(&session_id),
     );
     if let Some(context) = session_close_context {
-        if let Err(error) = crate::workflow::session_close::invoke_matching(app.clone(), context).await
+        if let Err(error) =
+            crate::workflow::session_close::invoke_matching(app.clone(), context).await
         {
             return Err(format!(
                 "The agent resumed, but its session-close workflow was not durably accepted: {error}"
@@ -3596,9 +3596,8 @@ fn begin_agent_replacement_journal(
     ),
     String,
 > {
-    let archive_expected = pending_archive.is_some_and(|pending| {
-        pending.effective_logging == ConversationLoggingSetting::Enabled
-    });
+    let archive_expected = pending_archive
+        .is_some_and(|pending| pending.effective_logging == ConversationLoggingSetting::Enabled);
     let archive_conversation_id = if archive_expected {
         state
             .conversation_archive
@@ -3621,12 +3620,8 @@ fn begin_agent_replacement_journal(
     )
     .map_err(|error| format!("Failed to create the agent replacement journal: {error}"))?;
     let session_close_context = boundary_reason.map(|boundary_reason| {
-        let mut context = build_session_close_context(
-            original_config,
-            session_id,
-            boundary_reason,
-            None,
-        );
+        let mut context =
+            build_session_close_context(original_config, session_id, boundary_reason, None);
         context.archive_available = archive_expected;
         context.conversation_id = archive_conversation_id;
         context
@@ -3689,9 +3684,9 @@ fn commit_clear_replacement(
             "Failed to persist replacement agent state: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::StatePersisted,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::StatePersisted)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3713,9 +3708,9 @@ fn commit_clear_replacement(
             "Failed to persist replacement agent metadata: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3726,9 +3721,9 @@ fn commit_clear_replacement(
             "Failed to checkpoint replacement agent metadata: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3740,27 +3735,23 @@ fn commit_clear_replacement(
         ));
     }
 
-    let closed_conversation = match finalize_conversation_boundary(
-        state,
-        session_id,
-        boundary_reason,
-        pending_archive,
-    ) {
-        Ok(conversation) => conversation,
-        Err(error) => {
-            let rollback_error = rollback_agent_replacement(
-                journal,
-                &previous_state_snapshot,
-                original_config,
-                original_created_at,
-            );
-            return Err(format!(
-                "Failed to commit the conversation boundary: {error}{rollback_error}"
-            ));
-        }
-    };
-    if let Err(error) = journal
-        .advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
+    let closed_conversation =
+        match finalize_conversation_boundary(state, session_id, boundary_reason, pending_archive) {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                let rollback_error = rollback_agent_replacement(
+                    journal,
+                    &previous_state_snapshot,
+                    original_config,
+                    original_created_at,
+                );
+                return Err(format!(
+                    "Failed to commit the conversation boundary: {error}{rollback_error}"
+                ));
+            }
+        };
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
     {
         manager::log_debug(&format!(
             "[WARDIAN] boundary checkpoint deferred for {session_id}: {error}"
@@ -3774,8 +3765,8 @@ fn commit_clear_replacement(
             ));
         }
     }
-    let session_close_context = session_close_context
-        .expect("clear replacement must carry a durable session-close intent");
+    let session_close_context =
+        session_close_context.expect("clear replacement must carry a durable session-close intent");
 
     let inserted = pending_new_active
         .take()
@@ -3846,9 +3837,9 @@ fn commit_resume_replacement(
             "Failed to persist resumed agent state: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::StatePersisted,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::StatePersisted)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3870,9 +3861,9 @@ fn commit_resume_replacement(
             "Failed to persist resumed agent metadata: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::MetadataPersisted)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3883,9 +3874,9 @@ fn commit_resume_replacement(
             "Failed to checkpoint resumed agent metadata: {error}{rollback_error}"
         ));
     }
-    if let Err(error) = journal.advance(
-        wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting,
-    ) {
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitting)
+    {
         let rollback_error = rollback_agent_replacement(
             journal,
             &previous_state_snapshot,
@@ -3931,8 +3922,8 @@ fn commit_resume_replacement(
     } else {
         None
     };
-    if let Err(error) = journal
-        .advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
+    if let Err(error) =
+        journal.advance(wardian_core::agent_replacement::ReplacementPhase::BoundaryCommitted)
     {
         manager::log_debug(&format!(
             "[WARDIAN] resume boundary checkpoint deferred for {session_id}: {error}"
@@ -4181,35 +4172,20 @@ async fn clear_agent_session_inner(
 
     // 5. Spawn a FRESH process (is_restored = false) outside the global agent lock.
     // This ensures Claude uses --session-id and others start clean.
-    let mut new_active = match manager::spawn_agent(
-        app.clone(),
-        config,
-        false,
-        prepared.init_timestamp.clone(),
-    )
-    .await
-    {
-        Ok(active) => active,
-        Err(error) => {
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                "Error",
-            )
-            .await;
-            return Err(error);
-        }
-    };
+    let mut new_active =
+        match manager::spawn_agent(app.clone(), config, false, prepared.init_timestamp.clone())
+            .await
+        {
+            Ok(active) => active,
+            Err(error) => {
+                restore_agent_status_after_failed_runtime_start(&state, &app, &session_id, "Error")
+                    .await;
+                return Err(error);
+            }
+        };
     if let Err(error) = lifecycle_heartbeat.ensure_active("clear") {
         manager::terminate_active_agent_process(&mut new_active);
-        restore_agent_status_after_failed_runtime_start(
-            &state,
-            &app,
-            &session_id,
-            "Error",
-        )
-        .await;
+        restore_agent_status_after_failed_runtime_start(&state, &app, &session_id, "Error").await;
         return Err(error);
     }
 
@@ -4257,13 +4233,8 @@ async fn clear_agent_session_inner(
             if let Some(mut active) = pending_new_active.take() {
                 manager::terminate_active_agent_process(&mut active);
             }
-            restore_agent_status_after_failed_runtime_start(
-                &state,
-                &app,
-                &session_id,
-                "Error",
-            )
-            .await;
+            restore_agent_status_after_failed_runtime_start(&state, &app, &session_id, "Error")
+                .await;
             return Err(error);
         }
     };
@@ -4485,10 +4456,11 @@ async fn persist_agent_config_while_lifecycle_locked(
             created_at: created_at.as_deref(),
         })
         .map_err(|error| {
-            let rollback_error = manager::try_save_state_snapshot_unlocked(&previous_state_snapshot)
-                .err()
-                .map(|rollback| format!("; state rollback also failed: {rollback}"))
-                .unwrap_or_default();
+            let rollback_error =
+                manager::try_save_state_snapshot_unlocked(&previous_state_snapshot)
+                    .err()
+                    .map(|rollback| format!("; state rollback also failed: {rollback}"))
+                    .unwrap_or_default();
             format!("Failed to persist agent metadata: {error}{rollback_error}")
         })?;
 
@@ -4534,9 +4506,7 @@ pub async fn update_agent_model_selection(
         &session_id,
         model,
         reasoning_effort,
-        move |config| {
-            apply_agent_model_selection_live(state_ref, live_session_id, config)
-        },
+        move |config| apply_agent_model_selection_live(state_ref, live_session_id, config),
     )
     .await
 }
@@ -5251,51 +5221,50 @@ pub async fn reorder_agents(
 mod tests {
     use super::{
         acquire_agent_lifecycle_guard, acquire_agent_lifecycle_transition_lease,
-        acquire_agent_lifecycle_transition_lease_for_session, agent_status_update_payload,
+        acquire_agent_lifecycle_transition_lease_for_session, agent_has_running_process,
+        agent_status_update_payload, apply_agent_model_selection_live,
         apply_agent_model_selection_update, apply_agent_update_fields,
         archive_agent_lifecycle_boundary, archive_agent_lifecycle_boundary_from_snapshot,
         assign_worktree_config, build_agent_cli_command_for_session_id_with_shells,
         build_agent_cli_command_with_shells, build_agent_clone_preview,
-        build_session_close_context, commit_clear_replacement, commit_resume_replacement,
-        agent_has_running_process, capture_resume_runtime_snapshot,
-        clone_cleanup_created_profile_dirs,
+        build_session_close_context, canonical_agent_class_name, canonical_agent_provider_name,
+        capture_resume_runtime_snapshot, clone_cleanup_created_profile_dirs,
         clone_collect_eligible_file_tree, clone_copy_agent_profile_files, clone_copy_profile_plan,
         clone_copy_selected_agent_profile_files, clone_copy_selected_agent_skills,
         clone_ensure_profile_destination_available, clone_match_selected_agent_skills,
         clone_refresh_profile_system_include_directories, clone_remove_existing_path,
         clone_sanitize_config, clone_unique_name, clone_validate_selected_agent_skills,
         clone_validate_selected_profile_files, collect_agent_worktrees,
-        collect_agent_worktrees_with_discovered, configured_new_agent_order_placement,
-        canonical_agent_class_name, canonical_agent_provider_name,
+        collect_agent_worktrees_with_discovered, commit_clear_replacement,
+        commit_resume_replacement, configured_new_agent_order_placement,
         conversation_boundary_for_clear_reason, detach_agent_for_kill, disable_worktree_config,
         discover_git_worktrees_for_configs, discover_git_worktrees_for_sources_with,
         enable_worktree_config, ensure_existing_worktree_is_git_registered,
-        apply_agent_model_selection_live, ensure_provider_available_before_session_bootstrap,
-        find_assignable_worktree,
+        ensure_provider_available_before_session_bootstrap, find_assignable_worktree,
         find_deletable_worktree_for_source, flatten_clone_file_paths, generated_agent_name,
         insert_new_agent_order, is_under_managed_agent_worktree_root,
         is_under_wardian_agent_worktree_root, lock_agent_lifecycle, mark_agent_paused_off,
         new_agent_order_placement_for_setting, normalize_clone_folder_override,
         normalize_discovered_git_worktree_path, normalize_existing_workspace_record_path,
-        normalize_spawn_folder, normalize_workspace_record_path,
+        normalize_spawn_folder, normalize_workspace_record_path, persist_agent_config,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
-        provider_needs_obtain_session_id_on_clear, renew_agent_lifecycle_transition_lease,
-        replace_agent_status_incarnation, release_spawn_name_reservation, remove_agent,
-        reserve_spawn_session_name, reserve_rename_session_name,
+        provider_needs_obtain_session_id_on_clear, release_spawn_name_reservation, remove_agent,
+        renew_agent_lifecycle_transition_lease, replace_agent_status_incarnation,
+        reserve_rename_session_name, reserve_spawn_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
-        resolve_external_resume_session, resolve_requested_spawn_session_name, restore_agent_config_in_state,
-        restore_agent_runtime_after_aborted_clear,
+        resolve_external_resume_session, resolve_requested_spawn_session_name,
+        restore_agent_config_in_state, restore_agent_runtime_after_aborted_clear,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, stage_conversation_boundary,
-        persist_agent_config, strip_claude_embedded_stream_flags,
-        take_agent_runtime_for_termination, terminal_cleared_payload, update_agent_fields_in_state,
-        update_agent_model_selection_transaction, AgentModelLiveApplication,
-        AgentModelSelectionUpdateResult, validate_agent_removal, validate_assignable_worktree_for_agent,
-        validate_deletable_agent_worktree,
-        workspace_paths_match, worktree_deletion_is_already_complete, AgentOrderPlacement,
-        AgentUpdateFields, AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
+        strip_claude_embedded_stream_flags, take_agent_runtime_for_termination,
+        terminal_cleared_payload, update_agent_fields_in_state,
+        update_agent_model_selection_transaction, validate_agent_removal,
+        validate_assignable_worktree_for_agent, validate_deletable_agent_worktree,
+        workspace_paths_match, worktree_deletion_is_already_complete, AgentModelLiveApplication,
+        AgentModelSelectionUpdateResult, AgentOrderPlacement, AgentUpdateFields,
+        AgentWorktreeSummary, CloneProfileCopyPlan, CloneProfileSelection,
         DeletedAgentReferenceCleanup, DiscoveredGitWorktree, ResumeRuntimeSnapshot,
         GIT_WORKTREE_DISCOVERY_CONCURRENCY, MAX_AGENT_DESCRIPTION_CHARS,
     };
@@ -5705,7 +5674,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 ..Default::default()
             };
         }
-        state.agents.lock().await.insert("agent-1".to_string(), agent);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
 
         let command = build_agent_cli_command_for_session_id_with_shells(
             "agent-1", &state, &settings, &shells,
@@ -6933,7 +6906,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 config.session_id = session_id.to_string();
                 config.session_name = session_name.to_string();
             }
-            state.agents.lock().await.insert(session_id.to_string(), agent);
+            state
+                .agents
+                .lock()
+                .await
+                .insert(session_id.to_string(), agent);
         }
 
         let (first, second) = tokio::join!(
@@ -7393,17 +7370,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             config.model = Some("claude-target".to_string());
             config.reset_provider_config_for_provider();
 
-            let result = apply_agent_model_selection_live(
-                &AppState::new(),
-                "agent-1".to_string(),
-                config,
-            )
-            .await;
+            let result =
+                apply_agent_model_selection_live(&AppState::new(), "agent-1".to_string(), config)
+                    .await;
 
-            assert_eq!(
-                result.live_application,
-                AgentModelLiveApplication::Deferred
-            );
+            assert_eq!(result.live_application, AgentModelLiveApplication::Deferred);
             assert_eq!(result.config.model.as_deref(), Some("claude-target"));
             assert!(result.live_error.is_none());
         }
@@ -8131,7 +8102,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         );
 
         assert_eq!(clone.provider, "codex");
-        assert_eq!(clone.codex_config().profile.as_deref(), Some("custom-profile"));
+        assert_eq!(
+            clone.codex_config().profile.as_deref(),
+            Some("custom-profile")
+        );
         assert!(matches!(clone.provider_config, ProviderConfig::Codex(_)));
     }
 
@@ -8618,7 +8592,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         first.config.lock().unwrap().session_id = "agent-1".to_string();
         let second = make_test_agent();
         second.config.lock().unwrap().session_id = "agent-2".to_string();
-        state.agents.lock().await.insert("agent-1".to_string(), first);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), first);
         state
             .agents
             .lock()
@@ -8655,7 +8633,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         first.config.lock().unwrap().session_id = "agent-1".to_string();
         let second = make_test_agent();
         second.config.lock().unwrap().session_id = "agent-2".to_string();
-        state.agents.lock().await.insert("agent-1".to_string(), first);
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), first);
         state
             .agents
             .lock()
@@ -9108,9 +9090,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             ..Default::default()
         };
 
-        let error = resolve_external_resume_session(&config).expect_err(
-            "Wardian UUID must not be embedded in an external OpenCode --session flag",
-        );
+        let error = resolve_external_resume_session(&config)
+            .expect_err("Wardian UUID must not be embedded in an external OpenCode --session flag");
 
         assert!(error.contains("not available"));
     }
@@ -9901,9 +9882,14 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .session_close_intent()
             .and_then(|intent| intent.source_sequence)
             .is_some_and(|sequence| sequence > 0));
-        journal.complete().expect("complete clear replacement journal");
+        journal
+            .complete()
+            .expect("complete clear replacement journal");
         assert!(pending_replacement.is_none());
-        assert_eq!(context.conversation_id.as_deref(), Some(staged_conversation_id.as_str()));
+        assert_eq!(
+            context.conversation_id.as_deref(),
+            Some(staged_conversation_id.as_str())
+        );
         assert_eq!(
             state
                 .agents
@@ -9962,10 +9948,11 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 source: Some("watch_transcript".to_string()),
             },
         );
-        state.agents.lock().await.insert(
-            "agent-fresh-resume-failure".to_string(),
-            original_agent,
-        );
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-fresh-resume-failure".to_string(), original_agent);
         state
             .agent_order
             .lock()
@@ -10075,7 +10062,9 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .session_close_intent()
             .and_then(|intent| intent.source_sequence)
             .is_some_and(|sequence| sequence > 0));
-        journal.complete().expect("complete resume replacement journal");
+        journal
+            .complete()
+            .expect("complete resume replacement journal");
         assert_eq!(
             context
                 .expect("fresh resume context")
@@ -10167,12 +10156,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .await
             .push("agent-state-failure".to_string());
 
-        let snapshot = crate::commands::chat::agent_archive_capture_snapshot(
-            &state,
-            "agent-state-failure",
-        )
-        .await
-        .expect("capture pending boundary");
+        let snapshot =
+            crate::commands::chat::agent_archive_capture_snapshot(&state, "agent-state-failure")
+                .await
+                .expect("capture pending boundary");
         let pending_boundary =
             prepare_conversation_boundary(snapshot).expect("prepare pending boundary");
         stage_conversation_boundary(&state, &pending_boundary).expect("stage pending boundary");
@@ -10235,13 +10222,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         std::fs::remove_dir(&state_path).expect("remove state failure fixture");
         crate::manager::try_save_state_snapshot(std::slice::from_ref(&replacement_config))
             .expect("simulate an uncertain replacement state after interruption");
-        let recovered_replacements = match
-            wardian_core::agent_replacement::recover_pending_replacements(true)
+        let recovered_replacements =
+            match wardian_core::agent_replacement::recover_pending_replacements(true)
                 .expect("recover interrupted replacement")
-        {
-            wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
-            other => panic!("expected recovered replacement, got {other:?}"),
-        };
+            {
+                wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
+                other => panic!("expected recovered replacement, got {other:?}"),
+            };
         assert_eq!(recovered_replacements.len(), 1);
         assert_eq!(recovered_replacements[0].session_id, "agent-state-failure");
         assert!(recovered_replacements[0].session_close_intent.is_none());
@@ -10289,12 +10276,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .await
             .push("agent-db-failure".to_string());
 
-        let snapshot = crate::commands::chat::agent_archive_capture_snapshot(
-            &state,
-            "agent-db-failure",
-        )
-        .await
-        .expect("capture pending boundary");
+        let snapshot =
+            crate::commands::chat::agent_archive_capture_snapshot(&state, "agent-db-failure")
+                .await
+                .expect("capture pending boundary");
         let pending_boundary =
             prepare_conversation_boundary(snapshot).expect("prepare pending boundary");
         stage_conversation_boundary(&state, &pending_boundary).expect("stage pending boundary");
@@ -10354,13 +10339,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
                 .description,
             "original metadata"
         );
-        let recovered_replacements = match
-            wardian_core::agent_replacement::recover_pending_replacements(true)
+        let recovered_replacements =
+            match wardian_core::agent_replacement::recover_pending_replacements(true)
                 .expect("recover interrupted SQLite replacement")
-        {
-            wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
-            other => panic!("expected recovered replacement, got {other:?}"),
-        };
+            {
+                wardian_core::agent_replacement::RecoveryStatus::Recovered(records) => records,
+                other => panic!("expected recovered replacement, got {other:?}"),
+            };
         assert_eq!(recovered_replacements.len(), 1);
         assert_eq!(recovered_replacements[0].session_id, "agent-db-failure");
         assert!(recovered_replacements[0].session_close_intent.is_none());

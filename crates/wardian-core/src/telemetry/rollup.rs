@@ -26,11 +26,7 @@ pub(crate) fn recompute_buckets(conn: &Connection, dirty: &DirtyBuckets) -> rusq
     Ok(())
 }
 
-fn recompute_one(
-    conn: &Connection,
-    bucket_start: &str,
-    session_id: &str,
-) -> rusqlite::Result<()> {
+fn recompute_one(conn: &Connection, bucket_start: &str, session_id: &str) -> rusqlite::Result<()> {
     let bucket_end = next_hour(bucket_start);
 
     conn.execute(
@@ -86,7 +82,8 @@ fn recompute_one(
 
     // Activity is not attributable to a model, so it lands on the bucket's
     // primary model row (or a bare row when no turns were recorded).
-    let (measured_ms, clustered_ms) = active_ms_in_bucket(conn, session_id, bucket_start, &bucket_end)?;
+    let (measured_ms, clustered_ms) =
+        active_ms_in_bucket(conn, session_id, bucket_start, &bucket_end)?;
     let (files, added, removed) = edits_in_bucket(conn, session_id, bucket_start, &bucket_end)?;
 
     if measured_ms == 0 && clustered_ms == 0 && files == 0 && added == 0 && removed == 0 {
@@ -252,19 +249,27 @@ fn primary_model(
 }
 
 fn max_str(left: &str, right: &str) -> String {
-    if left >= right { left.to_string() } else { right.to_string() }
+    if left >= right {
+        left.to_string()
+    } else {
+        right.to_string()
+    }
 }
 
 fn min_str(left: &str, right: &str) -> String {
-    if left <= right { left.to_string() } else { right.to_string() }
+    if left <= right {
+        left.to_string()
+    } else {
+        right.to_string()
+    }
 }
 
 /// Advance an hour-bucket timestamp by one hour.
 pub fn next_hour(bucket_start: &str) -> String {
     match crate::telemetry::activity::parse_timestamp(bucket_start) {
-        Some(parsed) => crate::telemetry::activity::format_timestamp(
-            parsed + chrono::Duration::hours(1),
-        ),
+        Some(parsed) => {
+            crate::telemetry::activity::format_timestamp(parsed + chrono::Duration::hours(1))
+        }
         None => bucket_start.to_string(),
     }
 }
@@ -272,7 +277,9 @@ pub fn next_hour(bucket_start: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::models::{Cursor, CursorKind, EditFact, EditOp, ParsedFacts, SourceKind, TurnFact};
+    use crate::telemetry::models::{
+        Cursor, CursorKind, EditFact, EditOp, ParsedFacts, SourceKind, TurnFact,
+    };
     use crate::telemetry::schema::run_telemetry_migrations;
     use crate::telemetry::store::{write_facts, SourceState};
 
@@ -336,7 +343,13 @@ mod tests {
             )
             .unwrap();
         stmt.query_map(params![bucket], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
@@ -513,11 +526,9 @@ mod tests {
         assert_eq!(clustered, 5 * 60 * 1000);
 
         // No blended column exists to be mistaken for a measurement.
-        let blended = conn.query_row(
-            "SELECT active_ms FROM telemetry_rollup_hourly",
-            [],
-            |row| row.get::<_, i64>(0),
-        );
+        let blended = conn.query_row("SELECT active_ms FROM telemetry_rollup_hourly", [], |row| {
+            row.get::<_, i64>(0)
+        });
         assert!(blended.is_err());
     }
 

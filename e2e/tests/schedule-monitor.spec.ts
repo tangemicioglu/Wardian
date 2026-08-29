@@ -122,11 +122,11 @@ async function installScheduleMonitorIpcMock(page: Page) {
         if (command === "sync_provider_theme_settings") return null;
 
         if (command === "workflow_list_blueprints") {
-          return [{ id: "wf", name: "Scheduled WF", path: "/x/wf.md" }];
+          return { blueprints: [{ id: "wf", name: "Scheduled WF", path: "/x/wf.md" }], truncated: false, next_offset: null };
         }
         if (command === "workflow_parse") return { blueprint: blueprintFixture, diagnostics: [] };
         if (command === "workflow_validate") return { ok: true, diagnostics: [] };
-        if (command === "workflow_list_runs") return [completedRunFixture];
+        if (command === "workflow_list_runs") return { runs: [completedRunFixture], truncated: false, next_offset: null };
         if (command === "workflow_read_run") return { state: null, events: [], blueprint: null };
 
         if (command === "schedule_list") return schedules;

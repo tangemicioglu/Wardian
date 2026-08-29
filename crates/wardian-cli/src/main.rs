@@ -1102,7 +1102,9 @@ fn render_workflow_schedule(command: WorkflowScheduleCommand) -> Result<String, 
 }
 
 fn render_workflow_session_close(command: WorkflowSessionCloseCommand) -> Result<String, CliError> {
-    use wardian_core::session_close::{load_invokers, mutate_invokers, WorkflowSessionCloseInvoker};
+    use wardian_core::session_close::{
+        load_invokers, mutate_invokers, WorkflowSessionCloseInvoker,
+    };
     use WorkflowSessionCloseCommand as C;
 
     match command {

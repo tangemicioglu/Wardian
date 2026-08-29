@@ -14,28 +14,27 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-pub use wardian_core::browser::{
-    BrowserDialog, BrowserSessionSummary, ConsoleEntry, LoadState, Viewport,
-    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
-};
-use wardian_core::browser::{
-    BrowserCookie, CookieAction, DownloadRecord, NetworkEntry, NetworkFilter, NetworkRequestDetail,
-    StorageArea, StorageEntry, StorageSnapshot, DOWNLOAD_RETENTION_DAYS, MAX_RESPONSE_BODY_BYTES,
-    MAX_STORAGE_BYTES, MAX_STORAGE_VALUE_CHARS,
-};
 use serde_json::{json, Value};
 use tokio::process::Child;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::time::{sleep, Instant};
 use uuid::Uuid;
+use wardian_core::browser::{
+    BrowserCookie, CookieAction, DownloadRecord, NetworkEntry, NetworkFilter, NetworkRequestDetail,
+    StorageArea, StorageEntry, StorageSnapshot, DOWNLOAD_RETENTION_DAYS, MAX_RESPONSE_BODY_BYTES,
+    MAX_STORAGE_BYTES, MAX_STORAGE_VALUE_CHARS,
+};
+pub use wardian_core::browser::{
+    BrowserDialog, BrowserSessionSummary, ConsoleEntry, LoadState, Viewport,
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
+};
 
 use super::cdp::{required_str, CdpConnection, CdpError, CdpEvent, DISCONNECTED_METHOD};
 use super::engine::{discover_engine, launch_engine, EngineError, EngineKind};
 use super::keys;
 use super::network::NetworkLedger;
 use super::snapshot::{
-    action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError,
-    SnapshotLedger,
+    action_expression, parse_snapshot, snapshot_expression, PageSnapshot, RefError, SnapshotLedger,
 };
 
 /// How often a `wait` predicate is re-evaluated.
@@ -107,7 +106,10 @@ pub enum BrowserError {
     /// No session matches the given target.
     NotFound { target: String },
     /// The target matched more than one session.
-    Ambiguous { target: String, matches: Vec<String> },
+    Ambiguous {
+        target: String,
+        matches: Vec<String>,
+    },
     /// The host has no usable browser, or one could not be started.
     Engine(EngineError),
     /// The protocol call failed.
@@ -486,7 +488,11 @@ impl BrowserSession {
         }
         let result = self
             .connection
-            .call_session(&self.cdp_session().await, "Page.navigate", json!({ "url": url }))
+            .call_session(
+                &self.cdp_session().await,
+                "Page.navigate",
+                json!({ "url": url }),
+            )
             .await?;
         if let Some(error) = result.get("errorText").and_then(Value::as_str) {
             let mut state = self.state.write().await;
@@ -512,7 +518,11 @@ impl BrowserSession {
     pub async fn traverse_history(&self, delta: i64) -> Result<(), BrowserError> {
         let history = self
             .connection
-            .call_session(&self.cdp_session().await, "Page.getNavigationHistory", json!({}))
+            .call_session(
+                &self.cdp_session().await,
+                "Page.getNavigationHistory",
+                json!({}),
+            )
             .await?;
         let current = history
             .get("currentIndex")
@@ -654,11 +664,7 @@ impl BrowserSession {
     /// that the ref resolves to exactly one element, and that the element is
     /// still what the snapshot described. Any of them failing is a refusal,
     /// never a best guess.
-    pub async fn act(
-        &self,
-        element_ref: &str,
-        action: &ElementAction,
-    ) -> Result<(), BrowserError> {
+    pub async fn act(&self, element_ref: &str, action: &ElementAction) -> Result<(), BrowserError> {
         let (generation, expected) = {
             let state = self.state.read().await;
             let identity = state.ledger.validate(element_ref)?.clone();
@@ -684,7 +690,12 @@ impl BrowserSession {
             ElementAction::Scroll => "node.scrollIntoView({ block: 'center' });".to_string(),
         };
         let outcome = self
-            .evaluate(&action_expression(element_ref, generation, &expected, &body))
+            .evaluate(&action_expression(
+                element_ref,
+                generation,
+                &expected,
+                &body,
+            ))
             .await?;
         match outcome.as_str() {
             Some("ok") => Ok(()),
@@ -970,7 +981,11 @@ impl BrowserSession {
             }
             CookieAction::Clear => {
                 self.connection
-                    .call_session(&self.cdp_session().await, "Network.clearBrowserCookies", json!({}))
+                    .call_session(
+                        &self.cdp_session().await,
+                        "Network.clearBrowserCookies",
+                        json!({}),
+                    )
                     .await?;
                 Ok(Vec::new())
             }
@@ -1000,10 +1015,7 @@ impl BrowserSession {
     ) -> Result<Option<String>, BrowserError> {
         let accessor = area.accessor();
         let value = self
-            .storage_evaluate(&format!(
-                "window.{accessor}.getItem({})",
-                json!(key)
-            ))
+            .storage_evaluate(&format!("window.{accessor}.getItem({})", json!(key)))
             .await?;
         Ok(value.as_str().map(str::to_string))
     }
@@ -1257,7 +1269,11 @@ impl BrowserSession {
     }
 
     /// Returns to the page behind a popup that has gone away.
-    async fn release_popup(&self, target_id: &str, events: &broadcast::Sender<BrowserSessionEvent>) {
+    async fn release_popup(
+        &self,
+        target_id: &str,
+        events: &broadcast::Sender<BrowserSessionEvent>,
+    ) {
         let _transition = self.screencast_transition.lock().await;
         let restored = {
             let mut targets = self.targets.write().await;
@@ -1364,13 +1380,7 @@ impl BrowserSession {
     ) -> Result<(), BrowserError> {
         self.require_drive(lease_token).await?;
         let cdp_session_id = self.cdp_session().await;
-        dispatch_dialog_answer(
-            &self.connection,
-            &cdp_session_id,
-            accept,
-            prompt_text,
-        )
-        .await?;
+        dispatch_dialog_answer(&self.connection, &cdp_session_id, accept, prompt_text).await?;
         self.state.write().await.dialog = None;
         Ok(())
     }
@@ -1858,16 +1868,15 @@ impl BrowserSessionBroker {
         let profile_dir = self.profile_root.join(&browser_id);
         let download_dir = self.download_root.join(&browser_id);
 
-        let mut launched = match launch_engine(&binary, &profile_dir, viewport.width, viewport.height)
-            .await
-        {
-            Ok(launched) => launched,
-            Err(error) => {
-                // Nothing started, but the profile directory was created.
-                let _ = std::fs::remove_dir_all(&profile_dir);
-                return Err(BrowserError::Engine(error));
-            }
-        };
+        let mut launched =
+            match launch_engine(&binary, &profile_dir, viewport.width, viewport.height).await {
+                Ok(launched) => launched,
+                Err(error) => {
+                    // Nothing started, but the profile directory was created.
+                    let _ = std::fs::remove_dir_all(&profile_dir);
+                    return Err(BrowserError::Engine(error));
+                }
+            };
 
         // The browser is running from here on. `kill_on_drop` would terminate
         // it but never reap it, and on Windows a dying Chromium still holds
@@ -2155,10 +2164,7 @@ impl BrowserSessionBroker {
             1 => Ok(matches.into_iter().next().expect("one match")),
             _ => Err(BrowserError::Ambiguous {
                 target: trimmed.to_string(),
-                matches: matches
-                    .iter()
-                    .map(|session| session.short_ref())
-                    .collect(),
+                matches: matches.iter().map(|session| session.short_ref()).collect(),
             }),
         }
     }
@@ -2221,8 +2227,13 @@ impl BrowserSessionBroker {
 
     /// Stops every session. Called on app exit.
     pub async fn shutdown_all(&self) {
-        let sessions: Vec<Arc<BrowserSession>> =
-            self.sessions.write().await.drain().map(|(_, s)| s).collect();
+        let sessions: Vec<Arc<BrowserSession>> = self
+            .sessions
+            .write()
+            .await
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
         for session in sessions {
             session.shutdown().await;
         }
@@ -2358,7 +2369,12 @@ async fn attach_page(
         .call("Target.getTargets", json!({}))
         .await
         .ok()
-        .and_then(|targets| targets.get("targetInfos").and_then(Value::as_array).cloned())
+        .and_then(|targets| {
+            targets
+                .get("targetInfos")
+                .and_then(Value::as_array)
+                .cloned()
+        })
         .unwrap_or_default()
         .iter()
         .filter_map(|info| info.get("targetId").and_then(Value::as_str))
@@ -2814,7 +2830,9 @@ pub(crate) fn console_entry_from(event: &CdpEvent) -> (String, String) {
                         .map(str::to_string)
                         .or_else(|| arg.get("value").map(std::string::ToString::to_string))
                         .or_else(|| {
-                            arg.get("description").and_then(Value::as_str).map(str::to_string)
+                            arg.get("description")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
                         })
                         .unwrap_or_default()
                 })
@@ -2841,13 +2859,22 @@ mod tests {
 
     #[test]
     fn accepts_http_and_https_unchanged() {
-        assert_eq!(normalize_url("https://example.com/a").unwrap(), "https://example.com/a");
-        assert_eq!(normalize_url("  http://localhost:3000 ").unwrap(), "http://localhost:3000");
+        assert_eq!(
+            normalize_url("https://example.com/a").unwrap(),
+            "https://example.com/a"
+        );
+        assert_eq!(
+            normalize_url("  http://localhost:3000 ").unwrap(),
+            "http://localhost:3000"
+        );
     }
 
     #[test]
     fn promotes_a_bare_host_to_http() {
-        assert_eq!(normalize_url("localhost:5173").unwrap(), "http://localhost:5173");
+        assert_eq!(
+            normalize_url("localhost:5173").unwrap(),
+            "http://localhost:5173"
+        );
         assert_eq!(normalize_url("example.com").unwrap(), "http://example.com");
     }
 
@@ -2884,7 +2911,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn wait_conditions_compile_to_javascript_that_quotes_their_input() {
         let predicate = WaitCondition::Selector("#a[data-x='1']".to_string())
@@ -2899,7 +2925,10 @@ mod tests {
 
     #[test]
     fn waiting_for_the_failed_load_state_has_no_predicate() {
-        assert_eq!(WaitCondition::LoadState(LoadState::Failed).predicate(), None);
+        assert_eq!(
+            WaitCondition::LoadState(LoadState::Failed).predicate(),
+            None
+        );
     }
 
     #[test]
@@ -2939,7 +2968,10 @@ mod tests {
                 "args": [{ "value": "boom" }, { "value": "again" }]
             }),
         };
-        assert_eq!(console_entry_from(&event), ("error".to_string(), "boom again".to_string()));
+        assert_eq!(
+            console_entry_from(&event),
+            ("error".to_string(), "boom again".to_string())
+        );
     }
 
     #[test]
@@ -2958,7 +2990,10 @@ mod tests {
     #[test]
     fn error_codes_are_stable_for_json_consumers() {
         assert_eq!(
-            BrowserError::NotFound { target: "browser:9".to_string() }.code(),
+            BrowserError::NotFound {
+                target: "browser:9".to_string()
+            }
+            .code(),
             "browser_not_found"
         );
         assert_eq!(
@@ -3111,7 +3146,10 @@ mod tests {
     fn a_download_name_that_is_already_taken_gets_a_numeric_suffix() {
         let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create");
-        assert_eq!(unique_download_path(&dir, "report.csv"), dir.join("report.csv"));
+        assert_eq!(
+            unique_download_path(&dir, "report.csv"),
+            dir.join("report.csv")
+        );
 
         std::fs::write(dir.join("report.csv"), b"first").expect("write");
         assert_eq!(
@@ -3127,7 +3165,10 @@ mod tests {
 
         // An extensionless name keeps the suffix at the end.
         std::fs::write(dir.join("archive"), b"third").expect("write");
-        assert_eq!(unique_download_path(&dir, "archive"), dir.join("archive (2)"));
+        assert_eq!(
+            unique_download_path(&dir, "archive"),
+            dir.join("archive (2)")
+        );
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
@@ -3175,7 +3216,10 @@ mod tests {
     fn a_download_whose_file_is_not_there_yet_resolves_to_no_path() {
         let dir = std::env::temp_dir().join(format!("wardian-download-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create");
-        assert_eq!(resolve_completed_download(&dir, "guid-1", "report.csv"), None);
+        assert_eq!(
+            resolve_completed_download(&dir, "guid-1", "report.csv"),
+            None
+        );
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
@@ -3188,7 +3232,10 @@ mod tests {
         std::fs::write(root.join("loose-file"), b"not a session").expect("write");
 
         // Everything present is older than a cutoff in the future.
-        prune_downloads_before(&root, std::time::SystemTime::now() + Duration::from_secs(60));
+        prune_downloads_before(
+            &root,
+            std::time::SystemTime::now() + Duration::from_secs(60),
+        );
 
         assert!(!session.exists(), "an expired session loses its downloads");
         assert!(
