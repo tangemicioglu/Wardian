@@ -147,6 +147,8 @@ pub async fn submit_live_surface_prompt(
                         error_code: "config_lock_poisoned",
                         message: format!("Agent {} config lock poisoned", request.session_id),
                         delivery_phase: Some("target_config_failed".to_string()),
+                        observed_state: None,
+                        reason: None,
                         retry_safe: true,
                     },
                 )),
@@ -159,6 +161,8 @@ pub async fn submit_live_surface_prompt(
                     error_code: "agent_not_found",
                     message: format!("Agent {} not found or is off", request.session_id),
                     delivery_phase: Some("target_lookup_failed".to_string()),
+                    observed_state: None,
+                    reason: None,
                     retry_safe: true,
                 },
             ))
@@ -196,6 +200,8 @@ pub async fn submit_live_surface_prompt(
                 error_code: "no_input_channel",
                 message: "no input channel".to_string(),
                 delivery_phase: Some("input_channel_missing".to_string()),
+                observed_state: None,
+                reason: None,
                 retry_safe: true,
             },
         )
@@ -221,6 +227,8 @@ pub async fn submit_live_surface_prompt(
                     error_code: "input_receipt_unavailable",
                     message: error.to_string(),
                     delivery_phase: Some("input_receipt_check_failed".to_string()),
+                    observed_state: None,
+                    reason: None,
                     retry_safe: true,
                 },
             )
@@ -265,6 +273,8 @@ pub async fn submit_live_surface_prompt(
                         error_code: "send_failed",
                         message: message.message,
                         delivery_phase: Some(message.phase.to_string()),
+                        observed_state: None,
+                        reason: None,
                         retry_safe: message.retry_safe,
                     },
                 )
@@ -298,6 +308,8 @@ pub async fn submit_live_surface_prompt(
                             error_code: "turn_start_watch_unavailable",
                             message,
                             delivery_phase: Some("turn_start_cursor_failed".to_string()),
+                            observed_state: None,
+                            reason: None,
                             retry_safe: true,
                         },
                     )
@@ -309,6 +321,13 @@ pub async fn submit_live_surface_prompt(
             crate::control::wait_for_terminal_ready_for_delivery_service(state, &request.session_id)
                 .await
         {
+            let composer_stalled = provider == "codex"
+                && crate::delivery::codex_composer::session_has_stalled_composer(
+                    state,
+                    &request.session_id,
+                )
+                .await
+                .unwrap_or(false);
             return Err(record_failed_live_surface_attempt(
                 state,
                 &request,
@@ -319,10 +338,24 @@ pub async fn submit_live_surface_prompt(
                 }),
                 FailedLiveSurfaceAttempt {
                     runtime_state: request.runtime_state,
-                    error_code: "not_input_ready",
+                    error_code: if composer_stalled {
+                        "provider_composer_stalled"
+                    } else {
+                        "not_input_ready"
+                    },
                     message,
-                    delivery_phase: Some("terminal_ready_wait_failed".to_string()),
-                    retry_safe: true,
+                    delivery_phase: Some(if composer_stalled {
+                        "provider_composer_stalled".to_string()
+                    } else {
+                        "terminal_ready_wait_failed".to_string()
+                    }),
+                    observed_state: composer_stalled
+                        .then(|| "payload_pending_in_composer".to_string()),
+                    reason: composer_stalled.then(|| format!(
+                        "Codex has an unsubmitted payload in its composer; retrying cannot succeed until `wardian agent restart {}` clears it while preserving the agent and session history",
+                        request.session_id
+                    )),
+                    retry_safe: !composer_stalled,
                 },
             )
             .await);
@@ -349,6 +382,8 @@ pub async fn submit_live_surface_prompt(
                             error_code: "turn_start_watch_unavailable",
                             message,
                             delivery_phase: Some("turn_start_cursor_failed".to_string()),
+                            observed_state: None,
+                            reason: None,
                             retry_safe: true,
                         },
                     )
@@ -361,7 +396,13 @@ pub async fn submit_live_surface_prompt(
         let payload_session_id = request.session_id.clone();
         let payload_interaction_id = interaction_id.clone();
         let payload_sent_detail = payload_sent_detail.clone();
-        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload(
+        let apply_provider = provider.clone();
+        let apply_session_id = request.session_id.clone();
+        let apply_prompt =
+            crate::utils::terminal_input::normalize_prompt_for_terminal_submit(&request.prompt);
+        let apply_cursor = turn_start_cursor.clone();
+        let require_payload_apply_evidence = requires_provider_turn_receipt;
+        match crate::utils::terminal_input::submit_prompt_with_outcome_via_sender_after_payload_and_before_submit(
             &input,
             &request.prompt,
             &provider,
@@ -388,6 +429,26 @@ pub async fn submit_live_surface_prompt(
                     .await;
                 }
                 Ok(())
+            },
+            move || async move {
+                if apply_provider != "codex" || !require_payload_apply_evidence {
+                    return Ok(());
+                }
+                let cursor = apply_cursor.as_deref().ok_or_else(|| {
+                    TerminalDeliveryError::terminal_state_unknown(
+                        "payload_apply_unconfirmed",
+                        format!(
+                            "No watch cursor was available to confirm Codex payload application for {apply_session_id}; Return was not sent"
+                        ),
+                    )
+                })?;
+                crate::delivery::codex_composer::wait_for_payload_applied_before_submit(
+                    state,
+                    &apply_session_id,
+                    cursor,
+                    &apply_prompt,
+                )
+                .await
             },
         )
         .await
@@ -445,6 +506,34 @@ pub async fn submit_live_surface_prompt(
         )
         .await
         {
+            let composer_stalled = provider == "codex"
+                && crate::delivery::codex_composer::session_has_stalled_composer(
+                    state,
+                    &request.session_id,
+                )
+                .await
+                .unwrap_or(false);
+            let (error_code, delivery_phase, observed_state, reason) = if composer_stalled {
+                (
+                    "provider_composer_stalled",
+                    "provider_composer_stalled",
+                    Some("payload_pending_in_composer".to_string()),
+                    Some(format!(
+                        "Codex remained idle with the submitted payload in its composer; retrying cannot succeed until `wardian agent restart {}` clears the composer while preserving the agent and session history",
+                        request.session_id
+                    )),
+                )
+            } else {
+                (
+                    "provider_turn_start_timeout",
+                    "provider_turn_start_timeout",
+                    None,
+                    Some(
+                        "No provider turn-start was observed and no pending Codex composer payload was detected; reconcile provider history before deciding whether to retry"
+                            .to_string(),
+                    ),
+                )
+            };
             return Err(record_failed_live_surface_attempt(
                 state,
                 &request,
@@ -455,9 +544,11 @@ pub async fn submit_live_surface_prompt(
                 }),
                 FailedLiveSurfaceAttempt {
                     runtime_state: request.runtime_state,
-                    error_code: "provider_turn_start_timeout",
+                    error_code,
                     message,
-                    delivery_phase: Some("provider_turn_start_timeout".to_string()),
+                    delivery_phase: Some(delivery_phase.to_string()),
+                    observed_state,
+                    reason,
                     retry_safe: false,
                 },
             )
@@ -535,6 +626,8 @@ struct FailedLiveSurfaceAttempt {
     error_code: &'static str,
     message: String,
     delivery_phase: Option<String>,
+    observed_state: Option<String>,
+    reason: Option<String>,
     retry_safe: bool,
 }
 
@@ -564,9 +657,18 @@ async fn record_terminal_delivery_error(
         }),
         FailedLiveSurfaceAttempt {
             runtime_state: request.runtime_state,
-            error_code: "send_failed",
+            error_code: if error.phase == "payload_apply_unconfirmed" {
+                "payload_apply_unconfirmed"
+            } else {
+                "send_failed"
+            },
             message: error.message,
             delivery_phase: Some(error.phase.to_string()),
+            observed_state: None,
+            reason: (error.phase == "payload_apply_unconfirmed").then(|| {
+                "The PTY accepted the payload bytes, but Codex did not prove that its composer applied them; Return was withheld and automatic retry is unsafe"
+                    .to_string()
+            }),
             retry_safe: error.retry_safe,
         },
     )
@@ -599,15 +701,18 @@ async fn record_failed_live_surface_attempt(
                 .unwrap_or_else(|| interaction_id.to_string()),
         ),
         delivery_phase: failure.delivery_phase,
-        observed_state: None,
-        reason: None,
+        observed_state: failure.observed_state,
+        reason: failure.reason,
         profile: Some(crate::utils::delivery_profile::delivery_profile(&target.provider).provider),
         error: Some(DeliveryErrorDetail {
             code: failure.error_code.to_string(),
             message: failure.message.clone(),
         }),
     };
-    if failure.retry_safe {
+    if detail.reason.is_some() {
+        // A provider-specific diagnosis is more actionable than the generic
+        // retry-safety wording below.
+    } else if failure.retry_safe {
         detail.reason = Some("delivery did not reach the provider input".to_string());
     } else {
         detail.reason =

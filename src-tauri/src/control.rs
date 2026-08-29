@@ -1601,6 +1601,8 @@ async fn build_agent_doctor_response(
             launch_flags: Vec::new(),
             restart_required: false,
             reasons: vec!["not_applicable".to_string()],
+            provider_input_state: None,
+            recovery: None,
         });
     }
 
@@ -1617,6 +1619,13 @@ async fn build_agent_doctor_response(
     let launch_flags = provider.get_spawn_args(&config, false);
 
     let mut reasons = Vec::new();
+    let stalled_composer =
+        crate::delivery::codex_composer::session_has_stalled_composer(state.inner(), session_id)
+            .await
+            .unwrap_or(false);
+    if stalled_composer {
+        reasons.push("provider_composer_stalled".to_string());
+    }
     let (plugins, plugin_inspection_error) =
         match crate::utils::fs::inspect_codex_plugins(&codex_home) {
             Ok(statuses) => (
@@ -1646,8 +1655,14 @@ async fn build_agent_doctor_response(
         plugins,
         plugin_inspection_error,
         launch_flags,
-        restart_required: false,
+        restart_required: stalled_composer,
         reasons,
+        provider_input_state: Some(if stalled_composer {
+            "stalled_composer".to_string()
+        } else {
+            "no_stalled_composer_detected".to_string()
+        }),
+        recovery: stalled_composer.then(|| format!("wardian agent restart {session_id}")),
     })
 }
 
@@ -3176,6 +3191,18 @@ async fn wait_for_terminal_ready_for_control_send(
     state: &AppState,
     info: &DeliveryTargetInfo,
 ) -> Result<(), String> {
+    // A provider status event can report idle while Codex still has an
+    // unsubmitted bracketed paste in its composer. Inspect that provider-owned
+    // surface before trusting the durable Ready observation; otherwise every
+    // later delivery appends to the same poisoned composer.
+    if info.provider == "codex"
+        && crate::delivery::codex_composer::session_has_stalled_composer(state, &info.uuid).await?
+    {
+        return Err(format!(
+            "Agent {} has an unsubmitted Codex payload in its composer; run `wardian agent restart {}` to clear it without deleting the agent or its history",
+            info.uuid, info.uuid
+        ));
+    }
     if provider_input_current_state(state, &info.uuid).await == Some(ProviderInputReadiness::Ready)
     {
         return Ok(());
@@ -3445,45 +3472,6 @@ pub(crate) async fn wait_for_provider_turn_started_after_submit(
     ))
 }
 
-fn codex_output_has_ready_prompt(output: &str) -> bool {
-    let cleaned = strip_ansi_controls(output).replace('\r', "\n");
-    if codex_output_has_workspace_trust_prompt(&cleaned) {
-        return false;
-    }
-    let mut trailing_metadata_lines = 0usize;
-    for line in cleaned.lines().rev().map(str::trim) {
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('›') {
-            return true;
-        }
-        if trailing_metadata_lines < 3 && codex_ready_prompt_trailing_metadata_line(line) {
-            trailing_metadata_lines += 1;
-            continue;
-        }
-        return false;
-    }
-    false
-}
-
-fn codex_output_has_workspace_trust_prompt(output: &str) -> bool {
-    output
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
-        .contains("do you trust the contents of this directory?")
-}
-
-fn codex_ready_prompt_trailing_metadata_line(line: &str) -> bool {
-    if line.contains('•') {
-        return false;
-    }
-    let lower = line.to_ascii_lowercase();
-    lower.starts_with("gpt-") && (line.contains('·') || lower.contains("context"))
-}
-
 fn claude_output_has_ready_prompt(output: &str) -> bool {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     let mut trailing_metadata_lines = 0usize;
@@ -3575,7 +3563,7 @@ pub(crate) fn antigravity_output_has_ready_prompt(output: &str) -> bool {
 
 pub(crate) fn provider_output_has_ready_prompt(provider: &str, output: &str) -> bool {
     match provider {
-        "codex" => codex_output_has_ready_prompt(output),
+        "codex" => crate::delivery::codex_composer::output_has_ready_prompt(output),
         "claude" => claude_output_has_ready_prompt(output),
         "gemini" => gemini_output_has_ready_prompt(output),
         "antigravity" => antigravity_output_has_ready_prompt(output),
@@ -3590,7 +3578,10 @@ pub(crate) fn provider_output_has_ready_prompt(provider: &str, output: &str) -> 
 pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &str) -> bool {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     match provider {
-        "codex" => !codex_output_has_workspace_trust_prompt(&cleaned) && cleaned.contains('›'),
+        "codex" => {
+            !crate::delivery::codex_composer::output_has_workspace_trust_prompt(&cleaned)
+                && cleaned.contains('›')
+        }
         "claude" => {
             !claude_output_has_bypass_permissions_consent_prompt(&cleaned) && cleaned.contains('❯')
         }
@@ -6375,26 +6366,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_ready_prompt_detects_visible_compose_prompt() {
-        assert!(codex_output_has_ready_prompt(
-            "\r\n› Write tests for @filename"
-        ));
-        assert!(codex_output_has_ready_prompt(
-            "\r\n›\u{1b}[22m Write tests for @filename"
-        ));
-        assert!(codex_output_has_ready_prompt(
-            "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · C:\\projects\\example\r\n"
-        ));
-        assert!(codex_output_has_ready_prompt(
-            "\r\n› Working on test coverage\r\n"
-        ));
-        assert!(codex_output_has_ready_prompt(
-            "\r\n› Explain this codebase\r\n\r\n  gpt-5.5 high · Context 100% left · C:\\projects\\sample\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt("Booting MCP server"));
-    }
-
-    #[test]
     fn startup_ready_prompt_accepts_a_full_screen_codex_compose_marker() {
         assert!(provider_output_has_startup_ready_prompt(
             "codex",
@@ -6427,35 +6398,6 @@ mod tests {
         assert!(!provider_output_requires_startup_action(
             "codex",
             "Do you trust the contents of this project?",
-        ));
-    }
-
-    #[test]
-    fn codex_ready_prompt_rejects_workspace_trust_modal() {
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› 1. Yes, continue\r\n  2. No, quit\r\n\r\nDo you trust the contents of this directory?\r\nPress enter to continue"
-        ));
-    }
-
-    #[test]
-    fn codex_ready_prompt_ignores_stale_prompt_marker_when_latest_screen_is_busy() {
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\nProcessing request\r\nWorking...\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\nThinking about the request\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\nFinal response: complete\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\nFinal response: Codex context is initialized\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\nFinal response: gpt-5 · context window\r\n"
-        ));
-        assert!(!codex_output_has_ready_prompt(
-            "\r\n› Previous prompt\r\n  gpt-5.5 high · Context 100% left · D:\\Development\\Wardian• Working...\r\n"
         ));
     }
 
@@ -6515,6 +6457,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_control_send_rejects_stalled_composer_even_when_state_is_ready() {
+        let state = AppState::new();
+        insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "codex".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+            agent
+                .watch_state
+                .lock()
+                .unwrap()
+                .push_output(b"\r\n\xe2\x80\xba [Pasted Content 6479 chars]\r\n");
+        }
+        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+            .await;
+        let info = delivery_target_infos(&state, &["agent-1".to_string()])
+            .await
+            .unwrap()
+            .remove(0);
+
+        let error = wait_for_terminal_ready_for_control_send(&state, &info)
+            .await
+            .expect_err("stalled composer must override idle readiness");
+
+        assert!(error.contains("unsubmitted Codex payload"));
+        assert!(error.contains("wardian agent restart agent-1"));
+    }
+
+    #[tokio::test]
     async fn message_delivery_writes_terminal_bytes_after_opencode_is_ready() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
@@ -6549,7 +6521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_codex_delivery_submits_without_waiting_for_payload_echo() {
+    async fn native_codex_delivery_waits_for_provider_applied_payload() {
         let _home = TestWardianHome::new();
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -6585,11 +6557,24 @@ mod tests {
         assert_eq!(payload.bytes, b"\x1b[200~hello\x1b[201~".to_vec());
         payload.completion.send(Ok(())).expect("payload receipt");
 
+        // The PTY receipt alone must not release Return. Codex's repaint is the
+        // provider-owned proof that its composer consumed the paste.
+        {
+            let agents = state.agents.lock().await;
+            agents
+                .get("agent-1")
+                .unwrap()
+                .watch_state
+                .lock()
+                .unwrap()
+                .push_output(b"\r\n\xe2\x80\xba hello");
+        }
+
         let submit = tokio::select! {
             request = rx.recv() => request.expect("submit write request"),
             result = &mut delivery => panic!("delivery completed before submit write: {result:?}"),
-            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-                panic!("Codex submit must not wait for a terminal echo")
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                panic!("Codex submit did not follow provider-applied payload evidence")
             }
         };
         assert_eq!(submit.bytes, b"\r".to_vec());
@@ -7927,8 +7912,13 @@ mod tests {
                 .push_output(b"\r\n\x1b[1m\xe2\x80\xba\x1b[22m Ready");
         }
 
-        let result =
-            wait_for_terminal_output(&state, "agent-1", 1, codex_output_has_ready_prompt).await;
+        let result = wait_for_terminal_output(
+            &state,
+            "agent-1",
+            1,
+            crate::delivery::codex_composer::output_has_ready_prompt,
+        )
+        .await;
 
         assert!(result.is_err());
     }

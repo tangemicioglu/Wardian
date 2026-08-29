@@ -24,16 +24,16 @@ retry loop.
 | Target is busy | Existing idle/status observation | Keep the mailbox record pending. |
 | App restarts with pending work | Durable pending mailbox record | Restore it and give it one status-gated drain attempt. |
 | Prompt payload write | Native PTY writer completes `write_all` and `flush` | Do not press the submit key. Mark the state unknown/failed. |
-| Codex submit | Native payload-write receipt plus a fixed 750 ms Codex settle window | Send Enter once, then require post-submit provider evidence. |
+| Codex submit | Native payload-write receipt plus post-cursor complete literal payload or `[Pasted Content N chars]` composer evidence | Do not send Enter; record `payload_apply_unconfirmed` and require identity-preserving recovery if the payload remains in the composer. |
 | Provider acceptance | A provider-originated `turn_started` event after the submit cursor | Persist `provider_accepted` and mark the interaction delivered. |
 
-Codex's terminal echo is observational only. Its pasted text can be absent from
-Wardian's bounded watch output even when the PTY writer accepted it, so it must
-not gate Enter. Codex receives a fixed 750 ms provider-profile settle window
-after the write receipt so its TUI can apply bracketed paste before Enter. If no
-provider turn begins after the acknowledged payload and submit writes, the
-delivery fails without an automatic replay; the composer may still contain the
-text and a replay could duplicate it.
+Codex receives a fixed 750 ms provider-profile minimum settle window after the
+write receipt. That delay is not proof that its TUI applied bracketed paste.
+Wardian now waits up to 15 seconds for provider-owned composer evidence before
+Enter, recognizing either the complete literal payload or Codex's collapsed
+long-paste marker. A literal prefix is insufficient. If that proof is absent,
+delivery fails without Enter or automatic replay. See
+[Codex composer delivery recovery](2026-08-29-codex-composer-delivery-recovery.md).
 
 The app no longer runs a two-second, per-agent mailbox polling worker and no
 longer expires otherwise valid mailbox entries based on age. Idle and
@@ -78,6 +78,6 @@ The implementation has focused coverage for:
 - restoring pending mailbox work and failing ambiguous in-flight work;
 - native writer acknowledgements;
 - refusing to press submit if the payload receipt cannot be persisted;
-- submitting Codex input even when no terminal echo is observed;
+- withholding Codex submit until literal or collapsed-paste application is observed;
 - requiring a provider turn-start event after the captured submit cursor; and
 - native live delivery reaching `provider_accepted` only after that receipt.

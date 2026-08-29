@@ -22,6 +22,7 @@ use wardian_core::native_transport::NativeDeliveryPhase;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const CONTROL_GIT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(15);
 const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct AgentWatchRequest<'a> {
@@ -1250,7 +1251,8 @@ fn timeout_block(
 
 fn operation_timeout(operation: &ControlOperation) -> Duration {
     match operation {
-        ControlOperation::AgentList | ControlOperation::AgentDoctor => CONTROL_TIMEOUT,
+        ControlOperation::AgentList => CONTROL_TIMEOUT,
+        ControlOperation::AgentDoctor => CONTROL_DIAGNOSTIC_TIMEOUT,
         ControlOperation::ConversationList
         | ControlOperation::ConversationShow
         | ControlOperation::InboxList
@@ -1885,6 +1887,14 @@ mod tests {
 
         assert!(timeout > CONTROL_TIMEOUT);
         assert!(timeout < CONTROL_MUTATION_TIMEOUT);
+    }
+
+    #[test]
+    fn agent_doctor_outlives_fast_read_timeout() {
+        let timeout = operation_timeout(&ControlOperation::AgentDoctor);
+
+        assert_eq!(timeout, CONTROL_DIAGNOSTIC_TIMEOUT);
+        assert!(timeout > CONTROL_TIMEOUT);
     }
 
     #[test]

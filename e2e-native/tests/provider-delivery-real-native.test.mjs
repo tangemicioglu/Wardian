@@ -38,6 +38,14 @@ export const INPUT_CASES = [
     prompt: (marker) => `Reply with exactly ${marker}.\n`,
     expectOutput: true,
   },
+  {
+    name: "mailbox-long-paste",
+    prompt: (marker) =>
+      "This is Wardian's long bracketed-paste delivery test. The repeated lines are inert test padding.\n" +
+      "Inert delivery padding.\n".repeat(280) +
+      `Reply with exactly this verification marker and nothing else: ${marker}`,
+    expectOutput: true,
+  },
 ];
 
 const DEFAULT_CASES = ["mailbox-short"];
@@ -251,6 +259,35 @@ async function waitForDeliveryState(
       });
       if (detail) {
         return detail;
+      }
+    }
+
+    const failedResult = runCli(cliPath, harness, [
+      "agent",
+      "watch",
+      target,
+      "--since",
+      `${agentSessionId}:0`,
+      "--until",
+      "delivery:failed",
+      "--include",
+      "delivery,events",
+      "--timeout",
+      "2s",
+    ]);
+    if (failedResult.status === 0) {
+      const json = JSON.parse(failedResult.stdout);
+      const details = [
+        ...(json.delivery?.delivery ?? []),
+        ...(json.events ?? [])
+          .filter((event) => event.kind === "delivery")
+          .map((event) => event.payload),
+      ];
+      const failed = details.find((candidate) =>
+        candidate.delivery_state === "failed" &&
+        (!messageId || candidate.message_id === messageId));
+      if (failed) {
+        assert.fail(`Delivery ${messageId} failed before ${state}: ${JSON.stringify(failed)}`);
       }
     }
   }

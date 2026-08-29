@@ -540,6 +540,13 @@ pub struct AgentDoctorResponse {
     pub launch_flags: Vec<String>,
     pub restart_required: bool,
     pub reasons: Vec<String>,
+    /// Provider-owned compose state when Wardian can distinguish it without
+    /// mutating the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_state: Option<String>,
+    /// Identity-preserving operator action for a diagnosed input fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<String>,
 }
 
 impl AgentListResponse {
@@ -1402,6 +1409,8 @@ mod tests {
             launch_flags: vec!["--no-alt-screen".to_string()],
             restart_required: false,
             reasons: Vec::new(),
+            provider_input_state: Some("no_stalled_composer_detected".to_string()),
+            recovery: None,
         };
         let response_json = serde_json::to_string(&response).unwrap();
         assert!(response_json.contains("documents@openai-primary-runtime"));
