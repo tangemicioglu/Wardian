@@ -61,17 +61,21 @@ fn database_metadata_matches_workspace(path: &Path, workspace: &Path) -> bool {
     ) else {
         return false;
     };
+    let workspace_uri = workspace_file_uri(workspace);
+    String::from_utf8_lossy(&data)
+        .to_ascii_lowercase()
+        .contains(&workspace_uri)
+}
+
+fn workspace_file_uri(workspace: &Path) -> String {
     let workspace_key = normalize_path_key(workspace);
-    let workspace_uri = if workspace_key.starts_with("//") {
+    if workspace_key.starts_with("//") {
         format!("file:{workspace_key}")
     } else if workspace_key.starts_with('/') {
         format!("file://{workspace_key}")
     } else {
         format!("file:///{workspace_key}")
-    };
-    String::from_utf8_lossy(&data)
-        .to_ascii_lowercase()
-        .contains(&workspace_uri)
+    }
 }
 
 fn update_latest_timestamp(latest: &mut Option<String>, candidate: Option<String>) {
@@ -1210,10 +1214,7 @@ SET dp0=%~dp0
                      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);",
                 )
                 .expect("create schema");
-            let uri = format!(
-                "file:///{}",
-                normalize_path_text(&metadata_workspace.to_string_lossy())
-            );
+            let uri = workspace_file_uri(metadata_workspace);
             connection
                 .execute(
                     "INSERT INTO trajectory_metadata_blob (id, data) VALUES ('main', ?1)",
