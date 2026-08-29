@@ -50,8 +50,7 @@ impl PiProvider {
             std::io::BufReader::new(file).read_line(&mut header).ok()?;
             let parsed: serde_json::Value = serde_json::from_str(header.trim_end()).ok()?;
             (parsed.get("type").and_then(|value| value.as_str()) == Some("session")
-                && parsed.get("id").and_then(|value| value.as_str())
-                    == Some(provider_session_id))
+                && parsed.get("id").and_then(|value| value.as_str()) == Some(provider_session_id))
             .then_some(path)
         })
     }
@@ -248,8 +247,11 @@ impl AgentProvider for PiProvider {
                     .map(str::to_string),
             }),
             "agent_start" | "turn_start" => Some(AgentEvent::UserQuery),
-            "message_start" | "message_update" | "tool_execution_start"
-            | "tool_execution_update" | "tool_execution_end" => Some(AgentEvent::Generating),
+            "message_start"
+            | "message_update"
+            | "tool_execution_start"
+            | "tool_execution_update"
+            | "tool_execution_end" => Some(AgentEvent::Generating),
             "agent_end" => Some(AgentEvent::TurnCompleted),
             "message_end" => match Self::assistant_stop_reason(&parsed) {
                 Some("stop" | "length") => Some(AgentEvent::ModelResponse),
@@ -290,8 +292,7 @@ mod tests {
     fn fresh_spawn_uses_exact_session_and_wardian_context() {
         let root = tempfile::tempdir().expect("context root");
         std::fs::write(root.path().join("AGENTS.md"), "instructions").expect("instructions");
-        std::fs::create_dir_all(root.path().join(".agents").join("skills"))
-            .expect("skills");
+        std::fs::create_dir_all(root.path().join(".agents").join("skills")).expect("skills");
         let config = AgentConfig {
             session_id: "wardian-agent".into(),
             session_name: "Pi Builder".into(),
@@ -310,14 +311,20 @@ mod tests {
         };
 
         let args = PiProvider::new().get_spawn_args(&config, false);
-        assert!(args.windows(2).any(|pair| pair == ["--session-id", "pi-session"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", "pi-session"]));
         assert!(args.windows(2).any(|pair| pair == ["--name", "Pi Builder"]));
-        assert!(args.windows(2).any(|pair| pair == ["--tui-mode", "regular"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--tui-mode", "regular"]));
         assert!(args.windows(2).any(|pair| pair == ["--thinking", "high"]));
         assert!(args.windows(2).any(|pair| pair == ["--tools", "read,bash"]));
         assert!(args.contains(&"--no-approve".into()));
         assert!(args.contains(&"--offline".into()));
-        assert!(args.windows(2).any(|pair| pair[0] == "--append-system-prompt"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--append-system-prompt"));
         assert!(args.windows(2).any(|pair| pair[0] == "--skill"));
     }
 
@@ -333,7 +340,9 @@ mod tests {
             Some(AgentEvent::TurnCompleted)
         );
         assert_eq!(
-            provider.parse_output(r#"{"type":"message","message":{"role":"assistant","stopReason":"stop"}}"#),
+            provider.parse_output(
+                r#"{"type":"message","message":{"role":"assistant","stopReason":"stop"}}"#
+            ),
             Some(AgentEvent::TurnCompleted)
         );
     }
@@ -342,8 +351,11 @@ mod tests {
     fn resolves_only_session_file_with_matching_header() {
         let dir = tempfile::tempdir().expect("session dir");
         let wanted = dir.path().join("wanted.jsonl");
-        std::fs::write(&wanted, r#"{"type":"session","id":"wanted"}
-"#)
+        std::fs::write(
+            &wanted,
+            r#"{"type":"session","id":"wanted"}
+"#,
+        )
         .expect("wanted session");
         std::fs::write(
             dir.path().join("newer.jsonl"),

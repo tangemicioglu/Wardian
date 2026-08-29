@@ -328,7 +328,12 @@ pub async fn submit_live_surface_prompt(
             .await);
         }
         if requires_provider_turn_receipt && turn_start_cursor.is_none() {
-            turn_start_cursor = match crate::control::provider_turn_start_cursor(state, &request.session_id).await {
+            turn_start_cursor = match crate::control::provider_turn_start_cursor(
+                state,
+                &request.session_id,
+            )
+            .await
+            {
                 Ok(cursor) => Some(cursor),
                 Err(message) => {
                     return Err(record_failed_live_surface_attempt(

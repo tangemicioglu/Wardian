@@ -140,7 +140,10 @@ mod tests {
 
     #[test]
     fn a_missing_file_has_no_fingerprint() {
-        assert_eq!(file_fingerprint(std::path::Path::new("nowhere.jsonl")), None);
+        assert_eq!(
+            file_fingerprint(std::path::Path::new("nowhere.jsonl")),
+            None
+        );
     }
 
     #[test]

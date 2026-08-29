@@ -199,7 +199,10 @@ const LOOPBACK_ADDRESSES: &[&str] = &["127.0.0.1", "[::1]"];
 async fn is_listening(port: u16) -> bool {
     let attempts = LOOPBACK_ADDRESSES.iter().map(|address| async move {
         let target = format!("{address}:{port}");
-        matches!(timeout(PROBE_TIMEOUT, TcpStream::connect(target)).await, Ok(Ok(_)))
+        matches!(
+            timeout(PROBE_TIMEOUT, TcpStream::connect(target)).await,
+            Ok(Ok(_))
+        )
     });
     futures_util::future::join_all(attempts)
         .await
@@ -243,7 +246,10 @@ mod tests {
         assert_eq!(ranked[0].port, 8080);
         assert_eq!(ranked[0].source, PortSource::Declared);
         assert_eq!(
-            ranked.iter().filter(|candidate| candidate.port == 8080).count(),
+            ranked
+                .iter()
+                .filter(|candidate| candidate.port == 8080)
+                .count(),
             1,
         );
     }
@@ -328,8 +334,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create");
         // The vite config is the most specific statement of what will serve, so
         // it should outrank a script flag and an env default.
-        std::fs::write(dir.join("vite.config.ts"), "export default { server: { port: 4173 } }")
-            .expect("write");
+        std::fs::write(
+            dir.join("vite.config.ts"),
+            "export default { server: { port: 4173 } }",
+        )
+        .expect("write");
         std::fs::write(
             dir.join("package.json"),
             r#"{ "scripts": { "dev": "vite --port 5199" } }"#,

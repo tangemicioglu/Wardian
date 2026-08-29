@@ -1,3 +1,4 @@
+use crate::limits::{MAX_LIBRARY_DEPLOYMENTS, MAX_LIBRARY_SKILL_SOURCES};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,9 +31,6 @@ pub struct DeploymentScan {
     pub truncated: bool,
 }
 
-pub const MAX_LIBRARY_SKILL_SOURCES: usize = 1_000;
-pub const MAX_LIBRARY_DEPLOYMENTS: usize = 2_000;
-
 /// Recursively walk `library/skills` collecting every directory containing
 /// a `SKILL.md`. Port of `collect_library_skill_sources` from
 /// `src-tauri/src/commands/library.rs`.
@@ -43,7 +41,11 @@ pub fn collect_skill_sources(home: &Path) -> Vec<SkillSource> {
     sources
 }
 
-fn collect_skill_sources_inner(dir: &Path, base_dir: &Path, sources: &mut Vec<SkillSource>) -> bool {
+fn collect_skill_sources_inner(
+    dir: &Path,
+    base_dir: &Path,
+    sources: &mut Vec<SkillSource>,
+) -> bool {
     let Ok(entries) = fs::read_dir(dir) else {
         return false;
     };
@@ -101,7 +103,11 @@ fn read_deployed_skill_source_marker(path: &Path) -> Option<String> {
 /// A deployed directory whose name matches more than one library source
 /// and has neither a marker nor a canonical-path match resolves to
 /// nothing (`None`) — the caller records that as an orphan.
-fn resolve_source(deployed_path: &Path, deployed_name: &str, sources: &[SkillSource]) -> Option<String> {
+fn resolve_source(
+    deployed_path: &Path,
+    deployed_name: &str,
+    sources: &[SkillSource],
+) -> Option<String> {
     if let Some(marker_source) = read_deployed_skill_source_marker(deployed_path) {
         if sources.iter().any(|s| s.rel_path == marker_source) {
             return Some(marker_source);
@@ -188,11 +194,14 @@ pub fn scan_deployments(home: &Path, sources: &[SkillSource]) -> DeploymentScan 
                 .map(|m| is_reparse_or_symlink(&m))
                 .unwrap_or(false);
             match resolve_source(&path, &name, sources) {
-                Some(rel_path) => deployments.entry(rel_path).or_default().push(DeploymentTarget {
-                    target_type: target_type.to_string(),
-                    target_id: target_id.to_string(),
-                    linked,
-                }),
+                Some(rel_path) => deployments
+                    .entry(rel_path)
+                    .or_default()
+                    .push(DeploymentTarget {
+                        target_type: target_type.to_string(),
+                        target_id: target_id.to_string(),
+                        linked,
+                    }),
                 None => orphans.push(OrphanDeployment {
                     target_type: target_type.to_string(),
                     target_id: target_id.to_string(),
@@ -202,7 +211,11 @@ pub fn scan_deployments(home: &Path, sources: &[SkillSource]) -> DeploymentScan 
         }
     };
 
-    scan_target_dir("user", "global", &home.join("common").join(".agents").join("skills"));
+    scan_target_dir(
+        "user",
+        "global",
+        &home.join("common").join(".agents").join("skills"),
+    );
     for root in ["classes", "agents"] {
         let type_name = if root == "classes" { "class" } else { "agent" };
         let Ok(entries) = fs::read_dir(home.join(root)) else {
@@ -260,7 +273,8 @@ pub fn deploy_skill(
 
     let copied = deploy_skill_dir(&src_dir, &dst_dir).map_err(|e| e.to_string())?;
     if copied {
-        fs::write(dst_dir.join(DEPLOYED_SKILL_SOURCE_FILE), &rel_norm).map_err(|e| e.to_string())?;
+        fs::write(dst_dir.join(DEPLOYED_SKILL_SOURCE_FILE), &rel_norm)
+            .map_err(|e| e.to_string())?;
     }
     Ok(copied)
 }
@@ -404,16 +418,34 @@ mod tests {
         seed_skill(home, "reviewer");
 
         // Linked deploy to a class.
-        let class_target = home.join("classes").join("Architect").join(".agents").join("skills").join("planner");
+        let class_target = home
+            .join("classes")
+            .join("Architect")
+            .join(".agents")
+            .join("skills")
+            .join("planner");
         create_directory_link(&planner, &class_target).unwrap();
 
         // Copied deploy (with marker) to an agent.
-        let agent_target = home.join("agents").join("a1").join(".agents").join("skills").join("planner");
+        let agent_target = home
+            .join("agents")
+            .join("a1")
+            .join(".agents")
+            .join("skills")
+            .join("planner");
         copy_dir_all(&planner, &agent_target).unwrap();
-        fs::write(agent_target.join(super::super::section::DEPLOYED_SKILL_SOURCE_FILE), "dev/planner").unwrap();
+        fs::write(
+            agent_target.join(super::super::section::DEPLOYED_SKILL_SOURCE_FILE),
+            "dev/planner",
+        )
+        .unwrap();
 
         // Orphan: deployed dir with no source anywhere.
-        let orphan_target = home.join("common").join(".agents").join("skills").join("ghost");
+        let orphan_target = home
+            .join("common")
+            .join(".agents")
+            .join("skills")
+            .join("ghost");
         fs::create_dir_all(&orphan_target).unwrap();
         fs::write(orphan_target.join("SKILL.md"), "ghost").unwrap();
 
@@ -421,11 +453,20 @@ mod tests {
         assert_eq!(sources.len(), 2);
         let scan = scan_deployments(home, &sources);
 
-        let planner_targets = scan.deployments.get("dev/planner").expect("planner deployed");
+        let planner_targets = scan
+            .deployments
+            .get("dev/planner")
+            .expect("planner deployed");
         assert_eq!(planner_targets.len(), 2);
-        let class_dep = planner_targets.iter().find(|t| t.target_type == "class").expect("class");
+        let class_dep = planner_targets
+            .iter()
+            .find(|t| t.target_type == "class")
+            .expect("class");
         assert!(class_dep.linked);
-        let agent_dep = planner_targets.iter().find(|t| t.target_type == "agent").expect("agent");
+        let agent_dep = planner_targets
+            .iter()
+            .find(|t| t.target_type == "agent")
+            .expect("agent");
         assert!(!agent_dep.linked);
 
         assert_eq!(scan.orphans.len(), 1);
@@ -439,7 +480,12 @@ mod tests {
         let home = temp.path();
         seed_skill(home, "group-a/planner");
         let b = seed_skill(home, "group-b/planner");
-        let target = home.join("agents").join("a1").join(".agents").join("skills").join("planner");
+        let target = home
+            .join("agents")
+            .join("a1")
+            .join(".agents")
+            .join("skills")
+            .join("planner");
         copy_dir_all(&b, &target).unwrap(); // legacy copy, no marker
 
         let sources = collect_skill_sources(home);
@@ -458,21 +504,38 @@ mod tests {
         fs::write(src.join("SKILL.md"), "v1").unwrap();
 
         let desired = vec![
-            SkillDeployment { target_type: "class".into(), target_id: "Architect".into() },
-            SkillDeployment { target_type: "user".into(), target_id: "global".into() },
+            SkillDeployment {
+                target_type: "class".into(),
+                target_id: "Architect".into(),
+            },
+            SkillDeployment {
+                target_type: "user".into(),
+                target_id: "global".into(),
+            },
         ];
         let outcome = set_skill_deployments(home, "planner", &desired).unwrap();
         assert_eq!(outcome.added, 2);
-        assert!(home.join("classes/Architect/.agents/skills/planner").join("SKILL.md").exists());
-        assert!(home.join("common/.agents/skills/planner").join("SKILL.md").exists());
+        assert!(home
+            .join("classes/Architect/.agents/skills/planner")
+            .join("SKILL.md")
+            .exists());
+        assert!(home
+            .join("common/.agents/skills/planner")
+            .join("SKILL.md")
+            .exists());
 
         // Narrow to just the class: user deployment is removed, class untouched.
-        let narrowed = vec![SkillDeployment { target_type: "class".into(), target_id: "Architect".into() }];
+        let narrowed = vec![SkillDeployment {
+            target_type: "class".into(),
+            target_id: "Architect".into(),
+        }];
         let outcome = set_skill_deployments(home, "planner", &narrowed).unwrap();
         assert_eq!(outcome.added, 0);
         assert_eq!(outcome.removed, 1);
         assert!(!home.join("common/.agents/skills/planner").exists());
-        assert!(home.join("classes/Architect/.agents/skills/planner").exists());
+        assert!(home
+            .join("classes/Architect/.agents/skills/planner")
+            .exists());
 
         // Idempotent.
         let outcome = set_skill_deployments(home, "planner", &narrowed).unwrap();

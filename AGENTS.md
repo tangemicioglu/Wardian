@@ -13,8 +13,9 @@ These clusters guide both the architectural integrity and the user experience of
 Before requesting a commit or finalizing a task, ensure the following steps are completed:
 
 1. **Validation & Build**:
-   - [ ] **Frontend**: Run `npm run lint`, `npm run test`, and `npm run build`.
-   - [ ] **Backend**: Run `cargo clippy`, `cargo test`, and `cargo check` (in `src-tauri`).
+   - [ ] **Frontend**: Run `npm run typecheck`, `npm run lint`, `npm run test`, and `npm run build`.
+   - [ ] **Backend**: Run `cargo clippy`, `cargo fmt --all -- --check`, `cargo test`, and `cargo check` (in `src-tauri`).
+   - [ ] **Gates**: Run `npm run check:test-reachability`, `npm run check:deadcode`, `npm run check:budgets`, and `npm run check:page-fixtures`. These fail on debt this repository has decided not to take on again; each failure message names the file and the fix.
 2. **Documentation**:
    - [ ] Document strategic decisions in a new **Spec** in `docs/specs/`.
    - [ ] Update related guides in `docs/guide/` or `docs/developer/`.
@@ -172,6 +173,7 @@ cargo run -p wardian-cli -- agent list --scope all
 ## 🛠️ Workflow Rules
 - **Surgical Code Changes**: Use the `replace` tool for precise, context-aware edits. Avoid overwriting entire files unless scaffolding new modules.
 - **Verification-First**: A task is only complete once the behavioral correctness has been verified via the pre-commit checklist.
+- **Resolve Failing Tests**: A failing test is a decision about which side is wrong, and it is yours to make. Fix the behavior when the test is right, or fix the test when your change intentionally supersedes what it encoded. Never edit a test merely to turn red green. If the failure predates your change, show it reproduces on the base commit before setting it aside. Report the outcome either way.
 - **TypeScript Sovereignty**: Strictly adhere to the types defined in `src/types/index.ts`. Never use `any` unless required by external library constraints.
 
 ## 🌿 Git & Pull Request Standards
@@ -181,4 +183,4 @@ All agents must follow these standards to ensure a clean, high-governance reposi
 - **Atomic Commits**: Group related changes into small, semantic commits. Use [Conventional Commits](https://www.conventionalcommits.org/) (e.g., `feat:`, `fix:`, `docs:`, `chore:`).
 - **Issue Linking**: Every PR must link to an existing GitHub issue. If no issue exists, create one before starting the implementation.
 - **PR Descriptions**: Always use the provided PR template. Explain the "Why" behind the change and include evidence of successful verification (logs or test results).
-- **CI Readiness**: Before opening a PR, run the full verification suite (`npm run lint/test` and `cargo clippy/test`) to ensure green status on GitHub Actions.
+- **CI Readiness**: Before opening a PR, run the full verification suite (`npm run typecheck/lint/test`, the `check:` gates listed above, and `cargo clippy/fmt/test`) to ensure green status on GitHub Actions.

@@ -1,5 +1,5 @@
-pub mod artifacts;
 pub mod agent_replacement;
+pub mod artifacts;
 mod atomic_file;
 pub mod browser;
 pub mod classes;
@@ -11,6 +11,7 @@ pub mod engine;
 pub mod files;
 pub mod identity;
 pub mod library;
+pub mod limits;
 pub mod memory;
 pub mod models;
 pub mod paths;

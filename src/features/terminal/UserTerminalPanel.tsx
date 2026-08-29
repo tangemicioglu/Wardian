@@ -339,7 +339,7 @@ export function UserTerminalPanel({
           </span>
         )}
         {initError && (
-          <span className="text-xs text-red-400 truncate" title={initError}>
+          <span className="text-xs text-wardian-error truncate" title={initError}>
             {initError}
           </span>
         )}

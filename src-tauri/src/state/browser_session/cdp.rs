@@ -65,7 +65,11 @@ impl std::fmt::Display for CdpError {
         match self {
             CdpError::Disconnected => write!(formatter, "the browser connection is closed"),
             CdpError::Timeout { method } => {
-                write!(formatter, "{method} did not answer within {} seconds", CDP_CALL_TIMEOUT.as_secs())
+                write!(
+                    formatter,
+                    "{method} did not answer within {} seconds",
+                    CDP_CALL_TIMEOUT.as_secs()
+                )
             }
             CdpError::Protocol {
                 method,
@@ -73,7 +77,10 @@ impl std::fmt::Display for CdpError {
                 message,
             } => write!(formatter, "{method} failed ({code}): {message}"),
             CdpError::Malformed { method, detail } => {
-                write!(formatter, "{method} returned an unreadable response: {detail}")
+                write!(
+                    formatter,
+                    "{method} returned an unreadable response: {detail}"
+                )
             }
         }
     }
@@ -93,7 +100,10 @@ struct ProtocolErrorBody {
 ///
 /// Kept free of I/O so the routing rules can be tested directly.
 pub(crate) enum InboundFrame {
-    Reply { id: u64, result: Result<Value, (i64, String)> },
+    Reply {
+        id: u64,
+        result: Result<Value, (i64, String)>,
+    },
     Event(CdpEvent),
     Ignored,
 }
@@ -116,10 +126,7 @@ pub(crate) fn classify_frame(text: &str) -> InboundFrame {
         }
         return InboundFrame::Reply {
             id,
-            result: Ok(value
-                .get("result")
-                .cloned()
-                .unwrap_or_else(|| json!({}))),
+            result: Ok(value.get("result").cloned().unwrap_or_else(|| json!({}))),
         };
     }
     match value.get("method").and_then(Value::as_str) {
@@ -373,13 +380,16 @@ mod tests {
     #[test]
     fn ignores_frames_that_are_neither_replies_nor_events() {
         assert!(matches!(classify_frame("not json"), InboundFrame::Ignored));
-        assert!(matches!(classify_frame(r#"{"hello":1}"#), InboundFrame::Ignored));
+        assert!(matches!(
+            classify_frame(r#"{"hello":1}"#),
+            InboundFrame::Ignored
+        ));
     }
 
     #[test]
     fn required_str_reports_the_missing_field_by_name() {
-        let error = required_str("Target.createTarget", &json!({}), "targetId")
-            .expect_err("missing field");
+        let error =
+            required_str("Target.createTarget", &json!({}), "targetId").expect_err("missing field");
         assert!(error.to_string().contains("missing targetId"));
     }
 

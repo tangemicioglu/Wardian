@@ -426,6 +426,11 @@ summary,
 .bg-wardian-success { background-color: var(--color-wardian-success); }
 .bg-wardian-processing { background-color: var(--color-wardian-processing); }
 .bg-wardian-warning { background-color: var(--color-wardian-warning); }
+/* Foreground counterparts to the status backgrounds, so an error message can
+   be themed instead of reaching for a Tailwind palette class. */
+.text-wardian-error { color: var(--color-wardian-error); }
+.bg-wardian-error-surface { background-color: var(--color-wardian-error); }
+
 .bg-wardian-error { background-color: var(--color-wardian-error); }
 .bg-wardian-off { background-color: var(--color-wardian-off); }
 

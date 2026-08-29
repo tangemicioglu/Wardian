@@ -177,7 +177,9 @@ fn failed_rollover_retains_the_active_handle_for_retry() {
         .expect_err("unsafe archive path must fail rollover");
 
     assert_eq!(
-        archive.active_conversation_id_for_test("agent-1").as_deref(),
+        archive
+            .active_conversation_id_for_test("agent-1")
+            .as_deref(),
         Some("../unsafe-conversation")
     );
 }

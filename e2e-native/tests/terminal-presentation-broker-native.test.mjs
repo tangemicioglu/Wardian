@@ -1,3 +1,4 @@
+// @tier ci — Runs on every pull request. Keep it inside the job budget.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

@@ -190,7 +190,7 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     }
     // `rootKey` is the content of `roots`; the array identity changes on every
     // layout pass and would make this run constantly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [enabled, rootKey]);
 
   const requestListings = useCallback(async function request(paths: readonly string[]) {
@@ -207,13 +207,13 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     const results = await Promise.all(
       wanted.map(async (path): Promise<TerrainListing | null> => {
         try {
-          const result = await invoke<DirectoryTreeResult | FileNode[]>("get_directory_tree", { path });
-          const nodes = Array.isArray(result) ? result : result.nodes;
+          const result = await invoke<DirectoryTreeResult>("get_directory_tree", { path });
+          const nodes = result.nodes;
           return {
             path,
             children: toChildren(nodes ?? []),
-            truncated: Array.isArray(result) ? false : result.truncated,
-            nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
+            truncated: result.truncated,
+            nextOffset: result.next_offset ?? null,
           };
         } catch {
           failed.current.add(path);
@@ -256,11 +256,11 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
     const listing = listingsRef.current.get(path);
     if (!listing?.truncated || listing.nextOffset == null) return;
     try {
-      const result = await invoke<DirectoryTreeResult | FileNode[]>('get_directory_tree', {
+      const result = await invoke<DirectoryTreeResult>('get_directory_tree', {
         path,
         offset: listing.nextOffset,
       });
-      const page = Array.isArray(result) ? result : result.nodes;
+      const page = result.nodes;
       setListings((current) => {
         const existing = current.get(path);
         if (!existing) return current;
@@ -272,8 +272,8 @@ export function useGardenTerrain(options: GardenTerrainOptions): GardenTerrainRe
           children: [...byPath.values()].sort((left, right) =>
             Number(right.isDir) - Number(left.isDir) || left.name.localeCompare(right.name),
           ),
-          truncated: Array.isArray(result) ? false : result.truncated,
-          nextOffset: Array.isArray(result) ? null : result.next_offset ?? null,
+          truncated: result.truncated,
+          nextOffset: result.next_offset ?? null,
         });
         return next;
       });

@@ -12,7 +12,7 @@ function jobDefinition(jobName: string) {
 
   const nextJobOffset = lines
     .slice(start + 1)
-    .findIndex((line) => /^  [a-z0-9-]+:$/.test(line));
+    .findIndex((line) => /^ {2}[a-z0-9-]+:$/.test(line));
   const end = nextJobOffset === -1 ? lines.length : start + 1 + nextJobOffset;
   return lines.slice(start, end).join("\n");
 }
@@ -26,7 +26,7 @@ describe("CI workflow contract", () => {
 
     expect(ciWorkflow).toMatch(/pull_request:\s+branches: \[main\]/);
     for (const requiredJob of [frontend, backend, backendCoverage, docs]) {
-      expect(requiredJob).not.toMatch(/^    if:/m);
+      expect(requiredJob).not.toMatch(/^ {4}if:/m);
     }
     expect(frontend).toContain("run: npm run lint");
     expect(frontend).toContain("run: npm run test");
@@ -67,7 +67,7 @@ describe("CI workflow contract", () => {
     const native = jobDefinition("native-workbench-smoke");
 
     expect(native).toContain("runs-on: windows-latest");
-    expect(native).not.toMatch(/^    if:/m);
+    expect(native).not.toMatch(/^ {4}if:/m);
     expect(native).toContain(
       "WARDIAN_HOME: ${{ github.workspace }}\\.tmp\\e2e-native\\wardian-e2e-native-workbench",
     );
@@ -76,11 +76,10 @@ describe("CI workflow contract", () => {
     );
     expect(native).toContain("run: npm run setup:e2e:native");
     expect(native).toContain("run: npm run tauri -- build --debug --no-bundle");
-    expect(native).toContain("npm run test:e2e:native:fast --");
-    expect(native).toContain("e2e-native/tests/workbench-persistence-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/terminal-presentation-broker-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/workbench-runtime-lifecycle-native.test.mjs");
-    expect(native).toContain("e2e-native/tests/remote-gateway-native.test.mjs");
+    // The job selects a tier rather than naming files, so a new native test
+    // joins CI by declaring `// @tier ci`.
+    expect(native).toContain("run: npm run test:e2e:native:ci");
+    expect(native).not.toMatch(/e2e-native\/tests\/\S+\.test\.mjs/);
     expect(native).not.toContain("${{ runner.temp }}\\wardian-e2e-native-workbench");
     expect(native.match(/WARDIAN_HOME: \$\{\{ github\.workspace \}\}\\\.tmp\\e2e-native\\wardian-e2e-native-workbench/g))
       .toHaveLength(2);

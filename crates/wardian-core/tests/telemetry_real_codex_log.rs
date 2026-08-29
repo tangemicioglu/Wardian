@@ -54,10 +54,7 @@ fn newest_codex_log() -> Option<std::path::PathBuf> {
             let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
                 continue;
             };
-            if newest
-                .as_ref()
-                .is_none_or(|(seen, _)| modified > *seen)
-            {
+            if newest.as_ref().is_none_or(|(seen, _)| modified > *seen) {
                 newest = Some((modified, path));
             }
         }
@@ -165,7 +162,9 @@ fn the_fixture_attributes_turns_and_models() {
     assert_eq!(turns.len(), 4);
     assert_eq!(turns[0].0.as_deref(), Some("turn-001"));
     assert_eq!(turns[3].0.as_deref(), Some("turn-002"));
-    assert!(turns.iter().all(|(_, model)| model.as_deref() == Some("gpt-5.6-terra")));
+    assert!(turns
+        .iter()
+        .all(|(_, model)| model.as_deref() == Some("gpt-5.6-terra")));
 }
 
 #[test]

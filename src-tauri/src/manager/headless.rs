@@ -1,6 +1,4 @@
-use crate::providers::antigravity::{
-    changed_workspace_conversation, AntigravityProvider,
-};
+use crate::providers::antigravity::{changed_workspace_conversation, AntigravityProvider};
 use crate::providers::codex::CodexProvider;
 use crate::providers::opencode::OpenCodeProvider;
 use crate::providers::ProviderFactory;
@@ -347,7 +345,8 @@ pub(crate) fn headless_provider_args(
         "pi" => {
             if let Some(config) = config_override {
                 let mut config = config.clone();
-                let resume_session = resume_session.filter(|session_id| !session_id.trim().is_empty());
+                let resume_session =
+                    resume_session.filter(|session_id| !session_id.trim().is_empty());
                 config.resume_session = resume_session.map(str::to_string);
                 let mut spawn_args = provider.get_spawn_args(&config, resume_session.is_some());
                 spawn_args = strip_flag_value_pairs(spawn_args, "--tui-mode");
@@ -395,9 +394,8 @@ pub async fn run_headless_with_options(
             .resume_session
             .is_none_or(|value| value.trim().is_empty())
     {
-        AntigravityProvider::antigravity_home().and_then(|home| {
-            AntigravityProvider::conversation_for_workspace(&home, options.cwd)
-        })
+        AntigravityProvider::antigravity_home()
+            .and_then(|home| AntigravityProvider::conversation_for_workspace(&home, options.cwd))
     } else {
         None
     };
@@ -473,15 +471,14 @@ pub async fn run_headless_with_options(
             }
         }
     }
-    let memory_runtime_instructions = memory_agent_id
-        .map(|_| {
-            wardian_memory_instructions(
-                memory_setup.as_ref().and_then(|(_, brief)| {
+    let memory_runtime_instructions =
+        memory_agent_id
+            .map(|_| {
+                wardian_memory_instructions(memory_setup.as_ref().and_then(|(_, brief)| {
                     (!brief.is_empty).then_some(brief.context_text.as_str())
-                }),
-            )
-        })
-        .unwrap_or_default();
+                }))
+            })
+            .unwrap_or_default();
     let (bin, _) = provider.get_executable();
     let claude_hook = if provider_name == "claude" {
         ensure_claude_permission_hook(wardian_session_id).ok()
@@ -770,9 +767,8 @@ pub async fn run_headless_with_options(
             .filter(|value| !value.trim().is_empty())
             .map(str::to_string)
             .or_else(|| {
-                let after = AntigravityProvider::antigravity_home().and_then(|home| {
-                    AntigravityProvider::conversation_for_workspace(&home, cwd)
-                });
+                let after = AntigravityProvider::antigravity_home()
+                    .and_then(|home| AntigravityProvider::conversation_for_workspace(&home, cwd));
                 changed_workspace_conversation(
                     antigravity_workspace_before.as_deref(),
                     after.as_deref(),
@@ -840,7 +836,8 @@ fn normalize_pi_headless_output(
             _ => {}
         }
     }
-    let response = response.ok_or_else(|| "Pi completed without an assistant response".to_string())?;
+    let response =
+        response.ok_or_else(|| "Pi completed without an assistant response".to_string())?;
     if output_format == "json" {
         Ok(serde_json::json!({
             "session_id": session_id,
@@ -1121,11 +1118,7 @@ pub async fn obtain_session_id(
     };
 
     if provider_name == "codex" {
-        append_codex_bootstrap_args(
-            &mut provider_args,
-            &provider_cwd,
-            config,
-        );
+        append_codex_bootstrap_args(&mut provider_args, &provider_cwd, config);
     } else if provider_name == "opencode" {
         provider_args.push("run".to_string());
         if let Some(config) = config {
@@ -1167,9 +1160,8 @@ pub async fn obtain_session_id(
     for arg in &launch_spec.args {
         cmd.arg(arg);
     }
-    let _memory_capability = bootstrap_session_id.and_then(|session_id| {
-        apply_headless_identity_env(&mut cmd, session_id, Some(session_id))
-    });
+    let _memory_capability = bootstrap_session_id
+        .and_then(|session_id| apply_headless_identity_env(&mut cmd, session_id, Some(session_id)));
     super::apply_managed_cli_path_to_process(&mut cmd);
     super::apply_process_provider_runtime_env(provider_name, &mut cmd)?;
 
@@ -1304,11 +1296,7 @@ pub async fn obtain_session_id(
                     provider: provider_name.to_string(),
                     ..Default::default()
                 });
-                super::apply_provider_identity(
-                    provider_name,
-                    &mut identity_config,
-                    candidate,
-                )?;
+                super::apply_provider_identity(provider_name, &mut identity_config, candidate)?;
             }
             if session_id_res.is_none() && !stderr_output.trim().is_empty() {
                 log_debug(&format!(
@@ -2119,10 +2107,10 @@ mod tests {
         let home = tempfile::tempdir().expect("Codex home");
         let cwd = Path::new("D:/Development/Wardian");
 
-        let session_id = materialize_codex_session_rollout(home.path(), cwd)
-            .expect("materialize Codex rollout");
-        let rollout_path = codex_session_file_path_in(home.path(), &session_id)
-            .expect("locate Codex rollout");
+        let session_id =
+            materialize_codex_session_rollout(home.path(), cwd).expect("materialize Codex rollout");
+        let rollout_path =
+            codex_session_file_path_in(home.path(), &session_id).expect("locate Codex rollout");
         let rollout: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(rollout_path).expect("read Codex rollout"),
         )
@@ -2184,9 +2172,8 @@ mod tests {
         .expect("write unrestricted Codex policy");
 
         let cwd = Path::new("D:/Development/Wardian");
-        let config =
-            effective_headless_provider_config("codex", cwd, "agent-1", None, None, None)
-                .expect("temporary Codex worker config");
+        let config = effective_headless_provider_config("codex", cwd, "agent-1", None, None, None)
+            .expect("temporary Codex worker config");
         let provider = crate::providers::ProviderFactory::resolve("codex").unwrap();
         let args = headless_provider_args(
             "codex",
@@ -2199,8 +2186,9 @@ mod tests {
         );
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
-        assert!(args[..exec_index]
-            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(
+            args[..exec_index].contains(&"--dangerously-bypass-approvals-and-sandbox".to_string())
+        );
         assert!(!args.contains(&"--sandbox".to_string()));
         assert!(!args.contains(&"--ask-for-approval".to_string()));
         assert_eq!(config.folder, cwd.to_string_lossy());
@@ -2402,11 +2390,7 @@ mod tests {
         };
         let mut args = Vec::new();
 
-        append_codex_bootstrap_args(
-            &mut args,
-            Path::new("/workspace"),
-            Some(&config),
-        );
+        append_codex_bootstrap_args(&mut args, Path::new("/workspace"), Some(&config));
 
         let exec_index = args.iter().position(|arg| arg == "exec").unwrap();
         let policy_index = args
@@ -2712,18 +2696,16 @@ mod tests {
         }));
         let capability = envs
             .iter()
-            .find(|(key, _)| {
-                key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV
-            })
+            .find(|(key, _)| key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV)
             .and_then(|(_, value)| *value)
             .expect("memory capability")
             .to_string_lossy();
-        assert!(wardian_core::memory::MemoryStore::open(
-            test_home._home.path().join("memory.db")
-        )
-        .unwrap()
-        .validate_capability("wardian-session-123", &capability)
-        .unwrap());
+        assert!(
+            wardian_core::memory::MemoryStore::open(test_home._home.path().join("memory.db"))
+                .unwrap()
+                .validate_capability("wardian-session-123", &capability)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2731,8 +2713,7 @@ mod tests {
         let test_home = TestWardianHome::new();
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        let capability =
-            apply_headless_identity_env(&mut cmd, "workflow-bg-temporary-node", None);
+        let capability = apply_headless_identity_env(&mut cmd, "workflow-bg-temporary-node", None);
 
         assert!(capability.is_none());
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
@@ -2823,7 +2804,9 @@ mod tests {
 
         assert!(!args.contains(&"--tui-mode".to_string()));
         assert!(args.windows(2).any(|pair| pair == ["--mode", "json"]));
-        assert!(args.windows(2).any(|pair| pair == ["--session-id", "pi-session"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", "pi-session"]));
         assert_eq!(args.last().map(String::as_str), Some("say hello"));
     }
 

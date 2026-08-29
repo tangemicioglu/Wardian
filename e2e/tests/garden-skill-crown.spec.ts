@@ -145,11 +145,11 @@ async function installCrownIpcMock(page: Page) {
         }
         if (command === "list_workflows") return [];
         if (command === "workflow_list_blueprints") {
-          return [
+          return { blueprints: [
             { id: "trident-alerts", path: "/w/library/workflows/trident/trident-alerts.md" },
             { id: "trident-scan", path: "/w/library/workflows/trident/trident-scan.md" },
             { id: "autoreview", path: "/w/library/workflows/autoreview.md" },
-          ];
+          ], truncated: false, next_offset: null };
         }
         if (command === "workflow_parse") {
           const path = String(args?.path ?? "");
@@ -179,7 +179,7 @@ async function installCrownIpcMock(page: Page) {
             },
           };
         }
-        if (command === "workflow_list_runs") return [];
+        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
         if (command === "list_scheduled_runs") return [];
         if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
         if (command === "get_library_tree") {

@@ -55,18 +55,3 @@ export const useAgentTelemetryStore = create<AgentTelemetryState>(() => ({
 export function resetAgentTelemetryStore(): void {
   useAgentTelemetryStore.setState({ ...INITIAL_STATE }, true);
 }
-
-/** One agent's metrics. Re-renders the caller only when that agent's row moves. */
-export function useAgentTelemetryFor(sessionId: string): AgentTelemetry | undefined {
-  return useAgentTelemetryStore((state) => state.telemetry[sessionId]);
-}
-
-/** One agent's current progress line. */
-export function useCurrentThoughtFor(sessionId: string): string {
-  return useAgentTelemetryStore((state) => state.current_thoughts[sessionId] ?? "");
-}
-
-/** One agent's terminal-reported title. */
-export function useTerminalTitleFor(sessionId: string): string {
-  return useAgentTelemetryStore((state) => state.terminal_titles[sessionId] ?? "");
-}

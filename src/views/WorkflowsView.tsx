@@ -682,11 +682,10 @@ async function resolveScheduleBlueprint(schedule: WorkflowSchedule, currentBluep
     let ref: BlueprintRef | null = null;
     while (!ref) {
       const result = offset > 0
-        ? await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints', { offset })
-        : await invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints');
-      const refs = Array.isArray(result) ? result : result.blueprints;
-      ref = refs.find((candidate) => candidate.id === schedule.blueprint_id) ?? null;
-      if (ref || Array.isArray(result) || !result.next_offset) break;
+        ? await invoke<BlueprintListResult>('workflow_list_blueprints', { offset })
+        : await invoke<BlueprintListResult>('workflow_list_blueprints');
+      ref = result.blueprints.find((candidate) => candidate.id === schedule.blueprint_id) ?? null;
+      if (ref || !result.next_offset) break;
       offset = result.next_offset;
     }
     if (!ref) {

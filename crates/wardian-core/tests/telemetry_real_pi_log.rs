@@ -212,7 +212,10 @@ fn a_real_pi_log_still_reports_usage_the_way_this_parser_reads_it() {
 
     let usage = declared_usage(&path);
     if usage.is_empty() {
-        eprintln!("real pi log {} carries no usage yet; skipping", path.display());
+        eprintln!(
+            "real pi log {} carries no usage yet; skipping",
+            path.display()
+        );
         return;
     }
 
@@ -224,7 +227,10 @@ fn a_real_pi_log_still_reports_usage_the_way_this_parser_reads_it() {
             field("output"),
             field("cacheRead"),
         ) else {
-            panic!("real pi log {} changed its usage shape: {entry}", path.display());
+            panic!(
+                "real pi log {} changed its usage shape: {entry}",
+                path.display()
+            );
         };
         assert_eq!(
             total,

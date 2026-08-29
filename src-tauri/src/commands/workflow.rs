@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use wardian_core::control::WorkflowRunResponse;
 use wardian_core::engine::store::{read_checkpoint, read_events};
 use wardian_core::engine::RunStatus;
+use wardian_core::limits::{MAX_WORKFLOW_BLUEPRINTS, MAX_WORKFLOW_RUNS};
 use wardian_core::models::{
     InvocationKind, WorkflowAssignments, WorkflowRoleAssignment, WorkflowSchedule,
 };
@@ -95,8 +96,6 @@ pub fn workflow_write(path: String, mut blueprint: Blueprint) -> Result<serde_js
     Ok(serde_json::json!({ "written": true, "diagnostics": [] }))
 }
 
-pub const MAX_WORKFLOW_BLUEPRINTS: usize = 500;
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkflowBlueprintListResult {
     pub blueprints: Vec<serde_json::Value>,
@@ -134,7 +133,6 @@ pub fn workflow_list_blueprints(
 
 /// List the 200 newest workflow runs under
 /// `<home>/logs/workflows/<id>/<run_id>/`.
-pub const MAX_WORKFLOW_RUNS: usize = 200;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkflowRunListResult {
@@ -222,73 +220,6 @@ where
             .collect(),
         truncated,
         next_offset: truncated.then_some(page_end),
-    })
-}
-
-#[cfg(test)]
-fn workflow_list_runs_from_root<F>(
-    root: &Path,
-    mut resolve_blueprint_path: F,
-) -> Result<WorkflowRunListResult, String>
-where
-    F: FnMut(&str) -> Option<PathBuf>,
-{
-    let mut out = Vec::new();
-    let mut truncated = false;
-    if !root.exists() {
-        return Ok(WorkflowRunListResult {
-            runs: out,
-            truncated,
-            next_offset: None,
-        });
-    }
-    let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
-
-    for bp in std::fs::read_dir(root)
-        .map_err(|e| e.to_string())?
-        .flatten()
-    {
-        if !bp.path().is_dir() {
-            continue;
-        }
-        for run in std::fs::read_dir(bp.path())
-            .map_err(|e| e.to_string())?
-            .flatten()
-        {
-            let dir = run.path();
-            if !dir.is_dir() {
-                continue;
-            }
-            let Some(state) = read_checkpoint(&dir).ok().flatten() else {
-                continue;
-            };
-            let blueprint_path = blueprint_paths
-                .entry(state.blueprint_id.clone())
-                .or_insert_with(|| resolve_blueprint_path(&state.blueprint_id));
-            out.push(run_summary_from_state(
-                &dir,
-                state,
-                blueprint_path.as_deref(),
-            ));
-            out.sort_by(compare_run_summaries);
-            if out.len() > MAX_WORKFLOW_RUNS {
-                out.pop();
-                truncated = true;
-                let retained_blueprints: HashSet<String> = out
-                    .iter()
-                    .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
-                    .map(ToOwned::to_owned)
-                    .collect();
-                blueprint_paths
-                    .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
-            }
-        }
-    }
-
-    Ok(WorkflowRunListResult {
-        runs: out,
-        truncated,
-        next_offset: truncated.then_some(MAX_WORKFLOW_RUNS),
     })
 }
 
@@ -1183,7 +1114,7 @@ mod tests {
             write_checkpoint(&run_root, &RunState::new(format!("run-{index:04}"), "wf")).unwrap();
         }
 
-        let result = workflow_list_runs_from_root(&root, |_| None).unwrap();
+        let result = workflow_list_runs_page_from_root(&root, |_| None, 0).unwrap();
 
         assert!(result.truncated);
         assert_eq!(result.runs.len(), MAX_WORKFLOW_RUNS);
@@ -1349,15 +1280,19 @@ edges:
         }
         let resolve_count = std::cell::Cell::new(0);
 
-        let result = workflow_list_runs_from_root(&root, |blueprint_id| {
-            resolve_count.set(resolve_count.get() + 1);
-            Some(
-                dir.path()
-                    .join("library")
-                    .join("workflows")
-                    .join(format!("{blueprint_id}.md")),
-            )
-        })
+        let result = workflow_list_runs_page_from_root(
+            &root,
+            |blueprint_id| {
+                resolve_count.set(resolve_count.get() + 1);
+                Some(
+                    dir.path()
+                        .join("library")
+                        .join("workflows")
+                        .join(format!("{blueprint_id}.md")),
+                )
+            },
+            0,
+        )
         .unwrap();
 
         assert_eq!(result.runs.len(), 3);

@@ -122,9 +122,8 @@ pub fn handle_browser(args: BrowserArgs) -> Result<String, CliError> {
             // directory is what makes `wardian browser open` with no arguments
             // land on the right page instead of a blank one.
             let workspace = workspace.or_else(working_directory);
-            let summary =
-                live::browser_open(url, owner, workspace, width, height, detached, blank)
-                    .map_err(crate::control_error)?;
+            let summary = live::browser_open(url, owner, workspace, width, height, detached, blank)
+                .map_err(crate::control_error)?;
             emit_summary(&summary, json)
         }
         BrowserCommand::List => {
@@ -177,7 +176,8 @@ fn handle_target(
             emit_summary(&summary, json)
         }
         BrowserTargetCommand::Get { field, selector } => {
-            let result = live::browser_get(target, &field, selector).map_err(crate::control_error)?;
+            let result =
+                live::browser_get(target, &field, selector).map_err(crate::control_error)?;
             if json {
                 return json_envelope("result", &result);
             }
@@ -263,8 +263,8 @@ fn handle_target(
             ))
         }
         BrowserTargetCommand::Console { level, clear } => {
-            let entries = live::browser_console(target, level, clear)
-                .map_err(crate::control_error)?;
+            let entries =
+                live::browser_console(target, level, clear).map_err(crate::control_error)?;
             emit_console(&entries, json)
         }
         BrowserTargetCommand::Network {
@@ -316,7 +316,8 @@ fn handle_target(
         }
         BrowserTargetCommand::Storage { area, command } => {
             let (area, action) = storage_action(&area, command)?;
-            let value = live::browser_storage(target, area, action).map_err(crate::control_error)?;
+            let value =
+                live::browser_storage(target, area, action).map_err(crate::control_error)?;
             let outcome: StorageOutcome = serde_json::from_value(value)
                 .map_err(|error| CliError::generic(error.to_string()))?;
             emit_storage(&outcome, json)
@@ -398,9 +399,7 @@ pub fn cookie_action(
 ) -> Result<CookieAction, CliError> {
     match command {
         None => Ok(CookieAction::List { all }),
-        Some(_) if all => Err(CliError::generic(
-            "--all only applies to listing cookies",
-        )),
+        Some(_) if all => Err(CliError::generic("--all only applies to listing cookies")),
         Some(BrowserCookieCommand::Set {
             name,
             value,
@@ -446,7 +445,9 @@ pub fn storage_action(
     command: Option<BrowserStorageCommand>,
 ) -> Result<(StorageArea, StorageAction), CliError> {
     let parsed = StorageArea::parse(area).ok_or_else(|| {
-        CliError::generic(format!("{area} is not a storage area; use local or session"))
+        CliError::generic(format!(
+            "{area} is not a storage area; use local or session"
+        ))
     })?;
     let action = match command {
         None => StorageAction::Get { key: None },
@@ -509,9 +510,7 @@ pub fn parse_viewport_args(
 ) -> Result<(Option<u32>, Option<u32>, bool), CliError> {
     match (width, height) {
         (Some("reset"), None) => Ok((None, None, true)),
-        (Some("reset"), Some(_)) => Err(CliError::generic(
-            "viewport reset does not take a height",
-        )),
+        (Some("reset"), Some(_)) => Err(CliError::generic("viewport reset does not take a height")),
         (Some(width), Some(height)) => {
             let parsed: u32 = width.parse().map_err(|_| {
                 CliError::generic(format!("{width} is not a viewport width in pixels"))
@@ -541,8 +540,8 @@ mod tests {
 
     #[test]
     fn splits_a_target_from_its_verb() {
-        let (target, rest) = split_target_invocation(&tokens(&["browser:2", "click", "e3"]))
-            .expect("split");
+        let (target, rest) =
+            split_target_invocation(&tokens(&["browser:2", "click", "e3"])).expect("split");
         assert_eq!(target, "browser:2");
         assert_eq!(rest, tokens(&["click", "e3"]));
     }
@@ -567,8 +566,9 @@ mod tests {
 
     #[test]
     fn target_verbs_parse_from_the_remaining_tokens() {
-        let parsed = BrowserTargetArgs::try_parse_from(tokens(&["click", "e2", "--snapshot-after"]))
-            .expect("parse");
+        let parsed =
+            BrowserTargetArgs::try_parse_from(tokens(&["click", "e2", "--snapshot-after"]))
+                .expect("parse");
         match parsed.command {
             BrowserTargetCommand::Click {
                 element_ref,
@@ -639,7 +639,9 @@ mod tests {
 
     #[test]
     fn an_empty_console_says_so_instead_of_printing_nothing() {
-        assert!(emit_console(&[], false).expect("render").contains("no console messages"));
+        assert!(emit_console(&[], false)
+            .expect("render")
+            .contains("no console messages"));
         let json = emit_console(&[], true).expect("render");
         assert!(json.contains("\"console\""));
     }
@@ -722,8 +724,8 @@ mod tests {
             } => assert!(request_id.is_none() && !clear && filter.is_none()),
             other => panic!("expected network, got {other:?}"),
         }
-        let action =
-            network_action(None, false, None, None, None, None, false, None, false).expect("action");
+        let action = network_action(None, false, None, None, None, None, false, None, false)
+            .expect("action");
         assert_eq!(
             action,
             NetworkAction::List {
@@ -761,9 +763,18 @@ mod tests {
 
     #[test]
     fn an_unreadable_status_names_both_accepted_forms() {
-        let error =
-            network_action(None, false, None, None, Some("okay"), None, false, None, false)
-                .expect_err("rejected");
+        let error = network_action(
+            None,
+            false,
+            None,
+            None,
+            Some("okay"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .expect_err("rejected");
         assert!(error.message.contains("404"));
         assert!(error.message.contains("2xx"));
     }
@@ -998,15 +1009,20 @@ mod tests {
     fn open_refuses_blank_alongside_an_address() {
         // Asking for a page and for no page is not a preference to resolve.
         let parsed = crate::args::Cli::try_parse_from(tokens(&[
-            "wardian", "browser", "open", "https://example.com/", "--blank",
+            "wardian",
+            "browser",
+            "open",
+            "https://example.com/",
+            "--blank",
         ]));
         assert!(parsed.is_err());
     }
 
     #[test]
     fn open_accepts_blank_on_its_own() {
-        let parsed = crate::args::Cli::try_parse_from(tokens(&["wardian", "browser", "open", "--blank"]))
-            .expect("parse");
+        let parsed =
+            crate::args::Cli::try_parse_from(tokens(&["wardian", "browser", "open", "--blank"]))
+                .expect("parse");
         match parsed.command {
             crate::args::Command::Browser(args) => match args.command {
                 BrowserCommand::Open { url, blank, .. } => {

@@ -44,7 +44,12 @@ impl InteractionState {
         body_ref: InteractionBodyRef,
     ) -> InteractionRecord {
         let _mutation = self.mutation_lock.lock().await;
-        if self.deleted_sessions.lock().await.contains(&target_session_id) {
+        if self
+            .deleted_sessions
+            .lock()
+            .await
+            .contains(&target_session_id)
+        {
             return rejected_task_record(id, sender_session_id, target_session_id, body_ref);
         }
         let now = now_rfc3339_millis();
@@ -365,7 +370,8 @@ impl InteractionState {
         notification_id: &str,
     ) -> Option<InteractionRecord> {
         let _mutation = self.mutation_lock.lock().await;
-        self.expire_notification_if_needed_locked(notification_id).await
+        self.expire_notification_if_needed_locked(notification_id)
+            .await
     }
 
     async fn expire_notification_if_needed_locked(
@@ -425,7 +431,12 @@ impl InteractionState {
             reason,
             error,
         );
-        if !self.deleted_sessions.lock().await.contains(target_session_id) {
+        if !self
+            .deleted_sessions
+            .lock()
+            .await
+            .contains(target_session_id)
+        {
             let _ = wardian_core::db::upsert_interaction_delivery_attempt(&attempt);
         }
         attempt
@@ -458,7 +469,12 @@ impl InteractionState {
             reason,
             error,
         );
-        if self.deleted_sessions.lock().await.contains(target_session_id) {
+        if self
+            .deleted_sessions
+            .lock()
+            .await
+            .contains(target_session_id)
+        {
             return Err(format!("agent has been deleted: {target_session_id}"));
         }
         wardian_core::db::upsert_interaction_delivery_attempt(&attempt)
@@ -1602,7 +1618,8 @@ mod reply_tests {
         assert!(!wardian_core::db::list_interaction_records()
             .unwrap()
             .iter()
-            .any(|record| record.parent_interaction_id.as_deref() == Some(anonymous_task.id.as_str())));
+            .any(|record| record.parent_interaction_id.as_deref()
+                == Some(anonymous_task.id.as_str())));
         assert_eq!(
             state
                 .complete_task_with_reply(&task.id, Some("agent-target"), ReplyStatus::Done, "late")
@@ -1681,10 +1698,12 @@ mod reply_tests {
         drop(mutation);
         delivery_write.await.unwrap();
         deletion.await.unwrap().unwrap();
-        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
-            .unwrap()
-            .iter()
-            .all(|attempt| attempt.target_session_id != "agent-delete"));
+        assert!(
+            wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+                .unwrap()
+                .iter()
+                .all(|attempt| attempt.target_session_id != "agent-delete")
+        );
         assert!(state
             .create_message_durable(
                 None,
@@ -1722,11 +1741,7 @@ mod reply_tests {
             .await;
         assert_eq!(provider_state.session_id, "agent-delete");
         state
-            .start_provider_input_generation(
-                "agent-delete",
-                ProviderInputReadiness::Booting,
-                None,
-            )
+            .start_provider_input_generation("agent-delete", ProviderInputReadiness::Booting, None)
             .await;
         state
             .record_provider_input_status_observation(
@@ -1772,10 +1787,12 @@ mod reply_tests {
             .unwrap()
             .iter()
             .all(|record| record.session_id != "agent-delete"));
-        assert!(wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
-            .unwrap()
-            .iter()
-            .all(|attempt| attempt.target_session_id != "agent-delete"));
+        assert!(
+            wardian_core::db::list_interaction_delivery_attempts("interaction-delete")
+                .unwrap()
+                .iter()
+                .all(|attempt| attempt.target_session_id != "agent-delete")
+        );
 
         match previous_home {
             Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },

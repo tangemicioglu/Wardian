@@ -1,3 +1,4 @@
+// @tier ci — Runs on every pull request. Keep it inside the job budget.
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";

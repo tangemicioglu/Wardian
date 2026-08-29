@@ -123,10 +123,22 @@ mod tests {
     #[test]
     fn section_roots_resolve_under_home() {
         let home = Path::new("/tmp/wh");
-        assert_eq!(LibrarySectionId::Skills.root_for_home(home), home.join("library").join("skills"));
-        assert_eq!(LibrarySectionId::Prompts.root_for_home(home), home.join("library").join("prompts"));
-        assert_eq!(LibrarySectionId::Workflows.root_for_home(home), home.join("library").join("workflows"));
-        assert_eq!(LibrarySectionId::Classes.root_for_home(home), home.join("classes"));
+        assert_eq!(
+            LibrarySectionId::Skills.root_for_home(home),
+            home.join("library").join("skills")
+        );
+        assert_eq!(
+            LibrarySectionId::Prompts.root_for_home(home),
+            home.join("library").join("prompts")
+        );
+        assert_eq!(
+            LibrarySectionId::Workflows.root_for_home(home),
+            home.join("library").join("workflows")
+        );
+        assert_eq!(
+            LibrarySectionId::Classes.root_for_home(home),
+            home.join("classes")
+        );
     }
 
     #[test]
@@ -150,9 +162,16 @@ mod tests {
     #[test]
     fn resolve_entry_path_rejects_reserved_names() {
         let home = Path::new("/tmp/wh");
-        assert!(resolve_entry_path(home, LibrarySectionId::Skills, "dev/.wardian-skill-source").is_err());
-        assert!(resolve_entry_path(home, LibrarySectionId::Skills, "dev/.Wardian-Skill-Source").is_err());
-        assert!(resolve_entry_path(home, LibrarySectionId::Mcps, "anything").is_err()); // stubbed section: no paths
+        assert!(
+            resolve_entry_path(home, LibrarySectionId::Skills, "dev/.wardian-skill-source")
+                .is_err()
+        );
+        assert!(
+            resolve_entry_path(home, LibrarySectionId::Skills, "dev/.Wardian-Skill-Source")
+                .is_err()
+        );
+        assert!(resolve_entry_path(home, LibrarySectionId::Mcps, "anything").is_err());
+        // stubbed section: no paths
     }
 
     #[test]

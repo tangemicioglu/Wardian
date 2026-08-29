@@ -1,3 +1,4 @@
+import { notificationPage } from "../test/pageFixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { useQueueStore } from "./useQueueStore";
@@ -645,7 +646,7 @@ describe("useQueueStore - persistence", () => {
         }]);
       }
       if (command === "list_inbox_notifications") {
-        return Promise.resolve([{
+        return Promise.resolve(notificationPage([{
           id: "notice-1",
           kind: "update",
           sender_session_id: "agent-1",
@@ -663,7 +664,7 @@ describe("useQueueStore - persistence", () => {
           body: "This has not been read yet.",
           choices: [],
           created_at: new Date(timestamp).toISOString(),
-        }]);
+        }]));
       }
       return Promise.resolve([]);
     });

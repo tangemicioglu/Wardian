@@ -15,11 +15,11 @@ export function BlueprintSelector({ selectedPath, onOpen, onNew }: BlueprintSele
   const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
-    void invoke<BlueprintListResult | BlueprintRef[]>('workflow_list_blueprints')
+    void invoke<BlueprintListResult>('workflow_list_blueprints')
       .then((result) => {
-        setBlueprints(Array.isArray(result) ? result : result.blueprints);
-        setBlueprintsTruncated(!Array.isArray(result) && result.truncated);
-        setNextOffset(Array.isArray(result) ? null : result.next_offset ?? null);
+        setBlueprints(result.blueprints);
+        setBlueprintsTruncated(result.truncated);
+        setNextOffset(result.next_offset ?? null);
       })
       .catch(() => {
         setBlueprints([]);

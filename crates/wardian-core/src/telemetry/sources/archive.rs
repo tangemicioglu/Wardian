@@ -325,12 +325,20 @@ mod tests {
         let line = r#"{"turn_key":"t1","updated_at":"2026-07-22T14:59:30.000Z","files":{"written":["a.rs"]}}"#;
         let (facts, cursor) = parse_turns(&ctx(), line, 0, now());
         assert!(facts.turns.is_empty());
-        assert_eq!(cursor.value, 0, "an unsettled turn must not move the cursor");
+        assert_eq!(
+            cursor.value, 0,
+            "an unsettled turn must not move the cursor"
+        );
     }
 
     #[test]
     fn turns_already_consumed_are_not_read_again() {
-        let (facts, _) = parse_turns(&ctx(), TURN, epoch_ms("2026-07-22T14:33:20.174Z").unwrap(), now());
+        let (facts, _) = parse_turns(
+            &ctx(),
+            TURN,
+            epoch_ms("2026-07-22T14:33:20.174Z").unwrap(),
+            now(),
+        );
         assert!(facts.turns.is_empty());
     }
 

@@ -71,6 +71,7 @@ export type BrowserScreencastAttachment = {
   can_drive: boolean;
 };
 
+/** @ipcContract Mirrors the Rust browser engine status DTO. No TypeScript client reads it today. */
 export type BrowserEngineStatus = {
   available: boolean;
   engine?: string;

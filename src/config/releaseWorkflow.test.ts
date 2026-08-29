@@ -105,7 +105,7 @@ describe("release workflow contract", () => {
     expect(releaseWorkflow).toContain("Verify macOS release artifacts");
     expect(releaseWorkflow).toContain("NOTARIZATION_REQUIRED: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != 'true' }}");
     expect(releaseWorkflow).toContain('if [[ "$NOTARIZATION_REQUIRED" == "true" ]]; then');
-    const dryRunBuild = releaseWorkflow.match(/- name: Build \(dry run\)[\s\S]*?(?=      - name: Notarize and replace final macOS DMGs)/)?.[0];
+    const dryRunBuild = releaseWorkflow.match(/- name: Build \(dry run\)[\s\S]*?(?= {6}- name: Notarize and replace final macOS DMGs)/)?.[0];
     expect(dryRunBuild).toBeDefined();
     const dryRunBuildText = dryRunBuild ?? "";
     expect(dryRunBuildText).not.toContain("APPLE_ID:");

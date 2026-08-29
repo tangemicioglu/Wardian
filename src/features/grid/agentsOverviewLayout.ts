@@ -88,7 +88,6 @@ export const CHAT_CARD_PREFERRED: Readonly<AgentsOverviewCardFloor> = Object.fre
   height: 450,
 });
 
-export const AGENTS_OVERVIEW_CARD_CHROME_HEIGHT = 52;
 export const AGENTS_OVERVIEW_RESIZE_DEBOUNCE_MS = 120;
 export const AGENTS_OVERVIEW_SCORE_IMPROVEMENT_THRESHOLD = 0.1;
 export const DEFAULT_AGENTS_OVERVIEW_GAP = 6;

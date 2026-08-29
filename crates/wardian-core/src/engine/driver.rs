@@ -523,7 +523,10 @@ async fn run_side_effect(
                     "memory_commit source node `{source_node}` has no output"
                 ))
             })?;
-            let trigger_output = s.registry.get("trigger").and_then(|value| value.get("output"));
+            let trigger_output = s
+                .registry
+                .get("trigger")
+                .and_then(|value| value.get("output"));
             let trigger_string = |field: &str| {
                 trigger_output
                     .and_then(|value| value.get(field))

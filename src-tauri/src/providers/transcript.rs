@@ -42,7 +42,14 @@ fn extract_pi(raw_line: &str) -> Option<WatchTranscriptMessage> {
             .get("id")
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        source: Some(if kind == "message" { "session_jsonl" } else { "json_mode" }.into()),
+        source: Some(
+            if kind == "message" {
+                "session_jsonl"
+            } else {
+                "json_mode"
+            }
+            .into(),
+        ),
     })
 }
 

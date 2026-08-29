@@ -360,11 +360,7 @@ impl MemoryStore {
         )? > 0)
     }
 
-    pub fn validate_capability(
-        &self,
-        agent_id: &str,
-        token: &str,
-    ) -> Result<bool, MemoryError> {
+    pub fn validate_capability(&self, agent_id: &str, token: &str) -> Result<bool, MemoryError> {
         let agent_id = required("agent_id", agent_id)?;
         let token = required("memory capability", token)?;
         let token_hash = hash_text(&token);
@@ -875,8 +871,9 @@ impl MemoryStore {
         let mut canonical_batch = batch;
         for mutation in &mut canonical_batch.operations {
             let memory_id = match mutation {
-                MemoryMutation::Update { memory_id, .. }
-                | MemoryMutation::Remove { memory_id } => memory_id,
+                MemoryMutation::Update { memory_id, .. } | MemoryMutation::Remove { memory_id } => {
+                    memory_id
+                }
                 MemoryMutation::Save { .. } => continue,
             };
             *memory_id = resolve_memory_id(
@@ -907,12 +904,7 @@ impl MemoryStore {
         }
 
         if let Some(cursor) = &canonical_batch.cursor {
-            advance_consolidation_cursor(
-                &transaction,
-                &agent_id,
-                workspace.as_deref(),
-                cursor,
-            )?;
+            advance_consolidation_cursor(&transaction, &agent_id, workspace.as_deref(), cursor)?;
         }
 
         let mut memory_ids = Vec::new();
@@ -1212,11 +1204,8 @@ fn advance_consolidation_cursor(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let cursor_key = canonical_consolidation_cursor_key(
-        agent_id,
-        workspace,
-        conversation_id.as_deref(),
-    );
+    let cursor_key =
+        canonical_consolidation_cursor_key(agent_id, workspace, conversation_id.as_deref());
     let existing = transaction
         .query_row(
             "SELECT agent_id, conversation_id, sequence
@@ -1707,11 +1696,7 @@ mod tests {
             primary: true,
         });
         let first = store.save(&MemoryActor::Operator, create).unwrap();
-        let expected_workspace = if cfg!(windows) {
-            "c:/work"
-        } else {
-            "C:\\Work"
-        };
+        let expected_workspace = if cfg!(windows) { "c:/work" } else { "C:\\Work" };
         assert_eq!(first.workspace.as_deref(), Some(expected_workspace));
         assert_eq!(first.sources.len(), 1);
         let second = store
@@ -1828,8 +1813,14 @@ mod tests {
 
     #[test]
     fn workspace_normalization_preserves_platform_roots_and_posix_backslashes() {
-        assert_eq!(normalize_workspace_for(Some("/"), false).as_deref(), Some("/"));
-        assert_eq!(normalize_workspace_for(Some("//"), false).as_deref(), Some("//"));
+        assert_eq!(
+            normalize_workspace_for(Some("/"), false).as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            normalize_workspace_for(Some("//"), false).as_deref(),
+            Some("//")
+        );
         assert_eq!(
             normalize_workspace_for(Some("project\\data"), false).as_deref(),
             Some("project\\data")
@@ -1855,8 +1846,7 @@ mod tests {
             Some("c:/repo")
         );
         assert_eq!(
-            normalize_workspace_for(Some("\\\\?\\UNC\\Server\\Share\\Folder\\"), true)
-                .as_deref(),
+            normalize_workspace_for(Some("\\\\?\\UNC\\Server\\Share\\Folder\\"), true).as_deref(),
             Some("//server/share/folder")
         );
     }
@@ -2295,8 +2285,11 @@ mod tests {
         let path = temp.path().join("memory.db");
         let newer_store = MemoryStore::open(&path).unwrap();
         let stale_store = MemoryStore::open(&path).unwrap();
-        let batch =
-            |idempotency_key: &str, cursor_key: &str, conversation_id: &str, sequence: u64, text: &str| MemoryCommitBatch {
+        let batch = |idempotency_key: &str,
+                     cursor_key: &str,
+                     conversation_id: &str,
+                     sequence: u64,
+                     text: &str| MemoryCommitBatch {
             agent_id: "agent-a".into(),
             workspace: Some("one".into()),
             idempotency_key: idempotency_key.into(),
@@ -2417,9 +2410,7 @@ mod tests {
         let store = MemoryStore::open(temp.path().join("memory.db")).unwrap();
         let mut peer_request = request("agent-b", Some("one"), "Peer-only preference");
         peer_request.idempotency_key = Some("peer-idempotency-key".into());
-        let peer = store
-            .save(&MemoryActor::Operator, peer_request)
-            .unwrap();
+        let peer = store.save(&MemoryActor::Operator, peer_request).unwrap();
         let actor = MemoryActor::agent("agent-a");
 
         assert!(matches!(

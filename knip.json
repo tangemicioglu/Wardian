@@ -1,0 +1,17 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/test/setup.ts",
+    "src/**/*.test.{ts,tsx}",
+    "e2e/**/*.{ts,tsx}",
+    "e2e-native/**/*.mjs",
+    "scripts/**/*.mjs"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx}"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "tags": [
+    "-ipcContract"
+  ]
+}

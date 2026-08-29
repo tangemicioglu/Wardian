@@ -442,7 +442,10 @@ mod tests {
         let roots = prefixes(&["D:/dev/app", "D:/dev/other"]);
         let escaped = resolve("D:/dev/app", "../other/src/main.rs");
         assert_eq!(escaped, "D:/dev/other/src/main.rs");
-        assert_eq!(root_for(&roots, &escaped).expect("root").requested, "D:/dev/other");
+        assert_eq!(
+            root_for(&roots, &escaped).expect("root").requested,
+            "D:/dev/other"
+        );
     }
 
     #[test]
@@ -455,8 +458,14 @@ mod tests {
 
     #[test]
     fn dot_segments_resolve_rather_than_becoming_path_text() {
-        assert_eq!(resolve("D:/dev/app", "./src/./main.rs"), "D:/dev/app/src/main.rs");
-        assert_eq!(resolve("D:/dev/app", "src/nested/../main.rs"), "D:/dev/app/src/main.rs");
+        assert_eq!(
+            resolve("D:/dev/app", "./src/./main.rs"),
+            "D:/dev/app/src/main.rs"
+        );
+        assert_eq!(
+            resolve("D:/dev/app", "src/nested/../main.rs"),
+            "D:/dev/app/src/main.rs"
+        );
     }
 
     #[test]
@@ -486,7 +495,12 @@ mod tests {
         // unusable root, so every write under it was missed.
         assert_eq!(normalize("/"), "/");
         let roots = prefixes(&["/"]);
-        assert_eq!(root_for(&roots, "/srv/app/main.rs").expect("root").requested, "/");
+        assert_eq!(
+            root_for(&roots, "/srv/app/main.rs")
+                .expect("root")
+                .requested,
+            "/"
+        );
     }
 
     #[test]
@@ -499,7 +513,10 @@ mod tests {
     #[test]
     fn a_unc_share_is_one_root_rather_than_two_empty_segments() {
         let roots = prefixes(&["//server/share/app"]);
-        assert_eq!(normalize("//server/share/app/"), path_identity("//server/share/app"));
+        assert_eq!(
+            normalize("//server/share/app/"),
+            path_identity("//server/share/app")
+        );
         assert!(root_for(&roots, "//server/share/app/src/main.rs").is_some());
         assert!(root_for(&roots, "//server/share/other/main.rs").is_none());
     }

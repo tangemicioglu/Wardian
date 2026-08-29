@@ -462,7 +462,13 @@ mod tests {
         }
     }
 
-    fn ingest(conn: &mut Connection, provider: &str, session: &str, facts: ParsedFacts, intervals: Vec<IntervalFact>) {
+    fn ingest(
+        conn: &mut Connection,
+        provider: &str,
+        session: &str,
+        facts: ParsedFacts,
+        intervals: Vec<IntervalFact>,
+    ) {
         let st = state(provider, session);
         let dirty = write_facts(conn, &facts, &intervals, &st).unwrap();
         recompute_buckets(conn, &dirty).unwrap();
@@ -474,7 +480,12 @@ mod tests {
             "codex",
             "agent-1",
             ParsedFacts {
-                turns: vec![turn("agent-1", "codex", "2026-08-13T18:10:00.000Z", Some(100))],
+                turns: vec![turn(
+                    "agent-1",
+                    "codex",
+                    "2026-08-13T18:10:00.000Z",
+                    Some(100),
+                )],
                 ..Default::default()
             },
             vec![IntervalFact {
@@ -492,7 +503,12 @@ mod tests {
             "opencode",
             "agent-2",
             ParsedFacts {
-                turns: vec![turn("agent-2", "opencode", "2026-08-13T18:20:00.000Z", Some(40))],
+                turns: vec![turn(
+                    "agent-2",
+                    "opencode",
+                    "2026-08-13T18:20:00.000Z",
+                    Some(40),
+                )],
                 ..Default::default()
             },
             vec![IntervalFact {
@@ -522,7 +538,10 @@ mod tests {
         // fail rather than fall through to a default. A default would let a
         // caller-supplied string decide what gets grouped on, and this is the
         // only gate between the two.
-        assert_eq!(Dimension::parse("provider; DROP TABLE telemetry_turns"), None);
+        assert_eq!(
+            Dimension::parse("provider; DROP TABLE telemetry_turns"),
+            None
+        );
         assert_eq!(Dimension::parse(""), None);
         assert_eq!(Dimension::parse("PROVIDER"), None);
     }
@@ -565,7 +584,12 @@ mod tests {
     fn horizon_bounds_exclude_the_upper_edge() {
         let mut conn = db();
         seed(&mut conn);
-        let empty = summary(&conn, "2026-08-14T00:00:00.000Z", "2026-08-15T00:00:00.000Z").unwrap();
+        let empty = summary(
+            &conn,
+            "2026-08-14T00:00:00.000Z",
+            "2026-08-15T00:00:00.000Z",
+        )
+        .unwrap();
         assert_eq!(empty.turns, 0);
     }
 
@@ -602,7 +626,12 @@ mod tests {
             "antigravity",
             "agent-3",
             ParsedFacts {
-                turns: vec![turn("agent-3", "antigravity", "2026-08-13T18:10:00.000Z", None)],
+                turns: vec![turn(
+                    "agent-3",
+                    "antigravity",
+                    "2026-08-13T18:10:00.000Z",
+                    None,
+                )],
                 ..Default::default()
             },
             vec![],
@@ -630,7 +659,9 @@ mod tests {
         let mut conn = db();
         seed(&mut conn);
         assert_eq!(
-            breakdown(&conn, Dimension::Provider, FROM, TO, 1).unwrap().len(),
+            breakdown(&conn, Dimension::Provider, FROM, TO, 1)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -658,7 +689,12 @@ mod tests {
             "antigravity",
             "agent-3",
             ParsedFacts {
-                turns: vec![turn("agent-3", "antigravity", "2026-08-13T18:10:00.000Z", None)],
+                turns: vec![turn(
+                    "agent-3",
+                    "antigravity",
+                    "2026-08-13T18:10:00.000Z",
+                    None,
+                )],
                 ..Default::default()
             },
             vec![],
@@ -730,9 +766,12 @@ mod tests {
         let mut conn = db();
         seed(&mut conn);
         // Window starts mid-interval; the span still belongs to the view.
-        let intervals =
-            activity_intervals(&conn, "2026-08-13T18:20:00.000Z", "2026-08-13T18:25:00.000Z")
-                .unwrap();
+        let intervals = activity_intervals(
+            &conn,
+            "2026-08-13T18:20:00.000Z",
+            "2026-08-13T18:25:00.000Z",
+        )
+        .unwrap();
         assert_eq!(intervals.len(), 1);
         assert_eq!(intervals[0].session_id, "agent-1");
     }
@@ -740,7 +779,10 @@ mod tests {
     #[test]
     fn latest_limit_per_provider_wins() {
         let conn = db();
-        for (observed, percent) in [("2026-08-13T18:00:00.000Z", 20.0), ("2026-08-13T19:00:00.000Z", 43.0)] {
+        for (observed, percent) in [
+            ("2026-08-13T18:00:00.000Z", 20.0),
+            ("2026-08-13T19:00:00.000Z", 43.0),
+        ] {
             conn.execute(
                 "INSERT INTO telemetry_limits (provider, limit_id, observed_at, used_percent, plan_type)
                  VALUES ('codex', 'codex', ?1, ?2, 'prolite')",

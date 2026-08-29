@@ -102,10 +102,7 @@ async fn launch(
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    input.insert(
-        "agent_id".into(),
-        Value::String(context.agent_id.clone()),
-    );
+    input.insert("agent_id".into(), Value::String(context.agent_id.clone()));
     input.insert("agent_name".into(), Value::String(context.agent_name));
     input.insert("workspace".into(), Value::String(context.workspace));
     input.insert("source_provider".into(), Value::String(context.provider));

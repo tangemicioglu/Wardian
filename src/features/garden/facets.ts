@@ -434,39 +434,6 @@ export function emitSkillFacets(
   return { ref, tokens: dedupeTokens(tokens), excludes: [] };
 }
 
-export function emitPromptFacets(
-  ref: EntityRef,
-  tags: readonly string[] = [],
-): GardenEntityFacets {
-  const tokens: FacetToken[] = ["section:prompts"];
-  if (ref.path) tokens.push(...libraryPathFacets("prompts", ref.path));
-  for (const tag of tags) tokens.push(`tag:${tag.toLowerCase()}`);
-  return { ref, tokens: dedupeTokens(tokens), excludes: [] };
-}
-
-export interface ClassFacetContext {
-  /** `AgentClassDefinition.assigned_skills` — intent, distinct from deployment. */
-  assignedSkillRefs?: readonly string[];
-  /** Skills actually deployed to this class, from the library index. */
-  deployedSkillRefs?: readonly string[];
-  memberAgentIds?: readonly string[];
-}
-
-export function emitClassFacets(
-  ref: EntityRef,
-  context: ClassFacetContext = {},
-): GardenEntityFacets {
-  const tokens: FacetToken[] = ["section:classes", `class:${ref.id.toLowerCase()}`];
-  for (const skillRef of context.assignedSkillRefs ?? []) {
-    tokens.push(`skill:${skillRef.toLowerCase()}`);
-  }
-  for (const skillRef of context.deployedSkillRefs ?? []) {
-    tokens.push(`skill:${skillRef.toLowerCase()}`);
-  }
-  for (const agentId of context.memberAgentIds ?? []) tokens.push(`deployed:agent:${agentId}`);
-  return { ref, tokens: dedupeTokens(tokens), excludes: [] };
-}
-
 export interface WorkflowFacetContext {
   /** Role names referenced by `task`/`decision` nodes. */
   roleNames?: readonly string[];
@@ -519,26 +486,6 @@ export function emitArtifactFacets(
   const tokens: FacetToken[] = [`origin:agent:${origin.agentId}`];
   if (origin.provider) tokens.push(`provider:${origin.provider.toLowerCase()}`);
   tokens.push(...pathAncestorFacets(canonicalPath));
-  return { ref, tokens: dedupeTokens(tokens), excludes: [] };
-}
-
-export function emitFolderFacets(
-  ref: EntityRef,
-  touchedByAgentIds: readonly string[] = [],
-): GardenEntityFacets {
-  const tokens: FacetToken[] = [...pathAncestorFacets(ref.path ?? ref.id)];
-  for (const agentId of touchedByAgentIds) tokens.push(`origin:agent:${agentId}`);
-  return { ref, tokens: dedupeTokens(tokens), excludes: [] };
-}
-
-export function emitWorktreeFacets(
-  ref: EntityRef,
-  summary: { sourceFolder?: string; worktreeFolder?: string; memberAgentIds?: readonly string[] },
-): GardenEntityFacets {
-  const tokens: FacetToken[] = [`worktree:${ref.id}`];
-  tokens.push(...pathAncestorFacets(summary.sourceFolder));
-  tokens.push(...pathAncestorFacets(summary.worktreeFolder));
-  for (const agentId of summary.memberAgentIds ?? []) tokens.push(`deployed:agent:${agentId}`);
   return { ref, tokens: dedupeTokens(tokens), excludes: [] };
 }
 

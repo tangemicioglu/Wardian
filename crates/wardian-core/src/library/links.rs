@@ -116,11 +116,17 @@ mod tests {
 
         create_directory_link(&target, &link).expect("create link");
         fs::write(target.join("SKILL.md"), "two").expect("update source");
-        assert_eq!(fs::read_to_string(link.join("SKILL.md")).expect("read via link"), "two");
+        assert_eq!(
+            fs::read_to_string(link.join("SKILL.md")).expect("read via link"),
+            "two"
+        );
 
         remove_existing_deployment(&link).expect("remove link");
         assert!(!link.exists());
-        assert!(target.join("SKILL.md").exists(), "removing link must not touch target");
+        assert!(
+            target.join("SKILL.md").exists(),
+            "removing link must not touch target"
+        );
     }
 
     #[test]
@@ -133,7 +139,10 @@ mod tests {
         create_directory_link(&target, &parent.join("planner")).expect("link");
 
         fs::remove_dir_all(&parent).expect("remove parent");
-        assert_eq!(fs::read_to_string(target.join("SKILL.md")).expect("target intact"), "keep me");
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).expect("target intact"),
+            "keep me"
+        );
     }
 
     #[test]
@@ -146,11 +155,17 @@ mod tests {
         fs::write(src.join("nested").join("n.md"), "n").expect("nested");
 
         let copied = deploy_skill_dir_with_linker(&src, &dst, |_, _| {
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
         })
         .expect("fallback");
         assert!(copied);
-        assert_eq!(fs::read_to_string(dst.join("nested").join("n.md")).expect("copied"), "n");
+        assert_eq!(
+            fs::read_to_string(dst.join("nested").join("n.md")).expect("copied"),
+            "n"
+        );
     }
 
     #[test]
@@ -165,7 +180,10 @@ mod tests {
 
         let copied = deploy_skill_dir(&src, &dst).expect("deploy");
         assert!(!copied);
-        assert_eq!(fs::read_to_string(dst.join("SKILL.md")).expect("read"), "new");
+        assert_eq!(
+            fs::read_to_string(dst.join("SKILL.md")).expect("read"),
+            "new"
+        );
     }
 
     #[test]
@@ -174,10 +192,16 @@ mod tests {
         let src = temp.path().join("missing-src");
         let dst = temp.path().join("dst");
         let err = deploy_skill_dir_with_linker(&src, &dst, |_, _| {
-            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "link denied"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "link denied",
+            ))
         })
         .expect_err("copy of missing source must fail");
-        assert!(err.to_string().contains("link denied"), "link error preserved: {err}");
+        assert!(
+            err.to_string().contains("link denied"),
+            "link error preserved: {err}"
+        );
         assert!(!dst.exists(), "partial copy cleaned up");
     }
 }
