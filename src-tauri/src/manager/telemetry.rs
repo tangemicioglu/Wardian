@@ -1,11 +1,10 @@
+use crate::providers::transcript::extract_transcript_message;
 use crate::state::AppState;
-use crate::utils::fs::get_wardian_home;
+use crate::utils::fs::{get_wardian_home, observe_codex_indexes};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use wardian_core::models::{AgentTelemetry, AppTelemetry};
-
-use crate::providers::transcript::extract_transcript_message;
 
 use super::claude::{claude_is_real_user_query, claude_project_dir_name, claude_status_from_log};
 use super::codex::{codex_log_lookup_session_id, codex_session_file_path, codex_status_from_log};
@@ -1402,6 +1401,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
         let system_snapshot =
             refresh_system_process_snapshot(&sys_metrics, &session_ids, &agent_roots);
         let mut slow_agents = Vec::new();
+        observe_codex_indexes();
 
         for snap in &snapshots {
             let agent_started = std::time::Instant::now();

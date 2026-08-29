@@ -1,4 +1,4 @@
-use crate::utils::fs::sync_codex_windows_sandbox_support;
+use crate::utils::fs::{sync_codex_home_indexes, sync_codex_windows_sandbox_support};
 pub(crate) fn codex_bootstrap_workspace_key(workspace_cwd: &std::path::Path) -> String {
     let normalized = workspace_cwd.to_string_lossy().to_ascii_lowercase();
     let mut hash = 0xcbf29ce484222325u64;
@@ -136,6 +136,12 @@ pub(crate) fn migrate_codex_bootstrap_home(
 
     std::fs::create_dir_all(final_home).map_err(|e| e.to_string())?;
     sync_codex_windows_sandbox_support(bootstrap_home, final_home)?;
+    if let Err(error) = sync_codex_home_indexes(bootstrap_home) {
+        crate::utils::logging::log_debug(&format!(
+            "[Wardian] Failed to sync Codex bootstrap indexes from {}: {error}",
+            bootstrap_home.display()
+        ));
+    }
 
     let entries = std::fs::read_dir(bootstrap_home).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
@@ -149,6 +155,8 @@ pub(crate) fn migrate_codex_bootstrap_home(
             "auth.json"
                 | "config.toml"
                 | "cap_sid"
+                | "history.jsonl"
+                | "session_index.jsonl"
                 | "state_5.sqlite"
                 | "state_5.sqlite-shm"
                 | "state_5.sqlite-wal"
@@ -178,6 +186,9 @@ pub(crate) fn migrate_codex_bootstrap_home(
         }
 
         if name_str == "sessions" {
+            if paths_resolve_to_same_directory(&source, &target) {
+                continue;
+            }
             merge_missing_codex_session_entries(&source, &target)?;
             continue;
         }
@@ -192,6 +203,16 @@ pub(crate) fn migrate_codex_bootstrap_home(
     std::fs::create_dir_all(bootstrap_home).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+fn paths_resolve_to_same_directory(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left.is_dir()
+        && right.is_dir()
+        && left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
 }
 
 /// Merge fresh bootstrap rollouts into an existing agent-local Codex session tree.
@@ -337,6 +358,46 @@ mod tests {
             !fresh_rollout.exists(),
             "the bootstrap rollout must leave the reusable bootstrap home"
         );
+    }
+
+    #[test]
+    fn migrate_codex_bootstrap_home_does_not_recurse_through_shared_sessions_link() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let shared_sessions = temp.path().join("real-sessions");
+        let bootstrap_home = temp.path().join("bootstrap").join(".codex");
+        let final_home = temp.path().join("final").join(".codex");
+        std::fs::create_dir_all(&shared_sessions).expect("create shared sessions");
+        std::fs::write(shared_sessions.join("rollout.jsonl"), "shared session")
+            .expect("write shared rollout");
+        std::fs::create_dir_all(&bootstrap_home).expect("create bootstrap home");
+        std::fs::create_dir_all(&final_home).expect("create final home");
+        crate::utils::fs::create_directory_link(&shared_sessions, &bootstrap_home.join("sessions"))
+            .expect("link bootstrap sessions");
+        crate::utils::fs::create_directory_link(&shared_sessions, &final_home.join("sessions"))
+            .expect("link final sessions");
+
+        migrate_codex_bootstrap_home(&bootstrap_home, &final_home)
+            .expect("migrate linked bootstrap home");
+
+        assert_eq!(
+            bootstrap_home
+                .join("sessions")
+                .canonicalize()
+                .expect("resolve bootstrap sessions"),
+            shared_sessions
+                .canonicalize()
+                .expect("resolve shared sessions")
+        );
+        assert_eq!(
+            final_home
+                .join("sessions")
+                .canonicalize()
+                .expect("resolve final sessions"),
+            shared_sessions
+                .canonicalize()
+                .expect("resolve shared sessions")
+        );
+        assert!(shared_sessions.join("rollout.jsonl").exists());
     }
 
     #[cfg(windows)]
