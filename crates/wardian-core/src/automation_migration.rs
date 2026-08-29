@@ -27,14 +27,17 @@ pub fn migrate_home(home: &Path) -> io::Result<AutomationStorageMigrationReport>
     let mut report = AutomationStorageMigrationReport::default();
     let old_library = home.join("library").join("workflows");
     let new_library = home.join("library").join("automations");
+    let old_root_logs = home.join("workflow_logs");
     let old_logs = home.join("logs").join("workflows");
     let new_logs = home.join("logs").join("automations");
 
     if reconcile_directory(&old_library, &new_library)? {
         report.library_moved = true;
     }
-    if reconcile_directory(&old_logs, &new_logs)? {
-        report.logs_moved = true;
+    for legacy_logs in [&old_root_logs, &old_logs] {
+        if reconcile_directory(legacy_logs, &new_logs)? {
+            report.logs_moved = true;
+        }
     }
 
     if new_library.is_dir() {
@@ -285,6 +288,37 @@ mod tests {
         assert!(!legacy.exists());
         assert_eq!(fs::read_to_string(current.join("old.md")).unwrap(), "old");
         assert_eq!(fs::read_to_string(current.join("same.md")).unwrap(), "same");
+    }
+
+    #[test]
+    fn reconciles_root_legacy_logs_after_schema_migration_is_current() {
+        let home = home();
+        fs::create_dir_all(home.path().join("settings")).unwrap();
+        fs::write(
+            home.path().join("settings/migrations.json"),
+            r#"{"version":1}"#,
+        )
+        .unwrap();
+        let root_legacy = home.path().join("workflow_logs/root/run-1");
+        let nested_legacy = home.path().join("logs/workflows/nested/run-2");
+        fs::create_dir_all(&root_legacy).unwrap();
+        fs::create_dir_all(&nested_legacy).unwrap();
+        fs::write(root_legacy.join("events.jsonl"), "root event").unwrap();
+        fs::write(nested_legacy.join("events.jsonl"), "nested event").unwrap();
+
+        let report = migrate_home(home.path()).unwrap();
+
+        assert!(report.logs_moved);
+        assert!(!home.path().join("workflow_logs").exists());
+        assert!(!home.path().join("logs/workflows").exists());
+        assert!(home
+            .path()
+            .join("logs/automations/root/run-1/events.jsonl")
+            .exists());
+        assert!(home
+            .path()
+            .join("logs/automations/nested/run-2/events.jsonl")
+            .exists());
     }
 
     #[test]
