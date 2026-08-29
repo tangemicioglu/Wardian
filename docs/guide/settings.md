@@ -8,6 +8,9 @@ Open Settings from the gear icon on the left icon rail. It opens as a
 near-full-screen app modal and does not change the currently selected sidebar
 pane or main workspace view.
 
+The modal covers the Workbench, including split panes, and dims the underlying
+content until you close it.
+
 ![Wardian Settings modal showing agent runtime defaults and the conversation logging control](../assets/screenshots/settings/conversation-logging.png)
 
 ## Storage

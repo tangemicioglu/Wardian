@@ -186,6 +186,48 @@ function twoGroupDocument(): WorkbenchDocumentV1 {
   });
 }
 
+function splitSettingsDocument(): WorkbenchDocumentV1 {
+  const dashboard = makeWorkbenchSurface("settings-dashboard", "dashboard");
+  const graph = makeWorkbenchSurface("settings-graph", "graph");
+  const inbox = makeWorkbenchSurface("settings-inbox", "inbox");
+  return makeWorkbenchDocument({
+    root: {
+      kind: "split",
+      node_id: "settings-overlay-vertical-split",
+      direction: "vertical",
+      ratio: 0.58,
+      first: {
+        kind: "split",
+        node_id: "settings-overlay-horizontal-split",
+        direction: "horizontal",
+        ratio: 0.5,
+        first: { kind: "group", group_id: "settings-group-left" },
+        second: { kind: "group", group_id: "settings-group-center" },
+      },
+      second: { kind: "group", group_id: "settings-group-bottom" },
+    },
+    groups: {
+      "settings-group-left": {
+        group_id: "settings-group-left",
+        surface_ids: [dashboard.surface_id],
+        active_surface_id: dashboard.surface_id,
+      },
+      "settings-group-center": {
+        group_id: "settings-group-center",
+        surface_ids: [graph.surface_id],
+        active_surface_id: graph.surface_id,
+      },
+      "settings-group-bottom": {
+        group_id: "settings-group-bottom",
+        surface_ids: [inbox.surface_id],
+        active_surface_id: inbox.surface_id,
+      },
+    },
+    surfaces: [dashboard, graph, inbox],
+    active_group_id: "settings-group-left",
+  });
+}
+
 async function choosePaneAction(
   page: Page,
   group: Locator,
@@ -220,6 +262,49 @@ test("opens every migrated surface and focuses an existing singleton", async ({ 
   await openSurface(page, "inbox");
   await expect(surfaceTab(page, "inbox")).toHaveCount(1);
   await expect(surfaceTab(page, "inbox")).toHaveAttribute("aria-selected", "true");
+});
+
+test("keeps Settings above a horizontally and vertically split Workbench", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1600, height: 960 });
+  await bootWorkbench(page, splitSettingsDocument());
+  await expect(page.getByTestId("workbench-group")).toHaveCount(3);
+
+  await page.locator('[data-testid="sidebar-tab-settings"]').click();
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(dialog).toBeVisible();
+  const overlay = dialog.locator("xpath=..");
+
+  await expect(overlay).toHaveClass(/wardian-dialog-overlay--application/);
+  await expect.poll(() => overlay.evaluate((element) => {
+    const dockview = document.querySelector<HTMLElement>(".dockview-theme-wardian");
+    const overlayZIndex = Number.parseInt(getComputedStyle(element).zIndex, 10);
+    const dockviewOverlayZIndex = Number.parseInt(
+      dockview ? getComputedStyle(dockview).getPropertyValue("--dv-overlay-z-index") : "",
+      10,
+    );
+    return Number.isFinite(overlayZIndex)
+      && Number.isFinite(dockviewOverlayZIndex)
+      && overlayZIndex > dockviewOverlayZIndex;
+  })).toBe(true);
+
+  await expect.poll(() => dialog.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const topmost = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2,
+    );
+    return element.contains(topmost);
+  })).toBe(true);
+
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/settings-overlay-split-workbench/2026-08-29/settings-above-split-workbench.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
+  await testInfo.attach("settings-above-split-workbench", {
+    path: screenshotPath,
+    contentType: "image/png",
+  });
 });
 
 test("retargets an adjoining Agent Session when Graph opens an agent", async ({ page }) => {
