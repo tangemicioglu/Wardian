@@ -2,9 +2,9 @@
   "_comment": "Debt budgets: numbers that may fall but never rise. See scripts/verify-budgets.mjs. Re-freeze after an improvement with: npm run check:budgets -- --write",
   "file_lines": {
     "src-tauri/src/commands/agent.rs": 10759,
-    "src-tauri/src/control.rs": 9945,
+    "src-tauri/src/control.rs": 9931,
     "src-tauri/src/state/file_resources.rs": 9024,
-    "src-tauri/src/manager/telemetry.rs": 2828,
+    "src-tauri/src/manager/telemetry.rs": 2827,
     "src-tauri/src/commands/git.rs": 3896,
     "crates/wardian-cli/src/main.rs": 3155,
     "src/views/App.tsx": 2086

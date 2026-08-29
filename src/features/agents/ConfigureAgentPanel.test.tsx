@@ -203,7 +203,10 @@ describe("ConfigureAgentPanel", () => {
       expect(invokeMock).toHaveBeenCalledWith("update_agent_config", {
         newConfig: expect.objectContaining({
           provider: "claude",
-          provider_config: { type: "claude" },
+          provider_config: {
+            type: "claude",
+            permission_mode: "bypassPermissions",
+          },
         }),
       });
     });

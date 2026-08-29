@@ -1,8 +1,10 @@
 use crate::manager;
+use crate::providers::claude::claude_output_has_bypass_permissions_consent_prompt;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
 };
 use crate::state::{AppState, MailboxMessageDraft, MailboxMessageRecord};
+use crate::utils::strip_ansi_controls;
 use sha2::{Digest, Sha256};
 use std::{
     fmt,
@@ -3587,7 +3589,9 @@ pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     match provider {
         "codex" => !codex_output_has_workspace_trust_prompt(&cleaned) && cleaned.contains('›'),
-        "claude" => cleaned.contains('❯'),
+        "claude" => {
+            !claude_output_has_bypass_permissions_consent_prompt(&cleaned) && cleaned.contains('❯')
+        }
         "gemini" => {
             !gemini_output_has_api_key_prompt(&cleaned)
                 && cleaned.contains("Type your message or @path/to/file")
@@ -4878,24 +4882,6 @@ fn is_prompt_prefix_char(ch: char) -> bool {
             ch,
             '›' | '>' | '$' | '#' | ':' | '|' | '│' | '┃' | '»' | '•' | '·' | '-' | '*'
         )
-}
-
-fn strip_ansi_controls(text: &str) -> String {
-    let mut stripped = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for code in chars.by_ref() {
-                if ('@'..='~').contains(&code) {
-                    break;
-                }
-            }
-        } else {
-            stripped.push(ch);
-        }
-    }
-    stripped
 }
 
 fn control_error_from_watch_state(

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -28,6 +29,49 @@ fn database_contains_user_message(path: &Path) -> bool {
             |_row| Ok(()),
         )
         .is_ok()
+}
+
+fn database_contains_steps_table(path: &Path) -> bool {
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'steps' LIMIT 1",
+            [],
+            |_row| Ok(()),
+        )
+        .is_ok()
+}
+
+fn database_metadata_matches_workspace(path: &Path, workspace: &Path) -> bool {
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    let Ok(data) = connection.query_row(
+        "SELECT data FROM trajectory_metadata_blob WHERE id = 'main' LIMIT 1",
+        [],
+        |row| row.get::<_, Vec<u8>>(0),
+    ) else {
+        return false;
+    };
+    let workspace_key = normalize_path_key(workspace);
+    let workspace_uri = if workspace_key.starts_with("//") {
+        format!("file:{workspace_key}")
+    } else if workspace_key.starts_with('/') {
+        format!("file://{workspace_key}")
+    } else {
+        format!("file:///{workspace_key}")
+    };
+    String::from_utf8_lossy(&data)
+        .to_ascii_lowercase()
+        .contains(&workspace_uri)
 }
 
 fn update_latest_timestamp(latest: &mut Option<String>, candidate: Option<String>) {
@@ -102,6 +146,47 @@ impl AntigravityProvider {
             .join(format!("{conversation_id}.db"))
     }
 
+    pub fn conversation_database_ids(home: &Path) -> HashSet<String> {
+        std::fs::read_dir(home.join("conversations"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.extension().is_some_and(|extension| extension == "db"))
+                    .then(|| path.file_stem()?.to_str().map(str::to_string))
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// Discovers a fresh provider conversation only from a database created
+    /// after this Wardian generation and carrying the exact workspace URI in
+    /// Antigravity's own trajectory metadata. Multiple matches are ambiguous
+    /// and intentionally produce no identity.
+    pub fn fresh_database_conversation_for_workspace(
+        home: &Path,
+        workspace: &Path,
+        launch_baseline: &HashSet<String>,
+        excluded_conversations: &[String],
+    ) -> Option<String> {
+        let mut matches = Self::conversation_database_ids(home)
+            .into_iter()
+            .filter(|conversation_id| !launch_baseline.contains(conversation_id))
+            .filter(|conversation_id| {
+                !excluded_conversations
+                    .iter()
+                    .any(|excluded| excluded.trim() == conversation_id)
+            })
+            .filter(|conversation_id| {
+                let database = Self::conversation_database_path(home, conversation_id);
+                database_contains_steps_table(&database)
+                    && database_metadata_matches_workspace(&database, workspace)
+            });
+        let conversation_id = matches.next()?;
+        matches.next().is_none().then_some(conversation_id)
+    }
+
     pub fn conversation_for_workspace(home: &Path, workspace: &Path) -> Option<String> {
         let cache = home.join("cache").join("last_conversations.json");
         let content = std::fs::read_to_string(cache).ok()?;
@@ -154,6 +239,19 @@ impl AntigravityProvider {
     pub fn conversation_log_path(home: &Path, conversation_id: &str) -> Option<PathBuf> {
         let database = Self::conversation_database_path(home, conversation_id);
         if database_contains_user_message(&database) {
+            return Some(database);
+        }
+
+        let transcript = Self::transcript_path(home, conversation_id);
+        transcript.is_file().then_some(transcript)
+    }
+
+    /// Returns the provider source used for live status. A known conversation
+    /// database is valid status evidence as soon as its schema exists, before
+    /// the first user-message step makes it useful as a chat transcript.
+    pub fn conversation_status_path(home: &Path, conversation_id: &str) -> Option<PathBuf> {
+        let database = Self::conversation_database_path(home, conversation_id);
+        if database_contains_steps_table(&database) {
             return Some(database);
         }
 
@@ -551,7 +649,7 @@ impl AgentProvider for AntigravityProvider {
         if antigravity.sandbox.unwrap_or(false) {
             args.push("--sandbox".to_string());
         }
-        if antigravity.dangerously_skip_permissions.unwrap_or(false) {
+        if antigravity.dangerously_skip_permissions.unwrap_or(true) {
             args.push("--dangerously-skip-permissions".to_string());
         }
         if let Some(mode) = antigravity
@@ -785,6 +883,25 @@ SET dp0=%~dp0
                 "conversation-123",
             ]
         );
+    }
+
+    #[test]
+    fn spawn_args_skip_permissions_by_default_but_honor_explicit_false() {
+        let provider = make_provider();
+        let default_args = provider.get_spawn_args(
+            &make_antigravity_config(AntigravityProviderConfig::default()),
+            false,
+        );
+        assert!(default_args.contains(&"--dangerously-skip-permissions".to_string()));
+
+        let explicit_args = provider.get_spawn_args(
+            &make_antigravity_config(AntigravityProviderConfig {
+                dangerously_skip_permissions: Some(false),
+                ..Default::default()
+            }),
+            false,
+        );
+        assert!(!explicit_args.contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -1041,6 +1158,93 @@ SET dp0=%~dp0
             )
             .as_deref(),
             Some(conversation_id)
+        );
+    }
+
+    #[test]
+    fn status_path_accepts_empty_conversation_database_without_changing_chat_fallback() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path();
+        let conversation_id = "conversation-before-first-turn";
+        std::fs::create_dir_all(home.join("conversations")).expect("conversation dir");
+        let transcript = AntigravityProvider::transcript_path(home, conversation_id);
+        std::fs::create_dir_all(transcript.parent().expect("transcript parent"))
+            .expect("transcript dir");
+        std::fs::write(&transcript, "").expect("empty legacy transcript");
+        let database = AntigravityProvider::conversation_database_path(home, conversation_id);
+        Connection::open(&database)
+            .expect("open database")
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+
+        assert_eq!(
+            AntigravityProvider::conversation_status_path(home, conversation_id),
+            Some(database)
+        );
+        assert_eq!(
+            AntigravityProvider::conversation_log_path(home, conversation_id),
+            Some(transcript)
+        );
+    }
+
+    #[test]
+    fn fresh_database_discovery_requires_generation_and_exact_workspace_metadata() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path();
+        let workspace = home
+            .join("agents")
+            .join("agent-1")
+            .join("habitat")
+            .join("workspace");
+        std::fs::create_dir_all(home.join("conversations")).expect("conversation dir");
+        std::fs::create_dir_all(&workspace).expect("workspace dir");
+
+        let create_database = |conversation_id: &str, metadata_workspace: &Path| {
+            let database = AntigravityProvider::conversation_database_path(home, conversation_id);
+            let connection = Connection::open(&database).expect("open database");
+            connection
+                .execute_batch(
+                    "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);\
+                     CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);",
+                )
+                .expect("create schema");
+            let uri = format!(
+                "file:///{}",
+                normalize_path_text(&metadata_workspace.to_string_lossy())
+            );
+            connection
+                .execute(
+                    "INSERT INTO trajectory_metadata_blob (id, data) VALUES ('main', ?1)",
+                    params![uri.as_bytes()],
+                )
+                .expect("insert metadata");
+        };
+
+        create_database("preexisting", &workspace);
+        let baseline = AntigravityProvider::conversation_database_ids(home);
+        create_database("wrong-workspace", &home.join("other"));
+        create_database("fresh-match", &workspace);
+
+        assert_eq!(
+            AntigravityProvider::fresh_database_conversation_for_workspace(
+                home,
+                &workspace,
+                &baseline,
+                &[],
+            )
+            .as_deref(),
+            Some("fresh-match")
+        );
+        assert!(
+            AntigravityProvider::fresh_database_conversation_for_workspace(
+                home,
+                &workspace,
+                &baseline,
+                &["fresh-match".to_string()],
+            )
+            .is_none()
         );
     }
 

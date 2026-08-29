@@ -336,7 +336,10 @@ describe("SpawnAgentPanel", () => {
       req: expect.objectContaining({
         configOverride: expect.objectContaining({
           provider: "claude",
-          provider_config: { type: "claude" },
+          provider_config: {
+            type: "claude",
+            permission_mode: "bypassPermissions",
+          },
         }),
       }),
     });

@@ -10523,10 +10523,10 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         restore_antigravity_workspace_conversation_from_home(&mut config, home)
             .expect("restore workspace conversation");
         assert_eq!(config.resume_session.as_deref(), Some(conversation_id));
-        assert_eq!(
-            AntigravityProvider::new().get_spawn_args(&config, true),
-            vec!["--conversation", conversation_id]
-        );
+        let resume_args = AntigravityProvider::new().get_spawn_args(&config, true);
+        assert_eq!(resume_args[0], "--dangerously-skip-permissions");
+        assert_eq!(resume_args[1], "--conversation");
+        assert_eq!(resume_args[2], conversation_id);
 
         config.resume_session = None;
         config

@@ -1827,7 +1827,10 @@ async fn answer_reverse_request(
             .is_some_and(|tools| tools.iter().any(|tool| tool == tool_name));
         let allow = !explicitly_denied
             && (explicitly_allowed
-                || claude.permission_mode.as_deref() == Some("bypassPermissions"));
+                || claude
+                    .permission_mode
+                    .as_deref()
+                    .is_none_or(|mode| mode == "bypassPermissions"));
         let decision = if allow {
             serde_json::json!({
                 "type": "control_response",
@@ -2321,6 +2324,12 @@ input.on('line', (line) => {
         config.provider = "claude".to_string();
         config.session_id = "agent-native-test".to_string();
         config.folder = temp.path().display().to_string();
+        config.provider_config = wardian_core::models::ProviderConfig::Claude(
+            wardian_core::models::ClaudeProviderConfig {
+                permission_mode: Some("manual".to_string()),
+                ..Default::default()
+            },
+        );
         let spec = NativeSessionSpec {
             target_agent_id: "agent-native-test".to_string(),
             provider: "claude".to_string(),
