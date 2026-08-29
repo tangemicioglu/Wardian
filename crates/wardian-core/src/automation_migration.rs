@@ -191,15 +191,9 @@ fn rewrite_blueprint_file(path: &Path) -> io::Result<bool> {
                     .next()
                     .is_none_or(char::is_whitespace)
             {
-                Some(format!(
-                    "{content}",
-                    content = content.replacen("sub_workflow", "sub_automation", 1)
-                ))
+                Some(content.replacen("sub_workflow", "sub_automation", 1))
             } else if indent > 0 && trimmed.starts_with("workflow:") {
-                Some(format!(
-                    "{content}",
-                    content = content.replacen("workflow:", "automation:", 1)
-                ))
+                Some(content.replacen("workflow:", "automation:", 1))
             } else {
                 None
             };
