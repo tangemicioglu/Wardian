@@ -189,7 +189,7 @@ fn prompt_create_show_read_write_move_delete_round_trip() {
 fn rejects_unindexable_entry_shapes_without_hiding_existing_entries() {
     let home = TempDir::new().unwrap();
 
-    for entry_ref in ["prompts/audit", "workflows/audit.txt"] {
+    for entry_ref in ["prompts/audit", "automations/audit.txt"] {
         let rejected = assert_failure_json(run(
             home.path(),
             &["library", "create", entry_ref, "--stdin"],
@@ -198,7 +198,7 @@ fn rejects_unindexable_entry_shapes_without_hiding_existing_entries() {
         assert_eq!(rejected["error"]["code"], "invalid_ref");
     }
     assert!(!home.path().join("library/prompts/audit").exists());
-    assert!(!home.path().join("library/workflows/audit.txt").exists());
+    assert!(!home.path().join("library/automations/audit.txt").exists());
 
     std::fs::create_dir_all(home.path().join("library/skills")).unwrap();
     std::fs::write(home.path().join("library/skills/occupied"), "not a skill").unwrap();
@@ -305,26 +305,31 @@ fn list_flat_without_section_combines_entries_without_index_payloads() {
 }
 
 #[test]
-fn workflow_show_includes_absolute_workflow_path_but_does_not_validate() {
+fn automation_show_includes_absolute_automation_path_but_does_not_validate() {
     let home = TempDir::new().unwrap();
     assert_success_json(run(
         home.path(),
-        &["library", "create", "workflows/review/audit.md", "--stdin"],
-        Some("not valid workflow yaml"),
+        &[
+            "library",
+            "create",
+            "automations/review/audit.md",
+            "--stdin",
+        ],
+        Some("not valid automation yaml"),
     ));
 
     let shown = assert_success_json(run(
         home.path(),
-        &["library", "show", "workflows/review/audit.md"],
+        &["library", "show", "automations/review/audit.md"],
         None,
     ));
 
-    let workflow_path = shown["workflow_path"].as_str().unwrap();
+    let automation_path = shown["automation_path"].as_str().unwrap();
     assert!(
-        workflow_path.ends_with("library/workflows/review/audit.md")
-            || workflow_path.ends_with("library\\workflows\\review\\audit.md")
+        automation_path.ends_with("library/automations/review/audit.md")
+            || automation_path.ends_with("library\\automations\\review\\audit.md")
     );
-    assert_eq!(shown["entry_ref"], "workflows/review/audit.md");
+    assert_eq!(shown["entry_ref"], "automations/review/audit.md");
     assert!(shown.get("diagnostics").is_none());
 }
 

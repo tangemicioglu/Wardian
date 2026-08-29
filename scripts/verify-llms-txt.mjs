@@ -9,7 +9,7 @@ const requiredEntries = [
   ["## Core Workspace", "https://docs.wardian.org/guide/grid", "docs/guide/grid.md"],
   ["## Core Workspace", "https://docs.wardian.org/guide/inbox", "docs/guide/inbox.md"],
   ["## Core Workspace", "https://docs.wardian.org/guide/watchlists", "docs/guide/watchlists.md"],
-  ["## Workflow Automation", "https://docs.wardian.org/workflows/", "docs/workflows/index.md"],
+  ["## Automations", "https://docs.wardian.org/automations/", "docs/automations/index.md"],
   ["## CLI and Agent Communication", "https://docs.wardian.org/guide/cli", "docs/guide/cli.md"],
   ["## Providers and Runtime", "https://docs.wardian.org/guide/provider-readiness", "docs/guide/provider-readiness.md"],
   ["## Developer Internals", "https://docs.wardian.org/developer/architecture", "docs/developer/architecture.md"],

@@ -2,7 +2,7 @@
 
 Use teams to name durable groups of agents cooperating on a workstream. Use
 watchlists to choose the teams and individual agents an operator wants to
-monitor or target together. Neither is workflow automation or agent identity.
+monitor or target together. Neither is automation or agent identity.
 
 ## Manage Teams
 

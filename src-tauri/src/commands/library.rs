@@ -26,7 +26,7 @@ fn parse_section(section: &str) -> Result<LibrarySectionId, String> {
 // --- Watching -----------------------------------------------------------
 //
 // The library watcher only supports a single logical type, `"library"`,
-// which covers everything under `library/` (skills, prompts, workflows)
+// which covers everything under `library/` (skills, prompts, automations)
 // plus `classes/` (class definitions can also be edited from the library
 // UI). The `library_type` parameter is kept on the commands for interface
 // stability, but any value other than `"library"` is rejected.

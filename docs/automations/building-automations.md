@@ -1,0 +1,101 @@
+# Building Automations
+
+Use the Automation Builder when you want to create, edit, or test automation logic directly on the canvas.
+
+The canvas is the authoring surface; the Rust automation engine is the runtime. When you run an automation, Wardian saves the graph, resolves launch-time input, then processes candidate nodes through the engine's internal execution loop, records node output, pulses downstream ports, and emits run telemetry.
+
+## Builder Layout
+
+The Automation view is made of four main working areas:
+
+- **Automation selector and action bar**: choose a saved automation, create a new one, save changes, reset, duplicate, delete, or run.
+- **Canvas**: place nodes and draw connections between them.
+- **Block Library**: add new nodes to the graph.
+- **Node Settings drawer**: configure the currently selected node.
+
+The builder also includes the **Variable Assistant**, which shows upstream values you can interpolate into prompts, conditions, paths, and commands.
+
+## Basic Authoring Flow
+
+1. Create or open an automation.
+2. Add nodes from the Block Library.
+3. Connect outputs to downstream inputs.
+4. Configure each node in the right-side settings drawer. Branch conditions
+   use a dot-separated registry path; comparison expressions are rejected.
+5. Save changes.
+6. Run the automation or activate its trigger behavior.
+
+## Working With Nodes
+
+When you click a node, Wardian opens the node settings drawer. That drawer shows the fields for the selected block type and hides fields that do not apply to the current mode.
+
+Examples:
+
+- Manual Trigger can declare an input schema for the run modal.
+- Agent nodes resolve their configured role/class or invocation binding.
+- Loop's optional `until` field uses the same registry-path condition grammar as Branch.
+
+## Connections and Flow
+
+Nodes run based on their incoming dependencies and output ports.
+
+Common patterns:
+
+- connect a trigger into an execution node to start work
+- connect a `Branch` into different follow-up paths
+- connect a `Loop` body back into downstream work and let `done` exit the cycle
+- use `Wait` when multiple branches need to synchronize before continuing
+
+## Save, Reset, and Run
+
+The builder has three important actions:
+
+- **Reset**: discard unsaved canvas changes and reload the saved version.
+- **Save Changes**: persist the current automation graph.
+- **Run Automation**: save first, then launch based on the automation's trigger type.
+
+Builder launch behavior is intentionally invoker-aware:
+
+- automations with a **Manual Trigger** run immediately
+- schedules are created separately and invoke the saved blueprint later
+- event listeners, when available, invoke the same durable run contract
+
+## When the Run Modal Appears
+
+Wardian opens the run modal when the automation needs extra launch-time input.
+
+That usually means one or both of these are true:
+
+- the automation has a **Manual Trigger** with an input schema
+- the automation contains **Agent** nodes in an inherited run mode that need role-to-agent assignments
+
+If neither is needed, the automation launches immediately based on its trigger type.
+
+After an automation finishes, the app can add its completed or failed outcome to the separate [Inbox](../guide/inbox.md) triage surface.
+
+## Builder vs Library
+
+Use the **Automation Builder** when you need to:
+
+- change the graph
+- edit node settings
+- test an automation while looking at the canvas
+- confirm exactly what will be saved before launch
+
+Use the **Automation Library** when you need to:
+
+- launch an existing automation quickly
+- inspect the saved blueprint before creating an invoker
+
+`sub_automation` is reserved and does not appear in the Block Library. Existing
+blueprints containing it fail validation with `unsupported_node_type`; this is
+intentional until durable child-run input, provenance, approval, cancellation,
+and restart semantics are implemented.
+
+## Related References
+
+- [Triggers](./triggers.md)
+- [Node Reference](./node-reference.md)
+- [Agent Assignment](./agent-assignment.md)
+- [Inbox](../guide/inbox.md)
+- [Visual Builder Architecture](../developer/visual-builder.md)

@@ -1,7 +1,7 @@
 import React from "react";
 import { FileDiff, Folder, MessageSquareCode } from "lucide-react";
 
-export type SidebarTab = "explorer" | "git" | "changes" | "agent-config" | "command" | "workflows";
+export type SidebarTab = "explorer" | "git" | "changes" | "agent-config" | "command" | "automations";
 
 interface SidebarIconRailProps {
   activeTab: SidebarTab;
@@ -119,13 +119,13 @@ export const SidebarIconRail = React.forwardRef<HTMLElement, SidebarIconRailProp
       </button>
 
       <button
-        data-testid="sidebar-tab-workflows"
-        data-sidebar-active={activeTab === "workflows" ? "true" : undefined}
-        onClick={() => handleTabClick("workflows")}
-        className={`relative p-3 rounded-xl transition-all group ${activeTab === "workflows" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
-        title="Workflows"
+        data-testid="sidebar-tab-automations"
+        data-sidebar-active={activeTab === "automations" ? "true" : undefined}
+        onClick={() => handleTabClick("automations")}
+        className={`relative p-3 rounded-xl transition-all group ${activeTab === "automations" ? "bg-wardian-card-bg-muted text-[var(--color-wardian-accent)]" : "text-muted-neutral hover:text-bright-neutral"}`}
+        title="Automations"
       >
-        {activeTab === "workflows" && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[var(--color-wardian-accent)] rounded-r-full" />}
+        {activeTab === "automations" && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-[var(--color-wardian-accent)] rounded-r-full" />}
         <svg className="w-6 h-6 group-hover:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
       </button>
 

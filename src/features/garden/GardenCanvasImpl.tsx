@@ -2,14 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Layer, Stage } from "react-konva";
 import type Konva from "konva";
 import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
-import { WorkflowUnit } from "./WorkflowUnit";
+import { AutomationUnit } from "./AutomationUnit";
 import { GardenContextMenu } from "./GardenContextMenu";
 import { gardenDetailForScale, type GardenSkillGlyph } from "./skillGlyphs";
 import { useGardenPulse } from "./useGardenPulse";
 import { MAX_SCALE, MIN_SCALE, fitTransform, zoomAt } from "./gardenViewport";
-import type { GardenAgentUnit, GardenEntityRef, GardenWorkflowUnit } from "./garden.types";
+import type { GardenAgentUnit, GardenEntityRef, GardenAutomationUnit } from "./garden.types";
 import { unitKey } from "./garden.types";
-import { isActiveAgentStatus, isActiveWorkflowStatus } from "./gardenStatus";
+import { isActiveAgentStatus, isActiveAutomationStatus } from "./gardenStatus";
 import { useGardenTheme } from "./useGardenTheme";
 import { TerrainLayer } from "./TerrainLayer";
 import { AttributionLayer } from "./AttributionLayer";
@@ -20,7 +20,7 @@ import { wheelZoomFactor } from "../../utils/wheelZoom";
 
 export interface GardenCanvasProps {
   agentUnits: GardenAgentUnit[];
-  workflowUnits: GardenWorkflowUnit[];
+  automationUnits: GardenAutomationUnit[];
   selectedKey: string | null;
   /** Agents carrying the selected skill; empty unless a skill is selected. */
   highlightedAgentIds?: ReadonlySet<string>;
@@ -63,7 +63,7 @@ const PAN_STEP = 80;
 
 export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   agentUnits,
-  workflowUnits,
+  automationUnits,
   selectedKey,
   highlightedAgentIds,
   terrainCells,
@@ -256,7 +256,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       const stage = stageRef.current;
       if (!stage) return;
       const transform = fitTransform(
-        [...agentUnits, ...workflowUnits].map((unit) => unit.position),
+        [...agentUnits, ...automationUnits].map((unit) => unit.position),
         size,
       );
       if (!transform) return;
@@ -272,7 +272,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       applyTransform(transform);
       setFit(applied);
     },
-    [agentUnits, workflowUnits, size, applyTransform],
+    [agentUnits, automationUnits, size, applyTransform],
   );
 
   useEffect(() => {
@@ -315,11 +315,11 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     () =>
       [
         ...agentUnits.filter((unit) => isActiveAgentStatus(unit.status)).map((u) => u.ref.id),
-        ...workflowUnits
-          .filter((unit) => isActiveWorkflowStatus(unit.runStatus))
+        ...automationUnits
+          .filter((unit) => isActiveAutomationStatus(unit.runStatus))
           .map((u) => u.ref.id),
       ].join(","),
-    [agentUnits, workflowUnits],
+    [agentUnits, automationUnits],
   );
   useGardenPulse(layerRef, pulsingKey);
 
@@ -387,7 +387,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       role="img"
-      aria-label={`Garden canvas showing ${agentUnits.length} agents and ${workflowUnits.length} workflows. Select a unit to read its status. Scroll to zoom, drag to pan, or use plus and minus to zoom, arrow keys to pan, and zero to fit.`}
+      aria-label={`Garden canvas showing ${agentUnits.length} agents and ${automationUnits.length} automations. Select a unit to read its status. Scroll to zoom, drag to pan, or use plus and minus to zoom, arrow keys to pan, and zero to fit.`}
     >
       <Stage
         ref={stageRef}
@@ -436,8 +436,8 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               )}
             </>
           )}
-          {workflowUnits.map((unit) => (
-            <WorkflowUnit
+          {automationUnits.map((unit) => (
+            <AutomationUnit
               key={unitKey(unit.ref)}
               unit={unit}
               selected={selectedKey === unitKey(unit.ref)}

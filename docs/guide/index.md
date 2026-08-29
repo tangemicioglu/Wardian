@@ -8,7 +8,7 @@ automation, and extension. Take only the next step that helps the work at hand.
 ## Start and Orient
 
 - [First-Time Install and First Run](./getting-started.md): install Wardian, verify a provider, spawn the first agent, and review the first Inbox result.
-- [Key Concepts](./key-concepts.md): learn the app layout, agents, reusable setup, and workflow runs.
+- [Key Concepts](./key-concepts.md): learn the app layout, agents, reusable setup, and automation runs.
 - [Provider Readiness](./provider-readiness.md): verify provider CLIs, authentication, shell `PATH`, and runtime prerequisites before spawning agents.
 - [First-Run Troubleshooting](./first-run-troubleshooting.md): recover from app launch, provider detection, terminal startup, Inbox, or CLI issues during first setup.
 - [UI Overview](./ui-overview.md): learn the title bar, auxiliary rail, roster, and central workspace.
@@ -21,14 +21,14 @@ automation, and extension. Take only the next step that helps the work at hand.
 - [Dashboard](./dashboard.md): watch the whole fleet over a trailing window and spot an agent behaving oddly.
 - [Analytics](./analytics.md): look up how much agents, models, or providers did over a chosen period.
 - [Graph](./graph.md): inspect team, workspace, and worktree relationships between agents.
-- [Garden](./garden.md): see agents, workflows, and skills laid out so that distance reflects what they share.
+- [Garden](./garden.md): see agents, automations, and skills laid out so that distance reflects what they share.
 - [Watchlists](./watchlists.md): group, select, sort, and monitor agents in the right roster.
 - [Inbox](./inbox.md): triage completed work, important updates, and decisions.
 - [Class Management](./class-management.md): understand reusable agent setups; edit them from the Library's Classes section.
 
 ## Reuse and Direct Work
 
-- [Library](./library.md): manage reusable prompts, skills, classes, workflow blueprints, and MCP placeholders.
+- [Library](./library.md): manage reusable prompts, skills, classes, automation blueprints, and MCP placeholders.
 - [Command Panel](./command-panel.md): send one-off broadcasts or starred prompts to selected agents.
 - [Wardian CLI](./cli.md): let agents and automation inspect or control Wardian from a shell.
 
@@ -41,5 +41,5 @@ automation, and extension. Take only the next step that helps the work at hand.
 
 - [Settings](./settings.md): tune shell, provider, session, and theme behavior.
 - [Remote Control](./remote-control.md): set up Tailscale HTTPS, pair a phone, and install the Wardian remote PWA.
-- [Workflow View](./workflows.md): build and run visual automations from the app.
-- [Workflow Reference](../workflows/index.md): learn workflow triggers, nodes, scheduling, and troubleshooting.
+- [Automation View](./automations.md): build and run visual automations from the app.
+- [Automation Reference](../automations/index.md): learn automation triggers, nodes, scheduling, and troubleshooting.

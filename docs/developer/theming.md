@@ -31,12 +31,12 @@ Always use these tokens for status indicators to ensure consistency across theme
 | Error | `--color-wardian-error` | `#ef4444` | `#dc2626` |
 | Off | `--color-wardian-off` | `#6e7681` | `#4b5563` |
 
-### Workflow Colors
+### Automation Colors
 Specific colors are reserved for the Visual Builder nodes:
-- **Agent Node**: `--color-workflow-agent` (#3b82f6)
-- **Command Node**: `--color-workflow-command` (#10b981)
-- **Logic Node**: `--color-workflow-logic` (#f59e0b)
-- **Comm Node**: `--color-workflow-comm` (#8b5cf6)
+- **Agent Node**: `--color-automation-agent` (#3b82f6)
+- **Command Node**: `--color-automation-command` (#10b981)
+- **Logic Node**: `--color-automation-logic` (#f59e0b)
+- **Comm Node**: `--color-automation-comm` (#8b5cf6)
 
 ## 🛠️ Developer Usage
 

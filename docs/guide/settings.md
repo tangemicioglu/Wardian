@@ -227,7 +227,7 @@ shell-hosted commands:
   discovered shell, or Custom. The default option names the shell Wardian
   currently resolves.
 
-Runtime shell changes affect future terminal launches and shell-hosted workflow
+Runtime shell changes affect future terminal launches and shell-hosted automation
 commands.
 
 ## Agent Runtime
@@ -242,7 +242,7 @@ resumed from `Off`:
 - **Resume sessions**
 - **Start fresh**
 
-Workflow Agent nodes use their own node-level run mode and do not inherit this
+Automation Agent nodes use their own node-level run mode and do not inherit this
 global regular-agent setting.
 
 **Conversation logging** controls whether Wardian writes new agent-owned
@@ -308,7 +308,7 @@ OpenCode, or Pi behavior.
 - Grid chat mode handles standard text prompts and recognized approval choices.
   Terminal mode is still required for raw TUI controls and provider approval
   screens that need direct terminal interaction.
-- Workflow Agent nodes have their own execution mode and do not simply inherit
+- Automation Agent nodes have their own execution mode and do not simply inherit
   the regular-agent resume default.
 - Provider utilities are provider-specific.
 

@@ -1,6 +1,6 @@
 # Provider Runtimes
 
-Wardian provides one orchestration layer over six supported CLI providers: Antigravity, Claude Code, Codex, OpenCode, Pi, and Gemini CLI. Each provider keeps its native command-line behavior, while Wardian adapts session identity, working roots, skill discovery, status tracking, and workflow execution into a consistent app model.
+Wardian provides one orchestration layer over six supported CLI providers: Antigravity, Claude Code, Codex, OpenCode, Pi, and Gemini CLI. Each provider keeps its native command-line behavior, while Wardian adapts session identity, working roots, skill discovery, status tracking, and automation execution into a consistent app model.
 
 ## Overview
 
@@ -17,7 +17,7 @@ Wardian provides one orchestration layer over six supported CLI providers: Antig
 
 - The Rust backend is the source of truth for process lifecycle, provider session IDs, PTY ownership, and status telemetry.
 - Regular visible agents use the global session policy unless the agent has an explicit override.
-- Workflow Agent nodes choose one run mode: `ephemeral`, `inherit_fresh`, or `inherit_resume`.
+- Automation Agent nodes choose one run mode: `ephemeral`, `inherit_fresh`, or `inherit_resume`.
 - Wardian keeps user repositories clean by adapting provider-native discovery instead of copying agent-specific instruction and skill files into the project root.
 
 ## Model and Effort Selection
@@ -63,7 +63,7 @@ Wardian-managed roots usually live under hidden `.wardian` directories. Antigrav
 
 ### Session and Status Handling
 
-Wardian launches visible Antigravity agents with `agy --prompt-interactive ""` so the CLI starts in interactive mode without an initial task. Headless workflow runs use `agy --print` and, when resuming, `--conversation <conversation-id>`. Provider options include `--sandbox`, `--dangerously-skip-permissions`, and `--print-timeout <duration>`.
+Wardian launches visible Antigravity agents with `agy --prompt-interactive ""` so the CLI starts in interactive mode without an initial task. Headless automation runs use `agy --print` and, when resuming, `--conversation <conversation-id>`. Provider options include `--sandbox`, `--dangerously-skip-permissions`, and `--print-timeout <duration>`.
 
 **New Session** starts a fresh interactive Antigravity session without a hidden bootstrap prompt while retaining the Wardian agent, habitat, and saved history. Wardian stores the provider conversation ID after the first real user prompt updates Antigravity's workspace conversation mapping. If Wardian restarts before that first prompt, the agent starts fresh again because no provider conversation exists yet to resume.
 
@@ -170,7 +170,7 @@ launches use `--session`. Wardian watches only the JSONL whose header confirms
 that exact ID.
 
 Visible agents use Pi's `regular` TUI mode so xterm retains terminal scrollback.
-Workflow execution uses `--mode json` and treats `agent_end` as definitive turn
+Automation execution uses `--mode json` and treats `agent_end` as definitive turn
 completion. Model discovery uses `pi --list-models`; models that advertise
 thinking support expose Pi's `off` through `max` levels in the model picker.
 
@@ -199,11 +199,11 @@ Gemini reads `GEMINI.md`. Wardian passes common, class, and agent include roots 
 
 ### Session and Status Handling
 
-Wardian learns Gemini session identity from provider output and parses Gemini stream events into lifecycle states such as initialization, user input, generation, and turn completion. Workflow execution uses these structured turn-completion signals instead of waiting for fragile terminal text.
+Wardian learns Gemini session identity from provider output and parses Gemini stream events into lifecycle states such as initialization, user input, generation, and turn completion. Automation execution uses these structured turn-completion signals instead of waiting for fragile terminal text.
 
 ### Debug First
 
-If Gemini misses Wardian-managed skills, check the Gemini patch state and include roots before changing workspace or workflow logic.
+If Gemini misses Wardian-managed skills, check the Gemini patch state and include roots before changing workspace or automation logic.
 
 ## Related References
 

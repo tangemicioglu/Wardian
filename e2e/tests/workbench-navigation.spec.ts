@@ -47,7 +47,7 @@ const CORE_SINGLETON_SURFACES = [
   "graph",
   "garden",
   "library",
-  "workflows",
+  "automations",
 ] as const satisfies readonly CoreWorkbenchSurfaceType[];
 
 function primaryLoad(document: WorkbenchDocumentV1): WorkbenchLoadResult {
@@ -564,16 +564,16 @@ test("uses real top-edge tab groups as responsive window chrome", async ({ page 
 
 test("keeps keep-alive surface overlays inside the pane content below its tab strip", async ({ page }) => {
   const agents = makeWorkbenchSurface("agents-1", "agents-overview");
-  const workflows = makeWorkbenchSurface("workflows-1", "workflows");
+  const automations = makeWorkbenchSurface("automations-1", "automations");
   await bootWorkbench(page, makeWorkbenchDocument({
     groups: {
       "group-1": {
         group_id: "group-1",
-        surface_ids: [agents.surface_id, workflows.surface_id],
+        surface_ids: [agents.surface_id, automations.surface_id],
         active_surface_id: agents.surface_id,
       },
     },
-    surfaces: [agents, workflows],
+    surfaces: [agents, automations],
   }), [ALPHA_AGENT, BETA_AGENT]);
 
   const group = workbenchGroup(page, "group-1");
@@ -605,7 +605,7 @@ test("keeps keep-alive surface overlays inside the pane content below its tab st
   await page.setViewportSize({ width: 1280, height: 720 });
   await expectActiveOverlayAligned();
   for (let index = 0; index < 8; index += 1) {
-    await surfaceTab(page, "workflows").click();
+    await surfaceTab(page, "automations").click();
     await expectActiveOverlayAligned();
     await surfaceTab(page, "agents-overview").click();
     await expectActiveOverlayAligned();
@@ -1379,13 +1379,13 @@ test("keeps the left rail auxiliary while routing its object action to a surface
   const dashboard = makeWorkbenchSurface("dashboard-1", "dashboard");
   await bootWorkbench(page, makeWorkbenchDocument({ surfaces: [dashboard] }));
 
-  await page.getByTestId("sidebar-tab-workflows").click();
+  await page.getByTestId("sidebar-tab-automations").click();
   await expect(surfaceTab(page, "dashboard")).toHaveAttribute("aria-selected", "true");
-  await expect(surfaceTab(page, "workflows")).toHaveCount(0);
+  await expect(surfaceTab(page, "automations")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Monitor", exact: true }).click();
-  await expect(surfaceTab(page, "workflows")).toHaveCount(1);
-  await expect(surfaceTab(page, "workflows")).toHaveAttribute("aria-selected", "true");
+  await expect(surfaceTab(page, "automations")).toHaveCount(1);
+  await expect(surfaceTab(page, "automations")).toHaveAttribute("aria-selected", "true");
 });
 
 test("reveals roster agents in Agents and reserves tab creation for explicit Open actions", async ({ page }) => {
@@ -1438,31 +1438,31 @@ test("reveals roster agents in Agents and reserves tab creation for explicit Ope
 
 test("cancelling one dirty close guard leaves the complete group unchanged", async ({ page }) => {
   const dashboard = makeWorkbenchSurface("dashboard-1", "dashboard");
-  const workflows = makeWorkbenchSurface("workflows-1", "workflows");
+  const automations = makeWorkbenchSurface("automations-1", "automations");
   const document = makeWorkbenchDocument({
-    surfaces: [dashboard, workflows],
+    surfaces: [dashboard, automations],
     groups: {
       "group-1": {
         group_id: "group-1",
-        surface_ids: [dashboard.surface_id, workflows.surface_id],
-        active_surface_id: workflows.surface_id,
+        surface_ids: [dashboard.surface_id, automations.surface_id],
+        active_surface_id: automations.surface_id,
       },
     },
   });
   await bootWorkbench(page, document);
 
-  await page.getByRole("textbox", { name: "Workflow name" }).fill("Edited workflow");
+  await page.getByRole("textbox", { name: "Automation name" }).fill("Edited automation");
   const group = activeWorkbenchGroup(page);
   await choosePaneAction(page, group, "Close pane");
 
-  const prompt = page.getByRole("dialog", { name: "Unsaved Workflows changes" });
+  const prompt = page.getByRole("dialog", { name: "Unsaved Automations changes" });
   await expect(prompt).toBeVisible();
   await prompt.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(group.getByRole("tab")).toHaveCount(2);
-  await expect(surfaceTab(page, "workflows")).toHaveAttribute("aria-selected", "true");
+  await expect(surfaceTab(page, "automations")).toHaveAttribute("aria-selected", "true");
 
   await choosePaneAction(page, group, "Close pane");
-  await page.getByRole("dialog", { name: "Unsaved Workflows changes" })
+  await page.getByRole("dialog", { name: "Unsaved Automations changes" })
     .getByRole("button", { name: "Discard", exact: true })
     .click();
   await expect(group.getByRole("tab")).toHaveCount(0);

@@ -109,10 +109,10 @@ async function installGardenTestIpcMock(page: Page) {
         if (command === "dismiss_onboarding_hint") {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         }
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library")
-          return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library")
+          return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") {
           return { type: "Folder", path: "", name: "Root", children: [] };
         }
@@ -175,7 +175,7 @@ test.describe("Garden View", () => {
     await expect(canvas).toBeVisible({ timeout: 10_000 });
 
     // Canvas units have no DOM handle, so the drag has to land on top of one.
-    // This fixture seeds exactly one agent and no workflows, so the map holds a
+    // This fixture seeds exactly one agent and no automations, so the map holds a
     // single unit — and the canvas fits its content into view, which puts that
     // unit in the middle of the viewport whatever its world coordinates are.
     // Aiming at the centre is therefore both simpler and sturdier than

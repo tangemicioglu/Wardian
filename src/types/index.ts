@@ -288,7 +288,7 @@ export interface AgentWorktreeSummary {
     can_delete: boolean;
 }
 
-export * from "./workflow";
+export * from "./automation";
 export * from "./remote";
 export * from "./files";
 export * from "./browser";
@@ -309,7 +309,7 @@ export interface AgentStatusUpdate {
     current_status: string;
 }
 
-export type QueueEventType = "action_needed" | "agent_completed" | "workflow_completed" | "workflow_failed";
+export type QueueEventType = "action_needed" | "agent_completed" | "automation_completed" | "automation_failed";
 
 export interface QueuePreferences {
     visible_event_types: Record<QueueEventType, boolean>;
@@ -320,20 +320,20 @@ export interface QueuePreferences {
 
 export interface QueueItem {
     id: string;
-    type: "action_needed" | "agent_completed" | "workflow_completed" | "agent_update" | "approval_request";
+    type: "action_needed" | "agent_completed" | "automation_completed" | "agent_update" | "approval_request";
     timestamp: number;
     read: boolean;
-    /** Internal durable marker used to keep cleared workflow runs out of Inbox. */
+    /** Internal durable marker used to keep cleared automation runs out of Inbox. */
     dismissed?: boolean;
     evidence_id?: string;
     evidence_source?: "provider_runtime" | "interaction_store" | "live_runtime";
     // agent fields
     agent_session_id?: string;
     agent_name?: string;
-    // workflow fields
-    workflow_id?: string;
-    workflow_run_id?: string;
-    workflow_name?: string;
+    // automation fields
+    automation_id?: string;
+    automation_run_id?: string;
+    automation_name?: string;
     status?: "completed" | "failed";
     error?: string;
     // shared
@@ -349,7 +349,7 @@ export interface QueueItem {
     approval_choices?: string[];
     approval_decision?: string;
     expires_at?: string;
-    workflow_approval?: {
+    automation_approval?: {
       blueprint_id: string;
       blueprint_path: string;
       run_id: string;
@@ -435,8 +435,8 @@ export interface LibraryItemMetadata {
 // Mirrors wardian_core::models::library and wardian_core::library::deployments
 // exactly; property names are snake_case to match Rust serde output directly.
 
-export type LibrarySectionId = 'skills' | 'prompts' | 'workflows' | 'classes' | 'mcps';
-export type LibraryEntryKind = 'skill' | 'prompt' | 'workflow' | 'class';
+export type LibrarySectionId = 'skills' | 'prompts' | 'automations' | 'classes' | 'mcps';
+export type LibraryEntryKind = 'skill' | 'prompt' | 'automation' | 'class';
 
 export interface LibraryEntry {
     kind: LibraryEntryKind;

@@ -35,7 +35,7 @@ Debian/Ubuntu users who want package-manager updates can use the optional
 
 ### macOS installation details
 
-Official macOS releases built by Wardian's signed release workflow are Developer
+Official macOS releases built by Wardian's signed release automation are Developer
 ID signed and Apple-notarized. After downloading a DMG:
 
 1. Open the DMG and drag **Wardian** to **Applications**.
@@ -184,7 +184,7 @@ Use Inbox to keep completed work from disappearing into terminal scrollback:
 - Mark reviewed items read.
 - Clear read items after triage.
 
-See [Inbox](./inbox.md) for the full triage workflow.
+See [Inbox](./inbox.md) for the full triage automation.
 
 ## 9. Check the Wardian CLI
 
@@ -225,7 +225,7 @@ Related docs:
 - Monitor several agents with [Agents](./agents-overview.md).
 - Learn the persistent shell in [UI Overview](./ui-overview.md).
 - Recover from first-run launch, provider, terminal, Inbox, and CLI failures in [First-Run Troubleshooting](./first-run-troubleshooting.md).
-- Manage reusable prompts, skills, classes, and workflow blueprints in [Library](./library.md).
+- Manage reusable prompts, skills, classes, and automation blueprints in [Library](./library.md).
 - Use [Class Management](./class-management.md) for class concepts; edit class instructions and class-level skills from the Library's Classes section.
 - Browse your agent's local files in [Explorer](./explorer.md).
 - Send one instruction to multiple agents with [Command Panel](./command-panel.md).
@@ -235,4 +235,4 @@ Related docs:
 - Configure runtime behavior and shell defaults in [Settings](./settings.md).
 - Verify provider commands and authentication in [Provider Readiness](./provider-readiness.md).
 - Compare provider runtime behavior in [Provider Runtimes](../providers.md).
-- Automate complex tasks with [Visual Workflows](./workflows.md).
+- Automate complex tasks with [Visual Automations](./automations.md).

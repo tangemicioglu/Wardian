@@ -1,8 +1,8 @@
 import type { ChangeReviewBaseline } from "../../types";
-import type { GardenWorkflowRunStatus } from "./garden.types";
+import type { GardenAutomationRunStatus } from "./garden.types";
 import type { TerrainChangeKind, TerrainPaint } from "./terrainPaint";
 import { formatAgentStatusLabel, getAgentStatusColorToken, getAgentStatusIndicatorClass, normalizeAgentStatus } from "../../utils/statusUtils";
-import { formatRunStatus, workflowRunStatusColor } from "../workflows/run/statusLabels";
+import { formatRunStatus, automationRunStatusColor } from "../automations/run/statusLabels";
 
 const GARDEN_AGENT_LEGEND_STATUSES = [
   "Idle",
@@ -35,17 +35,17 @@ export function gardenAgentStatusLabel(status: string): string {
   return formatAgentStatusLabel(status);
 }
 
-/** Workflows animate only while a run is live or waiting on a human. */
-export function isActiveWorkflowStatus(status: GardenWorkflowRunStatus): boolean {
+/** Automations animate only while a run is live or waiting on a human. */
+export function isActiveAutomationStatus(status: GardenAutomationRunStatus): boolean {
   return status === "running" || status === "awaiting_approval";
 }
 
 /** Mirrors the agent statusToColor palette so the two perspectives read alike. */
-export function workflowStatusColor(status: GardenWorkflowRunStatus): string {
-  return status === "none" ? "var(--color-wardian-text-muted)" : workflowRunStatusColor(status);
+export function automationStatusColor(status: GardenAutomationRunStatus): string {
+  return status === "none" ? "var(--color-wardian-text-muted)" : automationRunStatusColor(status);
 }
 
-export function gardenWorkflowStatusLabel(status: GardenWorkflowRunStatus): string {
+export function gardenAutomationStatusLabel(status: GardenAutomationRunStatus): string {
   return status === "none" ? "No runs yet" : formatRunStatus(status);
 }
 

@@ -16,18 +16,18 @@ save, list, and update command syntax and identify the retention check as a
 required pre-final-answer step. Do not make reliable default retention depend on
 the provider first locating or reading the Wardian CLI skill.
 
-Headless execution has two identities when a fresh workflow worker represents a
+Headless execution has two identities when a fresh automation worker represents a
 registered agent: `wardian_session_id` remains the synthetic provider-process
 key, while `memory_agent_id` is the registered owner used for recall, injection
 auditing, and the child process's `WARDIAN_SESSION_ID`. Direct headless delivery
-uses the same real agent UUID for both. Never use a synthetic workflow ID as a
+uses the same real agent UUID for both. Never use a synthetic automation ID as a
 memory owner.
 
 Memory chat events are projected in `src-tauri/src/commands/chat.rs` and rendered
 by the shared transcript row. Do not archive them as conversation records: their
 source and retention lifecycle is `memory.db`.
 
-Workflow mutation is routed through the `memory_commit` engine node. Its payload
+Automation mutation is routed through the `memory_commit` engine node. Its payload
 is a `MemoryCommitBatch`; the live executor calls `MemoryStore::commit_batch`.
 The store acquires the SQLite writer lock and advances a strictly increasing
 conversation cursor before applying mutations. A stale batch therefore rolls
@@ -48,7 +48,7 @@ The executor must reject unauthenticated commits and any request or batch whose
 Do not add implicit memory writes to task, shell, script, state, or notification
 nodes. Generic session-close invokers are persisted under
 `library/session-close-invokers.json` and launch the ordinary run path.
-Use their generic `require_archive` option for workflows whose inputs only make
+Use their generic `require_archive` option for automations whose inputs only make
 sense when a durable closing archive exists; a skipped run consumes no provider
 quota.
 
@@ -58,7 +58,7 @@ file across reload, mutation, and atomic replacement. A session-close context
 owns a unique `boundary_id`. Lifecycle code may capture the closing transcript
 before replacement. It then starts the replacement as pending, persists the
 proposed roster, commits the archive boundary, and only then installs the new
-runtime. Matching workflows launch after that commit. A failed step must keep
+runtime. Matching automations launch after that commit. A failed step must keep
 the prior registered agent record and captured conversation available for
 retry. If provider startup fails after Wardian has stopped the old process, the
 agent enters `Error`; retrying Clear reuses the preserved boundary evidence.
@@ -90,7 +90,7 @@ Memory reads and mutations accept a full memory ID or a unique prefix. Resolutio
 is centralized in `MemoryStore` and scopes candidates to the authenticated actor;
 exact IDs take precedence, a unique prefix resolves to its canonical full ID, and
 an ambiguous prefix returns a distinct error without disclosing candidate IDs.
-Mutation events, revisions, and workflow-batch results always persist and return
+Mutation events, revisions, and automation-batch results always persist and return
 the canonical full ID. Batch idempotency hashes are computed from that canonical
 representation, including historical IDs needed to replay an inactive batch.
 Unknown or cross-agent IDs retain the managed CLI's redacted access-denied

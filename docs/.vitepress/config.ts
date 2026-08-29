@@ -49,8 +49,8 @@ const guideSidebar = [
     items: [
       { text: "Settings", link: "/guide/settings" },
       { text: "Remote Control", link: "/guide/remote-control" },
-      { text: "Workflow View", link: "/guide/workflows" },
-      { text: "Workflow Reference", link: "/workflows/" },
+      { text: "Automation View", link: "/guide/automations" },
+      { text: "Automation Reference", link: "/automations/" },
     ],
   },
 ];
@@ -85,7 +85,7 @@ export default defineConfig({
     },
     nav: [
       { text: "Guide", link: "/guide/" },
-      { text: "Workflows", link: "/workflows/" },
+      { text: "Automations", link: "/automations/" },
       { text: "Providers", link: "/providers" },
       { text: "Developer", link: "/developer/" },
       {
@@ -95,17 +95,17 @@ export default defineConfig({
     ],
     sidebar: {
       "/guide/": guideSidebar,
-      "/workflows/": [
+      "/automations/": [
         {
-          text: "Workflow Reference",
+          text: "Automation Reference",
           items: [
-            { text: "Overview", link: "/workflows/" },
-            { text: "Building Workflows", link: "/workflows/building-workflows" },
-            { text: "Agent Assignment", link: "/workflows/agent-assignment" },
-            { text: "Triggers", link: "/workflows/triggers" },
-            { text: "Scheduled Runs", link: "/workflows/scheduled-runs" },
-            { text: "Node Reference", link: "/workflows/node-reference" },
-            { text: "Troubleshooting", link: "/workflows/troubleshooting" },
+            { text: "Overview", link: "/automations/" },
+            { text: "Building Automations", link: "/automations/building-automations" },
+            { text: "Agent Assignment", link: "/automations/agent-assignment" },
+            { text: "Triggers", link: "/automations/triggers" },
+            { text: "Scheduled Runs", link: "/automations/scheduled-runs" },
+            { text: "Node Reference", link: "/automations/node-reference" },
+            { text: "Troubleshooting", link: "/automations/troubleshooting" },
           ],
         },
       ],
@@ -146,7 +146,7 @@ export default defineConfig({
           text: "More Documentation",
           items: [
             { text: "Key Features", link: "/features" },
-            { text: "Workflow Reference", link: "/workflows/" },
+            { text: "Automation Reference", link: "/automations/" },
             { text: "Developer Documentation", link: "/developer/" },
           ],
         },

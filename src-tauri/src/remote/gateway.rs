@@ -100,7 +100,7 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .route("/remote/api/queue", get(load_remote_queue))
         .route("/remote/api/queue/action", post(run_inbox_action))
         .route("/remote/api/watchlists", get(load_remote_watchlists))
-        .route("/remote/api/workflows", get(list_remote_workflows))
+        .route("/remote/api/automations", get(list_remote_automations))
         .route(
             "/remote/api/agents/{session_id}/chat",
             get(load_remote_agent_chat),
@@ -666,24 +666,30 @@ async fn load_remote_watchlists(
     Ok(Json(response))
 }
 
-async fn list_remote_workflows(
+async fn list_remote_automations(
     State(ctx): State<RemoteGatewayContext>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, RemoteGatewayError> {
-    let origin = require_audited_request_boundary(&ctx.config, &headers, false, "list_workflows")?;
-    let session =
-        require_audited_remote_session(&ctx, &headers, &origin, "workflow_read", "list_workflows")
-            .await?;
+    let origin =
+        require_audited_request_boundary(&ctx.config, &headers, false, "list_automations")?;
+    let session = require_audited_remote_session(
+        &ctx,
+        &headers,
+        &origin,
+        "automation_read",
+        "list_automations",
+    )
+    .await?;
     audit_gateway_event(
         &session,
         &origin,
-        GatewayAuditEvent::accepted("workflow_read", "list_workflows"),
+        GatewayAuditEvent::accepted("automation_read", "list_automations"),
     );
-    Ok(Json(remote_workflow_compat_empty_list_response()))
+    Ok(Json(remote_automation_compat_empty_list_response()))
 }
 
-fn remote_workflow_compat_empty_list_response() -> serde_json::Value {
-    serde_json::json!({ "workflows": [] })
+fn remote_automation_compat_empty_list_response() -> serde_json::Value {
+    serde_json::json!({ "automations": [] })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1928,10 +1934,10 @@ mod tests {
     }
 
     #[test]
-    fn remote_workflow_compat_empty_list_preserves_v1_shape() {
+    fn remote_automation_compat_empty_list_preserves_v1_shape() {
         assert_eq!(
-            remote_workflow_compat_empty_list_response(),
-            serde_json::json!({ "workflows": [] })
+            remote_automation_compat_empty_list_response(),
+            serde_json::json!({ "automations": [] })
         );
     }
 

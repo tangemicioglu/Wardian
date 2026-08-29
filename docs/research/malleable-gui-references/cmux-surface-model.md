@@ -274,7 +274,7 @@ Sources:
 
 ### 11. Remote workspace and browser relay
 
-For SSH workflows, cmux creates a remote workspace. Browser panes route through
+For SSH automations, cmux creates a remote workspace. Browser panes route through
 the remote network so remote localhost works. Remote CLI commands can control
 the local cmux browser through an authenticated relay. Browser commands that
 target an existing surface default to `CMUX_SURFACE_ID`; browser `open`

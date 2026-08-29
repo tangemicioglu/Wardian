@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { create } from 'zustand';
-import type { ScheduleDefinition, WorkflowAssignments, WorkflowSchedule } from '../types/workflow';
+import type { ScheduleDefinition, AutomationAssignments, AutomationSchedule } from '../types/automation';
 
 export interface CreateScheduleArgs {
   blueprintId: string;
@@ -11,7 +11,7 @@ export interface CreateScheduleArgs {
   workspace: string;
   input?: unknown;
   bindings?: Record<string, string>;
-  assignments?: WorkflowAssignments;
+  assignments?: AutomationAssignments;
 }
 
 export interface UpdateScheduleArgs {
@@ -23,11 +23,11 @@ export interface UpdateScheduleArgs {
   workspace: string;
   input?: unknown;
   bindings?: Record<string, string>;
-  assignments?: WorkflowAssignments;
+  assignments?: AutomationAssignments;
 }
 
 interface SchedulesState {
-  schedules: WorkflowSchedule[];
+  schedules: AutomationSchedule[];
   loading: boolean;
   error: string | null;
   load: () => Promise<void>;
@@ -48,9 +48,9 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
   async load() {
     set({ loading: true, error: null });
     try {
-      const schedules = await invoke<WorkflowSchedule[]>('schedule_list');
+      const schedules = await invoke<AutomationSchedule[]>('schedule_list');
       const nextSchedules = Array.isArray(schedules) ? schedules : [];
-      if (workflowSchedulesEqual(get().schedules, nextSchedules)) {
+      if (automationSchedulesEqual(get().schedules, nextSchedules)) {
         set({ loading: false });
         return;
       }
@@ -140,14 +140,14 @@ export const useSchedulesStore = create<SchedulesState>((set, get) => ({
   },
 }));
 
-function workflowSchedulesEqual(left: WorkflowSchedule[], right: WorkflowSchedule[]) {
+function automationSchedulesEqual(left: AutomationSchedule[], right: AutomationSchedule[]) {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
-    if (workflowScheduleSignature(left[index]) !== workflowScheduleSignature(right[index])) return false;
+    if (automationScheduleSignature(left[index]) !== automationScheduleSignature(right[index])) return false;
   }
   return true;
 }
 
-function workflowScheduleSignature(schedule: WorkflowSchedule) {
+function automationScheduleSignature(schedule: AutomationSchedule) {
   return JSON.stringify(schedule);
 }

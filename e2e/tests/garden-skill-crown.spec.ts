@@ -143,15 +143,15 @@ async function installCrownIpcMock(page: Page) {
         if (command === "dismiss_onboarding_hint") {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         }
-        if (command === "list_workflows") return [];
-        if (command === "workflow_list_blueprints") {
+        if (command === "list_automations") return [];
+        if (command === "automation_list_blueprints") {
           return { blueprints: [
-            { id: "trident-alerts", path: "/w/library/workflows/trident/trident-alerts.md" },
-            { id: "trident-scan", path: "/w/library/workflows/trident/trident-scan.md" },
-            { id: "autoreview", path: "/w/library/workflows/autoreview.md" },
+            { id: "trident-alerts", path: "/w/library/automations/trident/trident-alerts.md" },
+            { id: "trident-scan", path: "/w/library/automations/trident/trident-scan.md" },
+            { id: "autoreview", path: "/w/library/automations/autoreview.md" },
           ], truncated: false, next_offset: null };
         }
-        if (command === "workflow_parse") {
+        if (command === "automation_parse") {
           const path = String(args?.path ?? "");
           // The Trident blueprints name the directory they operate on, which is
           // the same workspace two agents live in; the loose one names nothing.
@@ -170,7 +170,7 @@ async function installCrownIpcMock(page: Page) {
                       // Forward slashes on purpose: a backslash does not survive
                       // serialization into addInitScript, and the normalizer
                       // accepts either form. Backslash handling is covered by
-                      // the unit tests in workflowContext.test.ts.
+                      // the unit tests in automationContext.test.ts.
                       fields: { command: "python alerts.py", cwd: "D:/Trading/trident" },
                     },
                   ]
@@ -179,9 +179,9 @@ async function installCrownIpcMock(page: Page) {
             },
           };
         }
-        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
+        if (command === "automation_list_runs") return { runs: [], truncated: false, next_offset: null };
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") {
           return { type: "Folder", path: "", name: "Root", children: [] };
         }

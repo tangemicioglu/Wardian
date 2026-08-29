@@ -124,8 +124,8 @@ fn handle_show(entry_ref: &str, include_content: bool) -> Result<String, CliErro
         serde_json::to_value(&entry).map_err(|error| CliError::generic(error.to_string()))?;
     body["schema"] = serde_json::json!(1);
     body["absolute_path"] = serde_json::json!(absolute_path.clone());
-    if entry_ref.section == LibrarySectionId::Workflows {
-        body["workflow_path"] = serde_json::json!(absolute_path);
+    if entry_ref.section == LibrarySectionId::Automations {
+        body["automation_path"] = serde_json::json!(absolute_path);
     }
     if include_content {
         body["content"] =
@@ -468,9 +468,11 @@ fn entry_exists(home: &Path, entry: &LibraryRef) -> bool {
         LibrarySectionId::Skills => target_path_for_ref(home, entry)
             .map(|path| path.join("SKILL.md").is_file())
             .unwrap_or(false),
-        LibrarySectionId::Prompts | LibrarySectionId::Workflows => target_path_for_ref(home, entry)
-            .map(|path| path.is_file())
-            .unwrap_or(false),
+        LibrarySectionId::Prompts | LibrarySectionId::Automations => {
+            target_path_for_ref(home, entry)
+                .map(|path| path.is_file())
+                .unwrap_or(false)
+        }
         LibrarySectionId::Classes => target_path_for_ref(home, entry)
             .map(|path| path.join("AGENTS.md").is_file())
             .unwrap_or(false),
@@ -808,7 +810,7 @@ mod tests {
 
         let skill = parse_library_ref("skills/review/planner").unwrap();
         let class = parse_library_ref("classes/Reviewer").unwrap();
-        let missing = parse_library_ref("workflows/missing.md").unwrap();
+        let missing = parse_library_ref("automations/missing.md").unwrap();
 
         assert!(target_path_for_ref(home, &skill)
             .unwrap()

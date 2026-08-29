@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { GraphCanvas, type GraphCanvasProps } from "../graph/GraphCanvas";
 import { GardenCanvas, type GardenCanvasProps } from "../garden/GardenCanvas";
-import { BuilderCanvas, type BuilderCanvasProps } from "../workflows/builder/BuilderCanvas";
-import { RunDag, type RunDagProps } from "../workflows/run/RunDag";
+import { BuilderCanvas, type BuilderCanvasProps } from "../automations/builder/BuilderCanvas";
+import { RunDag, type RunDagProps } from "../automations/run/RunDag";
 
 /**
  * These wrappers forward props untouched and never read them, so a placeholder
@@ -21,7 +21,7 @@ describe("lazy surface canvases", () => {
     ["garden", "garden-canvas-loading", () => (
       <GardenCanvas {...(forwarded as GardenCanvasProps)} />
     )],
-    ["workflow builder", "builder-canvas-loading", () => (
+    ["automation builder", "builder-canvas-loading", () => (
       <BuilderCanvas {...(forwarded as BuilderCanvasProps)} />
     )],
     ["run DAG", "run-dag-loading", () => (

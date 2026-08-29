@@ -35,7 +35,7 @@ const sections: LibraryIndex['sections'] = {
     stubbed: false,
     tree: { path: '', name: 'Root', children: [] },
   },
-  workflows: {
+  automations: {
     stubbed: false,
     tree: { path: '', name: 'Root', children: [] },
   },
@@ -52,7 +52,7 @@ const sections: LibraryIndex['sections'] = {
 describe('SectionRail', () => {
   it('renders all five sections', () => {
     render(<SectionRail activeSection="skills" sections={null} onSelect={vi.fn()} />);
-    for (const id of ['skills', 'prompts', 'classes', 'workflows', 'mcps']) {
+    for (const id of ['skills', 'prompts', 'classes', 'automations', 'mcps']) {
       expect(screen.getByTestId(`library-section-${id}`)).toBeInTheDocument();
     }
   });
@@ -97,21 +97,21 @@ describe('SectionRail', () => {
     expect(screen.getByTestId('library-section-skills')).not.toHaveAttribute('aria-current');
   });
 
-  it('renders every section label unclipped, including the longest label ("Workflows")', () => {
+  it('renders every section label unclipped, including the longest label ("Automations")', () => {
     render(<SectionRail activeSection="skills" sections={sections} onSelect={vi.fn()} />);
 
     for (const [id, label] of [
       ['skills', 'Skills'],
       ['prompts', 'Prompts'],
       ['classes', 'Classes'],
-      ['workflows', 'Workflows'],
+      ['automations', 'Automations'],
       ['mcps', 'MCPs'],
     ] as const) {
       expect(screen.getByTestId(`library-section-${id}`)).toHaveTextContent(label);
     }
 
     // Regression guard: the rail must be wide enough (and the label's
-    // tracking loose enough) that "Workflows" doesn't clip to "Workflow".
+    // tracking loose enough) that "Automations" doesn't clip to "Automation".
     const rail = screen.getByTestId('library-section-rail');
     expect(rail.className).not.toContain('w-14');
   });

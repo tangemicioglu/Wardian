@@ -30,7 +30,7 @@ export type WorkbenchCommandId =
   | "workbench.open_graph"
   | "workbench.open_garden"
   | "workbench.open_library"
-  | "workbench.open_workflows"
+  | "workbench.open_automations"
   | "workbench.mru_switcher";
 
 export type WorkbenchCommandAction = {
@@ -86,7 +86,7 @@ export const WORKBENCH_COMMAND_ACTIONS: readonly WorkbenchCommandAction[] = Obje
   { command_id: "workbench.open_graph", title: "Open Graph", shortcut: "Mod+Alt+G" },
   { command_id: "workbench.open_garden", title: "Open Garden", shortcut: "Mod+Alt+H" },
   { command_id: "workbench.open_library", title: "Open Library", shortcut: "Mod+Alt+B" },
-  { command_id: "workbench.open_workflows", title: "Open Workflows", shortcut: "Mod+Alt+W" },
+  { command_id: "workbench.open_automations", title: "Open Automations", shortcut: "Mod+Alt+W" },
 ]);
 
 function defaultCreateId(kind: WorkbenchIdKind): string {
@@ -165,7 +165,7 @@ function shortcutForEvent(event: KeyboardEvent): WorkbenchCommandId | null {
   if (primary && event.altKey && key === "g") return "workbench.open_graph";
   if (primary && event.altKey && key === "h") return "workbench.open_garden";
   if (primary && event.altKey && key === "b") return "workbench.open_library";
-  if (primary && event.altKey && key === "w") return "workbench.open_workflows";
+  if (primary && event.altKey && key === "w") return "workbench.open_automations";
   if (primary && key === "0") return "workbench.focus_workbench";
   return null;
 }
@@ -361,8 +361,8 @@ export function useWorkbenchCommands(
       case "workbench.open_library":
         current.navigation.open({ surface_type: "library" });
         return true;
-      case "workbench.open_workflows":
-        current.navigation.open({ surface_type: "workflows" });
+      case "workbench.open_automations":
+        current.navigation.open({ surface_type: "automations" });
         return true;
       case "workbench.mru_switcher":
         current.on_mru_switcher?.(1);

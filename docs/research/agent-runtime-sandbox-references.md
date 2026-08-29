@@ -1,6 +1,6 @@
 # Agent Runtime Sandbox References
 
-This document maps public agent runtime, sandbox, browser automation, and policy systems to design patterns relevant to Wardian's provider execution model, terminal safety, workflow approvals, and future isolated workspaces.
+This document maps public agent runtime, sandbox, browser automation, and policy systems to design patterns relevant to Wardian's provider execution model, terminal safety, automation approvals, and future isolated workspaces.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -25,11 +25,11 @@ Source basis: entries were selected through public research and checked against 
 | [Agent-Sandbox](https://github.com/agent-sandbox/agent-sandbox) | Kubernetes-backed multi-tenant agent sandbox with REST and MCP lifecycle management. | Useful for future remote/isolated Wardian workers. |
 | [E2B](https://e2b.dev/) | Cloud sandbox for AI-generated code and agents. | Reference for disposable execution environments and agent-accessible terminals. |
 | [Daytona](https://github.com/daytonaio/daytona) | Development-environment sandbox infrastructure. | Relevant to isolated workspaces and repeatable dev environments. |
-| [Stagehand](https://github.com/browserbase/stagehand) | AI browser automation primitives over Chromium. | Useful if Wardian adds browser panels or browser workflow nodes. |
+| [Stagehand](https://github.com/browserbase/stagehand) | AI browser automation primitives over Chromium. | Useful if Wardian adds browser panels or browser automation nodes. |
 | [Browserbase MCP](https://github.com/browserbase/mcp-server-browserbase) | MCP access to managed browser sessions. | Reference for browser sessions as agent tools with replay and lifecycle control. |
 | [browser-use](https://github.com/browser-use/browser-use) | Python browser automation for agents. | Useful for comparing free-form browser agent loops against deterministic primitives. |
-| [Playwright MCP](https://github.com/microsoft/playwright-mcp) | Browser automation exposed through MCP. | Relevant for local, inspectable browser tooling in workflows. |
-| [Skyvern](https://github.com/Skyvern-AI/skyvern) | AI browser automation for web workflows. | Useful as an adjacent workflow/browser automation reference. |
+| [Playwright MCP](https://github.com/microsoft/playwright-mcp) | Browser automation exposed through MCP. | Relevant for local, inspectable browser tooling in automations. |
+| [Skyvern](https://github.com/Skyvern-AI/skyvern) | AI browser automation for web automations. | Useful as an adjacent automation/browser automation reference. |
 
 ## Reference Profiles
 
@@ -80,7 +80,7 @@ Source basis: entries were selected through public research and checked against 
 - File and command execution APIs.
 - Agent-runtime orientation.
 
-**Wardian relevance:** E2B is useful as a reference for disposable and remote execution. Wardian should not require cloud sandboxes, but workflow nodes should be able to declare whether they run on the host, in a worktree, or in an isolated runtime.
+**Wardian relevance:** E2B is useful as a reference for disposable and remote execution. Wardian should not require cloud sandboxes, but automation nodes should be able to declare whether they run on the host, in a worktree, or in an isolated runtime.
 
 ### Daytona
 
@@ -111,7 +111,7 @@ Source basis: entries were selected through public research and checked against 
 - Optional managed Browserbase sessions.
 - Support across major model providers.
 
-**Wardian relevance:** Stagehand is relevant if Wardian adds browser workflow nodes or browser panels. Its split between deterministic primitives and autonomous agent mode maps well to Wardian's distinction between workflow control and agent autonomy.
+**Wardian relevance:** Stagehand is relevant if Wardian adds browser automation nodes or browser panels. Its split between deterministic primitives and autonomous agent mode maps well to Wardian's distinction between automation control and agent autonomy.
 
 ### Browserbase MCP
 
@@ -126,7 +126,7 @@ Source basis: entries were selected through public research and checked against 
 - Session persistence and replay.
 - Production browser automation infrastructure.
 
-**Wardian relevance:** Browserbase MCP shows how browser sessions can become structured tools. Wardian should be able to attach a browser surface to a workflow run while preserving replayable action logs and human inspection.
+**Wardian relevance:** Browserbase MCP shows how browser sessions can become structured tools. Wardian should be able to attach a browser surface to an automation run while preserving replayable action logs and human inspection.
 
 ### browser-use
 
@@ -156,25 +156,25 @@ Source basis: entries were selected through public research and checked against 
 - Structured browser actions.
 - Screenshot/DOM-driven inspection patterns.
 
-**Wardian relevance:** This is likely the most practical browser automation reference for local-first Wardian workflows. A browser node should be observable, replayable, and interruptible, not just a hidden agent tool call.
+**Wardian relevance:** This is likely the most practical browser automation reference for local-first Wardian automations. A browser node should be observable, replayable, and interruptible, not just a hidden agent tool call.
 
 ### Skyvern
 
 **Source basis:** Public repo checked at a high level.
 
-**What it includes:** Skyvern is an AI browser automation system for web workflows. It is relevant as part of the broader browser-agent automation landscape.
+**What it includes:** Skyvern is an AI browser automation system for web automations. It is relevant as part of the broader browser-agent automation landscape.
 
 **Distinctive components:**
 
-- Browser workflow automation.
+- Browser automation.
 - AI-assisted interaction with web pages.
-- Task execution and workflow posture.
+- Task execution and automation posture.
 
-**Wardian relevance:** Skyvern is a later-stage reference. Wardian does not need to become a browser automation product, but browser workflows will matter if agents need to operate web apps during visible runs.
+**Wardian relevance:** Skyvern is a later-stage reference. Wardian does not need to become a browser automation product, but browser automations will matter if agents need to operate web apps during visible runs.
 
 ## Wardian Positioning
 
-Wardian should model runtime as a first-class part of every agent and workflow node:
+Wardian should model runtime as a first-class part of every agent and automation node:
 
 ```text
 task -> runtime environment -> permissions -> observable session -> artifacts and audit log
@@ -186,5 +186,5 @@ Near-term implications:
 - Add policy metadata before adding powerful automation.
 - Keep secrets and network access explicit.
 - Make sandbox attach/inspect/terminate operations visible in the Wardian desktop app.
-- Log runtime actions as workflow evidence, not just terminal text.
-- Prefer deterministic browser/tool primitives for critical workflow steps, with autonomous agents reserved for exploration.
+- Log runtime actions as automation evidence, not just terminal text.
+- Prefer deterministic browser/tool primitives for critical automation steps, with autonomous agents reserved for exploration.

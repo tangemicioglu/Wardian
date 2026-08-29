@@ -11,9 +11,9 @@ import type {
   RemoteTerminalStreamMessage,
   RemoteWebSocketTicketResponse,
   RemoteWatchlistResponse,
-  RemoteWorkflowRunRequest,
-  RemoteWorkflowStopRequest,
-  RemoteWorkflowSummary,
+  RemoteAutomationRunRequest,
+  RemoteAutomationStopRequest,
+  RemoteAutomationSummary,
 } from "../../types";
 
 export interface RemoteAgentChatPage {
@@ -185,23 +185,23 @@ export const remoteClient = {
       body: JSON.stringify(request),
     });
   },
-  async listWorkflows() {
-    const result = await remoteJson<{ workflows: RemoteWorkflowSummary[] }>("/remote/api/workflows");
-    return result.workflows;
+  async listAutomations() {
+    const result = await remoteJson<{ automations: RemoteAutomationSummary[] }>("/remote/api/automations");
+    return result.automations;
   },
   async loadWatchlists() {
     return remoteJson<RemoteWatchlistResponse>("/remote/api/watchlists");
   },
-  async runWorkflow(workflow_id: string, payload?: unknown) {
-    const request: RemoteWorkflowRunRequest = { workflow_id, payload };
-    await remoteJson<{ ok: true }>("/remote/api/workflows/run", {
+  async runAutomation(automation_id: string, payload?: unknown) {
+    const request: RemoteAutomationRunRequest = { automation_id, payload };
+    await remoteJson<{ ok: true }>("/remote/api/automations/run", {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  async stopWorkflow(run_instance_id: string) {
-    const request: RemoteWorkflowStopRequest = { run_instance_id };
-    await remoteJson<{ ok: true }>("/remote/api/workflows/stop", {
+  async stopAutomation(run_instance_id: string) {
+    const request: RemoteAutomationStopRequest = { run_instance_id };
+    await remoteJson<{ ok: true }>("/remote/api/automations/stop", {
       method: "POST",
       body: JSON.stringify(request),
     });

@@ -61,7 +61,7 @@ test.describe("Library Redesign", () => {
     await expect(page.locator('[data-testid="library-section-skills"]')).toContainText("2");
     await expect(page.locator('[data-testid="library-section-prompts"]')).toContainText("1");
     await expect(page.locator('[data-testid="library-section-classes"]')).toContainText("1");
-    await expect(page.locator('[data-testid="library-section-workflows"]')).toContainText("1");
+    await expect(page.locator('[data-testid="library-section-automations"]')).toContainText("1");
     // MCPs is stubbed with zero entries: no count badge renders at all.
     await expect(page.locator('[data-testid="library-section-mcps"]')).toBeVisible();
     await expect(page.locator('[data-testid="library-section-mcps"] span').nth(1)).toHaveCount(0);
@@ -150,7 +150,7 @@ test.describe("Library Redesign", () => {
 });
 
 test.describe("seedLibraryFixtures fixture", () => {
-  test("writes the nested skills, prompt, workflow, and class the native tests read back", () => {
+  test("writes the nested skills, prompt, automation, and class the native tests read back", () => {
     // Runs in the Playwright Node context: the browser layer above never
     // reads this directory (there is no real Tauri backend behind the Vite
     // dev server), so the fixture is verified by its on-disk output here —
@@ -176,8 +176,8 @@ test.describe("seedLibraryFixtures fixture", () => {
       const greeting = fs.readFileSync(path.join(home, "library", "prompts", "greeting.md"), "utf8");
       expect(greeting).toContain("Say hello to the team");
 
-      const triage = fs.readFileSync(path.join(home, "library", "workflows", "triage.md"), "utf8");
-      expect(triage).toContain("description: Triage workflow");
+      const triage = fs.readFileSync(path.join(home, "library", "automations", "triage.md"), "utf8");
+      expect(triage).toContain("description: Triage automation");
 
       const agentsMd = fs.readFileSync(path.join(home, "classes", "Architect", "AGENTS.md"), "utf8");
       expect(agentsMd).toContain("Role: Architect");

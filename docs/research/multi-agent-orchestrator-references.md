@@ -1,6 +1,6 @@
 # Multi-Agent Orchestrator References
 
-This document maps public multi-agent orchestration systems to design patterns relevant to Wardian's local agent Habitat, workflow runtime, local agent roster, and agent-team management surfaces.
+This document maps public multi-agent orchestration systems to design patterns relevant to Wardian's local agent Habitat, automation runtime, local agent roster, and agent-team management surfaces.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -14,7 +14,7 @@ Wardian should distinguish interaction surface from orchestration model:
 
 - **GUI/web agent workspaces**: emphasize dashboards, visual configuration, run history, and team-level visibility.
 - **CLI/TUI/local-terminal systems**: emphasize fast keyboard control, local worktrees, terminal multiplexing, and developer-loop ergonomics.
-- **Organization and SDLC control planes**: emphasize goals, org charts, budgets, issue/task ownership, approval gates, CI, PRs, and management/accountability workflows above individual agent sessions.
+- **Organization and SDLC control planes**: emphasize goals, org charts, budgets, issue/task ownership, approval gates, CI, PRs, and management/accountability automations above individual agent sessions.
 - **Libraries/frameworks**: emphasize programmable agent composition, state models, message routing, tools, memory, and runtime APIs.
 - **Hybrid systems**: expose more than one surface, often pairing a code or YAML source of truth with a GUI or CLI execution surface.
 
@@ -29,9 +29,9 @@ This distinction matters because Wardian is not only an agent framework. It is a
 | [Beehive](https://github.com/storozhenko98/beehive) | Desktop GUI + TUI | One-window repo/workspace manager for isolated clones, persistent PTYs, agent panes, and shared GUI/TUI config. | The "agent colony" metaphor aligns with Wardian's habitat framing when it exposes concrete repos, branches, panes, and persisted layout. |
 | [Agent of Empires](https://github.com/njbrake/agent-of-empires) | TUI + web dashboard | tmux-backed session manager for many CLI coding agents, worktrees, optional Docker sandboxes, and remote browser access. | Dense, low-latency agent supervision is its own UX class. |
 | [Hive](https://github.com/cristicretu/hive) | CLI/TUI | Small Ink-based worktree manager for creating, listing, merging, and dropping parallel agent workspaces. | Some adjacent tools are intentionally narrow; Wardian should keep the fast worktree loop simple even as the Habitat grows. |
-| [Apiari](https://github.com/ApiariTools/apiari) | Coordinator daemon + TUI/web surfaces | Rust workspace chat hub plus Swarm worker multiplexer for bots, signal watching, schedules, and worktree workers. | Wardian workflows should distinguish agent execution from coordination, review, notification, and merge ownership. |
+| [Apiari](https://github.com/ApiariTools/apiari) | Coordinator daemon + TUI/web surfaces | Rust workspace chat hub plus Swarm worker multiplexer for bots, signal watching, schedules, and worktree workers. | Wardian automations should distinguish agent execution from coordination, review, notification, and merge ownership. |
 | [Orca](https://github.com/stablyai/orca) | Desktop IDE + CLI | Agent development environment with worktrees, terminal panes, source control, inline review, browser/design mode, and agent-driving CLI. | Terminal panes, diffs, unread markers, status, and notifications belong in one local agent workspace. |
-| [Daintree](https://github.com/daintreehq/daintree) | Desktop agent console | Electron local control plane for panels, worktrees, CLI agents, state detection, context injection, recipes, MCP, and review workflows. | Wardian's habitat metaphor should stay grounded in concrete worktrees, diffs, resource pressure, and action-needed states. |
+| [Daintree](https://github.com/daintreehq/daintree) | Desktop agent console | Electron local control plane for panels, worktrees, CLI agents, state detection, context injection, recipes, MCP, and review automations. | Wardian's habitat metaphor should stay grounded in concrete worktrees, diffs, resource pressure, and action-needed states. |
 | [Biomelab](https://github.com/mdelapenya/biomelab) | Desktop GUI | Fyne desktop dashboard for Git worktrees, process-detected agents, PR/CI state, terminal/IDE detection, and Docker sandboxes. | Visual dashboards can make worktree ownership, branch health, and agent isolation inspectable without owning the agent runtime. |
 | [Agor](https://github.com/preset-io/agor) | GUI/Web | Multiplayer spatial canvas for coordinating coding assistants, worktrees, and sessions. | Spatial dashboards are useful when they expose ownership, environment, and live conversation state. |
 | [webmux](https://github.com/windmill-labs/webmux) | Web dashboard + CLI | Parallel AI agent dashboard with YAML-defined layouts, tmux terminals, worktrees, service ports, PR/CI, Linear, and Docker sandboxes. | A web agent workspace can remain reproducible if its layout and runtime assumptions are text-defined. |
@@ -39,19 +39,19 @@ This distinction matters because Wardian is not only an agent framework. It is a
 | [Overstory](https://github.com/jayminwest/overstory) | CLI + web UI + TUI dashboard | Multi-agent coding orchestration with worktrees, runtime adapters, SQLite mail, watchdogs, web UI, TUI dashboard, and conflict resolution. | Agent-agent messaging, health monitoring, and merge coordination are key pieces beyond simply spawning workers. |
 | [Paperclip](https://github.com/paperclipai/paperclip) | Org/company control plane | Node.js server and React UI for managing teams of agents through companies, org charts, goals, issues, budgets, approvals, heartbeats, and audit trails. | Wardian should distinguish agent execution from management primitives such as goals, reporting lines, budgets, governance, and accountability. |
 | [Shep](https://github.com/shep-ai/shep) | CLI + web dashboard | Feature/SDLC control plane for AI coding agents, worktrees, feature phases, approval gates, CI auto-fix, PR creation, and multi-repo dashboards. | Wardian needs lifecycle views that sit above sessions: feature state, gates, CI, PRs, and evidence should be visible independently of the terminal. |
-| [Archon](https://github.com/coleam00/Archon) | Hybrid CLI/web | YAML workflows, isolated worktrees, visual execution. | Treat agent work as inspectable workflow runs with source-controlled definitions. |
+| [Archon](https://github.com/coleam00/Archon) | Hybrid CLI/web | YAML automations, isolated worktrees, visual execution. | Treat agent work as inspectable automation runs with source-controlled definitions. |
 | [AWS CLI Agent Orchestrator](https://github.com/awslabs/cli-agent-orchestrator) | CLI/TUI | Terminal-native orchestration of multiple coding agents in Git worktrees. | TUI-style agent rosters and worktree dispatch are directly relevant to Wardian. |
 | [Claude Squad](https://github.com/smtg-ai/claude-squad) | TUI/local terminal | Manage multiple AI coding agents in isolated workspaces from one terminal UI. | Local multiplexing, resumable sessions, and per-agent workspace isolation are first-class UX concerns. |
 | [OpenHands](https://github.com/All-Hands-AI/OpenHands) | GUI/web + CLI | Software engineering agents with browser/app UI, runtime sandboxing, and task execution. | Humans benefit from seeing agent work products, logs, browser state, and code changes together. |
 | [AutoGen](https://github.com/microsoft/autogen) | Framework + Studio | Multi-agent conversation framework with an optional no-code studio. | A library-level orchestration model can power both programmatic and visual control surfaces. |
-| [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | Framework | Enterprise-oriented multi-agent orchestration with workflow, memory, tools, MCP, A2A, and observability concepts. | Protocol and governance boundaries matter when agents become long-lived infrastructure. |
-| [CrewAI](https://github.com/crewAIInc/crewAI) | Framework + platform | Role-based crews plus deterministic flows. | Separate autonomous team collaboration from deterministic workflow control. |
+| [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | Framework | Enterprise-oriented multi-agent orchestration with automation, memory, tools, MCP, A2A, and observability concepts. | Protocol and governance boundaries matter when agents become long-lived infrastructure. |
+| [CrewAI](https://github.com/crewAIInc/crewAI) | Framework + platform | Role-based crews plus deterministic flows. | Separate autonomous team collaboration from deterministic automation control. |
 | [AgentScope](https://github.com/agentscope-ai/agentscope) | Framework | Multi-agent framework with message hub orchestration, MCP/A2A support, observability, and deployment options. | Agent systems need observability, structured messages, and deployment-aware orchestration. |
 | [MetaGPT](https://github.com/FoundationAgents/MetaGPT) | Framework/CLI | Software-company metaphor with role-specialized agents. | Role contracts and artifact handoffs help humans reason about multi-agent output. |
 | [CAMEL](https://github.com/camel-ai/camel) | Framework | Communicative agent framework and society simulation patterns. | Message protocols and role-play interactions are useful primitives, but need operational visibility. |
 | [SuperAGI](https://github.com/TransformerOptimus/SuperAGI) | GUI/web platform | Agent platform with marketplace, tools, memory, and execution visibility. | Web dashboards can make agent lifecycle visible, but local-first inspection remains Wardian's differentiator. |
-| [AutoGPT Platform](https://github.com/Significant-Gravitas/AutoGPT) | GUI/web + server | Visual block-based agent workflows with marketplace/server components. | Block-based agent graphs show how visual composition and reusable agent components fit together. |
-| [Flowise](https://github.com/FlowiseAI/Flowise) | GUI/web | Low-code LLM app, agent, and workflow builder. | Visual construction is accessible, but Wardian should retain text-native definitions for agent authors. |
+| [AutoGPT Platform](https://github.com/Significant-Gravitas/AutoGPT) | GUI/web + server | Visual block-based agent automations with marketplace/server components. | Block-based agent graphs show how visual composition and reusable agent components fit together. |
+| [Flowise](https://github.com/FlowiseAI/Flowise) | GUI/web | Low-code LLM app, agent, and automation builder. | Visual construction is accessible, but Wardian should retain text-native definitions for agent authors. |
 
 ## Organization and SDLC Control Planes
 
@@ -69,11 +69,11 @@ This cluster is adjacent to local terminal multiplexers but operates at a higher
 - Goal hierarchy and issue/task system so work traces back to company/project objectives.
 - Heartbeat execution for scheduled or event-triggered agent work.
 - Budget and cost control by company, agent, project, goal, provider, and model.
-- Governance workflows for approvals, pause/resume/terminate, rollback, and audit trails.
+- Governance automations for approvals, pause/resume/terminate, rollback, and audit trails.
 - Bring-your-own-agent posture for Claude Code, Codex, Cursor, shell processes, HTTP/webhook bots, and similar adapters.
 - Import/export direction for company templates, agents, skills, projects, routines, and issues.
 
-**Wardian relevance:** Paperclip is a direct reference for "manage an organization, not just sessions." Wardian should not collapse agent management into terminals and workflows alone. As Wardian grows teams, watchlists, roles, workflows, budgets, approvals, and memory, it should make management primitives explicit: goal, owner, reporting relationship, budget policy, approval state, audit trail, and work product.
+**Wardian relevance:** Paperclip is a direct reference for "manage an organization, not just sessions." Wardian should not collapse agent management into terminals and automations alone. As Wardian grows teams, watchlists, roles, automations, budgets, approvals, and memory, it should make management primitives explicit: goal, owner, reporting relationship, budget policy, approval state, audit trail, and work product.
 
 ### Shep
 
@@ -110,7 +110,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Agent-aware status surfaces rather than generic terminal multiplexing.
 - Task ownership and review handoff patterns for parallel coding work.
 
-**Wardian relevance:** This is a core adjacent category for Wardian. These tools show that multi-agent orchestration is becoming a developer environment problem, not only a backend framework problem. Wardian should learn from their low-latency navigation, dense roster displays, and worktree-aware task ownership while preserving its broader habitat model: provider diversity, visible PTYs, workflow telemetry, skills, memory, and disk-inspectable state.
+**Wardian relevance:** This is a core adjacent category for Wardian. These tools show that multi-agent orchestration is becoming a developer environment problem, not only a backend framework problem. Wardian should learn from their low-latency navigation, dense roster displays, and worktree-aware task ownership while preserving its broader habitat model: provider diversity, visible PTYs, automation telemetry, skills, memory, and disk-inspectable state.
 
 ### Gas Town
 
@@ -175,7 +175,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Provider SDK crates for Claude, Codex, and Gemini.
 - Public positioning around CI/review/PR/Telegram coordination.
 
-**Wardian relevance:** Apiari is useful because it separates worker execution from coordinator responsibility. Wardian workflows should similarly model dispatch, supervision, review, notification, and merge readiness as separate states, not just "agent is running."
+**Wardian relevance:** Apiari is useful because it separates worker execution from coordinator responsibility. Wardian automations should similarly model dispatch, supervision, review, notification, and merge readiness as separate states, not just "agent is running."
 
 ### Beehive
 
@@ -298,17 +298,17 @@ Several newer systems focus less on agent-framework abstractions and more on the
 
 **Source basis:** Public repo checked.
 
-**What it includes:** Archon defines agentic development workflows as YAML and runs them through a deterministic harness. It combines CLI execution, workflow definitions, worktree isolation, and a web UI for building and observing workflows.
+**What it includes:** Archon defines agentic development automations as YAML and runs them through a deterministic harness. It combines CLI execution, automation definitions, worktree isolation, and a web UI for building and observing automations.
 
 **Distinctive components:**
 
-- YAML workflow source of truth.
+- YAML automation source of truth.
 - Deterministic and AI-driven node types.
 - Worktree isolation for parallel runs.
-- Visual workflow builder and execution view.
+- Visual automation builder and execution view.
 - Adapters for developer and collaboration surfaces.
 
-**Wardian relevance:** Archon is both a workflow-system reference and a multi-agent orchestrator reference. For Wardian, the most important lesson is that agents need a construction surface that can be reviewed as text, while humans need a visible run surface with node state, logs, approvals, and artifacts.
+**Wardian relevance:** Archon is both an automation-system reference and a multi-agent orchestrator reference. For Wardian, the most important lesson is that agents need a construction surface that can be reviewed as text, while humans need a visible run surface with node state, logs, approvals, and artifacts.
 
 ## GUI and Web Agent Workspaces
 
@@ -327,7 +327,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Rich chat UX with token/cost accounting, structured tool blocks, model/effort selectors, and conversation trees.
 - Environment management with dev servers and unique ports.
 
-**Wardian relevance:** Agor shows a distinct GUI pattern: place-based orchestration rather than only lists or tabs. Wardian should treat spatial layout carefully, using it where it clarifies ownership and workflow state rather than as decoration.
+**Wardian relevance:** Agor shows a distinct GUI pattern: place-based orchestration rather than only lists or tabs. Wardian should treat spatial layout carefully, using it where it clarifies ownership and automation state rather than as decoration.
 
 ### webmux
 
@@ -389,7 +389,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Visibility into agent actions, files, and task progress.
 - Developer-oriented loop rather than generic chat only.
 
-**Wardian relevance:** OpenHands shows the value of combining terminal output, file changes, browser state, and task progress in one observable surface. Wardian's differentiator is the persistent multi-agent Habitat: many named agents, long-running sessions, local provider terminals, and workflow telemetry in the same desktop app.
+**Wardian relevance:** OpenHands shows the value of combining terminal output, file changes, browser state, and task progress in one observable surface. Wardian's differentiator is the persistent multi-agent Habitat: many named agents, long-running sessions, local provider terminals, and automation telemetry in the same desktop app.
 
 ### SuperAGI
 
@@ -406,16 +406,16 @@ Several newer systems focus less on agent-framework abstractions and more on the
 
 ### AutoGPT Platform
 
-**What it includes:** AutoGPT has evolved into a platform for creating, deploying, and managing continuous agents. Its platform direction includes a frontend, server, marketplace, and block-based agent workflow construction.
+**What it includes:** AutoGPT has evolved into a platform for creating, deploying, and managing continuous agents. Its platform direction includes a frontend, server, marketplace, and block-based agent automation construction.
 
 **Distinctive components:**
 
-- Visual block-based agent workflows.
+- Visual block-based agent automations.
 - Server and frontend separation.
 - Marketplace for reusable blocks or agents.
 - Continuous-agent orientation.
 
-**Wardian relevance:** AutoGPT Platform is useful for understanding how agent building blocks can become reusable products. Wardian should apply that idea locally: reusable workflow blocks, agent classes, and skills should remain filesystem-visible and source-controllable.
+**Wardian relevance:** AutoGPT Platform is useful for understanding how agent building blocks can become reusable products. Wardian should apply that idea locally: reusable automation blocks, agent classes, and skills should remain filesystem-visible and source-controllable.
 
 ### Flowise
 
@@ -447,16 +447,16 @@ Several newer systems focus less on agent-framework abstractions and more on the
 
 ### Microsoft Agent Framework
 
-**What it includes:** Microsoft Agent Framework is an open-source framework for multi-agent applications. Its public positioning emphasizes agents, workflows, memory, tools, observability, MCP, and A2A-style interoperability.
+**What it includes:** Microsoft Agent Framework is an open-source framework for multi-agent applications. Its public positioning emphasizes agents, automations, memory, tools, observability, MCP, and A2A-style interoperability.
 
 **Distinctive components:**
 
-- Enterprise-oriented agent and workflow primitives.
+- Enterprise-oriented agent and automation primitives.
 - Protocol-aware interoperability posture.
 - Memory, tools, and observability concepts.
 - Multi-agent orchestration beyond a single chat loop.
 
-**Wardian relevance:** This is relevant less as a UI reference and more as a governance reference. Wardian should keep clean contracts for provider runtime, agent identity, tools, memory, workflow events, and cross-agent communication so it can interoperate instead of becoming a closed local island.
+**Wardian relevance:** This is relevant less as a UI reference and more as a governance reference. Wardian should keep clean contracts for provider runtime, agent identity, tools, memory, automation events, and cross-agent communication so it can interoperate instead of becoming a closed local island.
 
 ### CrewAI
 
@@ -469,7 +469,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Deterministic flows alongside autonomous teams.
 - YAML scaffolding for agent and task definitions.
 
-**Wardian relevance:** CrewAI's distinction between crews and flows maps cleanly to Wardian's need to differentiate agent delegation from workflow control. A Wardian workflow node that delegates to an agent should be visibly different from a node that enforces control logic.
+**Wardian relevance:** CrewAI's distinction between crews and flows maps cleanly to Wardian's need to differentiate agent delegation from automation control. A Wardian automation node that delegates to an agent should be visibly different from a node that enforces control logic.
 
 ### AgentScope
 
@@ -479,11 +479,11 @@ Several newer systems focus less on agent-framework abstractions and more on the
 
 - Multi-agent message and service abstractions.
 - Distributed execution patterns.
-- Message hub and pipeline APIs for multi-agent conversations and workflows.
+- Message hub and pipeline APIs for multi-agent conversations and automations.
 - OpenTelemetry-oriented observability and local/cloud deployment options.
 - Structured APIs for agent communication and runtime integration.
 
-**Wardian relevance:** AgentScope is a useful reference for separating the agent programming model from the observability surface. Wardian should give each agent message, status change, and workflow event enough structure to support both UI display and machine-readable coordination.
+**Wardian relevance:** AgentScope is a useful reference for separating the agent programming model from the observability surface. Wardian should give each agent message, status change, and automation event enough structure to support both UI display and machine-readable coordination.
 
 ### MetaGPT
 
@@ -496,7 +496,7 @@ Several newer systems focus less on agent-framework abstractions and more on the
 - Artifact handoffs across product, design, engineering, and QA roles.
 - CLI/framework orientation for generating software outputs.
 
-**Wardian relevance:** MetaGPT's value is its legible role structure. Wardian agent classes, teams, and workflow role mappings should make responsibilities explicit enough that humans can understand who is supposed to produce what.
+**Wardian relevance:** MetaGPT's value is its legible role structure. Wardian agent classes, teams, and automation role mappings should make responsibilities explicit enough that humans can understand who is supposed to produce what.
 
 ### CAMEL
 
@@ -517,7 +517,7 @@ Some systems are not primarily multi-agent orchestrators, but they still inform 
 
 - [OpenCode](https://github.com/sst/opencode): terminal-native AI coding agent with strong local developer ergonomics.
 - [Goose](https://github.com/block/goose): local agent experience with CLI and desktop surfaces.
-- [Aider](https://github.com/Aider-AI/aider): terminal-first pair programming agent with strong Git workflow integration.
+- [Aider](https://github.com/Aider-AI/aider): terminal-first pair programming agent with strong Git automation integration.
 
 These are useful references for single-agent ergonomics, provider interaction, and developer trust. They should not be treated as direct multi-agent Habitat references unless they add explicit orchestration or roster semantics.
 
@@ -528,6 +528,6 @@ Wardian sits at the intersection of these categories:
 - GUI/web systems prove the value of human-observable dashboards.
 - CLI/TUI systems prove the value of fast local control and worktree-aware dispatch.
 - Organization and SDLC control planes prove the value of explicit management primitives: goals, ownership, budgets, approvals, lifecycle phases, work products, and audit trails.
-- Frameworks prove the value of structured agent roles, messages, tools, and workflow state.
+- Frameworks prove the value of structured agent roles, messages, tools, and automation state.
 
-Wardian's direction should be hybrid and local-first: visible agent terminals, durable roster state, workflow graph telemetry, filesystem-inspectable skills and definitions, and enough structured APIs that agents can construct and operate the system without depending on fragile UI actions.
+Wardian's direction should be hybrid and local-first: visible agent terminals, durable roster state, automation graph telemetry, filesystem-inspectable skills and definitions, and enough structured APIs that agents can construct and operate the system without depending on fragile UI actions.

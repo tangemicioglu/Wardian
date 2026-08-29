@@ -6,7 +6,7 @@ use super::section::LibrarySectionId;
 use crate::models::LibraryItemMetadata;
 use crate::paths::library_metadata_path_for_home;
 
-const SECTION_PREFIXES: [&str; 4] = ["skills/", "prompts/", "workflows/", "classes/"];
+const SECTION_PREFIXES: [&str; 4] = ["skills/", "prompts/", "automations/", "classes/"];
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {

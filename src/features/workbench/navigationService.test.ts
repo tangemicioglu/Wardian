@@ -947,7 +947,7 @@ describe("workbench navigation service", () => {
     expect(store.getState().document.surfaces.duplicate).toBeDefined();
   });
 
-  it("orders mixed Files, Library, and Workflows close effects as saves, layout, discard", async () => {
+  it("orders mixed Files, Library, and Automations close effects as saves, layout, discard", async () => {
     const events: string[] = [];
     const libraryDiscard = vi.fn(async () => {
       events.push("discard:library");
@@ -969,7 +969,7 @@ describe("workbench navigation service", () => {
       dirty: true,
       editRevision: 5,
       save: vi.fn(async () => {
-        events.push("save:workflows");
+        events.push("save:automations");
         return true;
       }),
     });
@@ -1000,7 +1000,7 @@ describe("workbench navigation service", () => {
         state: filesState(false),
       }),
       makeSurface("library", { surface_type: "library", state: {} }),
-      makeSurface("workflows", { surface_type: "workflows", state: {} }),
+      makeSurface("automations", { surface_type: "automations", state: {} }),
     ]);
     const store = createWorkbenchStore({ initial_document: document });
     const unsubscribe = store.subscribe((state, previous) => {
@@ -1013,7 +1013,7 @@ describe("workbench navigation service", () => {
 
     expect(events).toEqual([
       "save:files",
-      "save:workflows",
+      "save:automations",
       "layout",
       "discard:library",
     ]);

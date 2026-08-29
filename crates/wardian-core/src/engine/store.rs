@@ -1,6 +1,6 @@
+use crate::automation::Blueprint;
 use crate::engine::event::Event;
 use crate::engine::state::RunState;
-use crate::workflow::Blueprint;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -65,7 +65,7 @@ pub fn write_blueprint_snapshot(root: &Path, blueprint: &Blueprint) -> crate::en
         let existing: Blueprint = serde_json::from_str(&std::fs::read_to_string(path)?)?;
         if serde_json::to_value(existing)? != serde_json::to_value(blueprint)? {
             return Err(crate::engine::EngineError::InvalidState(
-                "workflow blueprint snapshot already exists and differs".into(),
+                "automation blueprint snapshot already exists and differs".into(),
             ));
         }
         return Ok(());

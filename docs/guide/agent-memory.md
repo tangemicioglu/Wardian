@@ -5,7 +5,7 @@ and current project state. Memory is available when the agent starts a new
 provider process, even when the provider changes.
 
 Direct memory is enabled by default. It does not consume a second model call.
-The optional Memory Consolidation workflow is disabled until you configure and
+The optional Memory Consolidation automation is disabled until you configure and
 run it or bind it to a session-close invoker.
 
 You do not need to say "remember this." At the end of an ordinary task, an agent
@@ -14,7 +14,7 @@ lessons, and ongoing state that will matter in a future session. It saves a
 small number of useful records when the evidence is clear. Brief or explicitly
 one-response-only instructions are not saved merely because they appeared in a
 conversation. The check happens before the agent's final answer; it does not
-require loading an optional consolidation workflow or making another model
+require loading an optional consolidation automation or making another model
 call.
 
 ## Save and inspect memory
@@ -57,7 +57,7 @@ Wardian's desktop memory surface; an uncredentialed operator shell fails closed.
 
 The capability expires when Wardian terminates, replaces, or reclaims that
 provider runtime. A PTY reader or broker error alone does not revoke a still-live
-runtime's capability. Concurrent interactive and workflow processes receive
+runtime's capability. Concurrent interactive and automation processes receive
 independent capabilities.
 
 ## What appears in chat
@@ -69,7 +69,7 @@ No row appears when there was nothing to load.
 
 ## Optional consolidation
 
-The Library includes the editable `Memory Consolidation` workflow sample. Assign
+The Library includes the editable `Memory Consolidation` automation sample. Assign
 its `curator` role to a provider or agent. A temporary-provider assignment may
 include `model` and `effort`; Wardian uses that exact selection and the user's
 provider quota without a hidden fallback.
@@ -77,7 +77,7 @@ provider quota without a hidden fallback.
 Create a session-close invoker disabled, inspect it, then enable it:
 
 ```bash
-wardian workflow session-close add \
+wardian automation session-close add \
   --blueprint memory-consolidation \
   --name "Consolidate this agent" \
   --agent <agent-name-or-id> \
@@ -85,8 +85,8 @@ wardian workflow session-close add \
   --require-archive \
   --assignments '{"curator":{"target_type":"temporary_provider","provider":"codex","model":"<model-id>","effort":"low"}}'
 
-wardian workflow session-close list
-wardian workflow session-close enable <invoker-id>
+wardian automation session-close list
+wardian automation session-close enable <invoker-id>
 ```
 
 Use model IDs and effort levels returned by

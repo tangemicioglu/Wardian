@@ -29,7 +29,7 @@
         "key": "clarity",
         "score": 98,
         "label": "Clarity",
-        "reason": "Default behavior, scope rules, provenance, aging, and workflow ownership have been decided."
+        "reason": "Default behavior, scope rules, provenance, aging, and automation ownership have been decided."
       },
       {
         "key": "tests",
@@ -46,7 +46,7 @@
   "goals": [
     "Make direct, evidence-backed memory saving and session-start recall available by default without an additional model call.",
     "Deliver the same memory behavior across supported providers through Wardian-owned APIs and startup dispatch.",
-    "Keep automated consolidation optional, transparent, user-configurable, and implemented as a normal Wardian workflow.",
+    "Keep automated consolidation optional, transparent, user-configurable, and implemented as a normal Wardian automation.",
     "Preserve durable provenance while allowing conversation archives and memories to follow independent retention lifecycles."
   ],
   "successCriteria": [
@@ -57,7 +57,7 @@
     "Startup recall works when automated consolidation is disabled and consumes no separate provider quota.",
     "Agent-wide memory and active-workspace memory are recalled without leaking another workspace's project state.",
     "Stable memories persist until superseded or removed; current-state memories retain timestamps and become visibly stale rather than being silently deleted.",
-    "The consolidation workflow is off by default, uses a user-selected provider and model, resumes from durable archive cursors, and commits idempotently.",
+    "The consolidation automation is off by default, uses a user-selected provider and model, resumes from durable archive cursors, and commits idempotently.",
     "Regression tests prove provider parity, fresh and resumed startup behavior, supersession, agent isolation, stale-state labeling, retry idempotency, and reliable misses."
   ],
   "scope": {
@@ -81,7 +81,7 @@
         "reason": "Users need to inspect what was saved and exactly what context Wardian loaded."
       },
       {
-        "item": "Optional consolidation workflow",
+        "item": "Optional consolidation automation",
         "reason": "Users may opt into automatic extraction and consolidation using their chosen provider and model."
       }
     ],
@@ -107,8 +107,8 @@
         "reason": "Automatic consolidation is off by default and may consume the user's selected provider quota."
       },
       {
-        "item": "Memory-specific workflow reset, fork, compare, or restore controls",
-        "reason": "The bundled consolidator follows the normal workflow sample lifecycle."
+        "item": "Memory-specific automation reset, fork, compare, or restore controls",
+        "reason": "The bundled consolidator follows the normal automation sample lifecycle."
       },
       {
         "item": "Automatic cascading deletion between conversations and memory",
@@ -118,7 +118,7 @@
     "future": [
       "Shared scopes with explicit cross-agent promotion policy.",
       "Local semantic embeddings and reranking after startup recall is benchmarked.",
-      "Generic bundled-workflow upgrade controls, if introduced for all workflow samples."
+      "Generic bundled-automation upgrade controls, if introduced for all automation samples."
     ]
   },
   "execution": {
@@ -139,11 +139,11 @@
         "notes": "Compile and inject bounded provider-neutral startup briefs, track fingerprints and resume deltas, and expose observable save/load events."
       },
       {
-        "title": "Optional consolidation workflow",
+        "title": "Optional consolidation automation",
         "risk": "medium",
         "blocking": false,
         "specPath": "docs/ideation/wardian-agent-memory/spec-phase-3.md",
-        "notes": "Add the ordinary bundled consolidation workflow, session-close invocation, curator selection, archive cursors, strict structured output, and idempotent memory commits."
+        "notes": "Add the ordinary bundled consolidation automation, session-close invocation, curator selection, archive cursors, strict structured output, and idempotent memory commits."
       }
     ]
   }

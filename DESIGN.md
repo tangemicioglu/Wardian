@@ -18,11 +18,11 @@ colors:
   off: "#4b5563"
   headless: "#8b5cf6"
 
-  # Workflow Semantics
-  workflow-agent: "#3b82f6"
-  workflow-command: "#10b981"
-  workflow-logic: "#f59e0b"
-  workflow-comm: "#8b5cf6"
+  # Automation Semantics
+  automation-agent: "#3b82f6"
+  automation-command: "#10b981"
+  automation-logic: "#f59e0b"
+  automation-comm: "#8b5cf6"
 
 typography:
   families:

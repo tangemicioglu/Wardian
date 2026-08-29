@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Wardian owns a separate `<WARDIAN_HOME>/memory.db` SQLite database that can be read and written consistently by the desktop app, CLI, and workflows. Records are agent-owned, revisioned, inspectable, and independently evidenced.
+Wardian owns a separate `<WARDIAN_HOME>/memory.db` SQLite database that can be read and written consistently by the desktop app, CLI, and automations. Records are agent-owned, revisioned, inspectable, and independently evidenced.
 
 ## Data model
 
@@ -10,7 +10,7 @@ Wardian owns a separate `<WARDIAN_HOME>/memory.db` SQLite database that can be r
 
 Required fields: revision ID, memory ID, revision number, agent ID, optional normalized workspace, kind (`stable` or `current`), normalized text, evidence excerpt, SHA-256 evidence hash, status, predecessor/successor revision IDs, created/updated/verified timestamps, and optional idempotency key.
 
-`memory_sources` stores zero or more source references for a revision. A source can identify a conversation range, artifact, direct observation, or workflow run. One source may be primary. Links are for deep inspection only: deleting a linked conversation does not delete its memory revision, and deleting memory does not alter conversation retention.
+`memory_sources` stores zero or more source references for a revision. A source can identify a conversation range, artifact, direct observation, or automation run. One source may be primary. Links are for deep inspection only: deleting a linked conversation does not delete its memory revision, and deleting memory does not alter conversation retention.
 
 `memory_events` is the audit and UI projection stream for save, update, remove, load, and consolidation actions. `memory_injections` stores the exact compiled context, ordered revision IDs, fingerprint, provider process key, and timestamp. `memory_consolidation_cursors` stores incremental archive progress.
 

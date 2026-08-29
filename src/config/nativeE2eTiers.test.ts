@@ -4,10 +4,10 @@ import path from "node:path";
 
 /**
  * Tier declarations are the contract between a native test and the jobs that
- * run it. CI selects `ci`, the nightly workflow selects `nightly`, and nothing
+ * run it. CI selects `ci`, the nightly automation selects `nightly`, and nothing
  * runs `manual`.
  *
- * `ciWorkflow.test.ts` used to assert the four file names the workflow listed
+ * `ciAutomation.test.ts` used to assert the four file names the automation listed
  * by hand. That assertion lives here now, against the declarations themselves,
  * so a test that changes tier is caught by the same check that proves the tier
  * exists at all.
@@ -61,7 +61,7 @@ describe("native E2E tiers", () => {
     for (const test of nativeTests()) {
       if (test.tier && byTier.has(test.tier)) byTier.set(test.tier, byTier.get(test.tier)! + 1);
     }
-    // `ci` and `nightly` both have a workflow pointed at them; an empty tier
+    // `ci` and `nightly` both have an automation pointed at them; an empty tier
     // would make that job silently pass with nothing run.
     expect(byTier.get("ci")).toBeGreaterThan(0);
     expect(byTier.get("nightly")).toBeGreaterThan(0);

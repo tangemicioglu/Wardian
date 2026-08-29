@@ -1,14 +1,14 @@
 # Wardian Product Direction
 
-Wardian is a local-first desktop habitat for live agents, workflows, reusable
+Wardian is a local-first desktop habitat for live agents, automations, reusable
 context, and durable evidence. The early phase-based roadmap has served its
 purpose; major foundations such as the multi-view shell, PTY-backed agents,
-the Wardian CLI, worktrees, workflows, Queue evidence, Graph topology, remote
+the Wardian CLI, worktrees, automations, Queue evidence, Graph topology, remote
 mobile control, and package-manager distribution are now part of the product.
 
 This roadmap describes current product direction without promising a strict
 phase sequence. Priorities can move as provider CLIs, release infrastructure,
-and user workflows change.
+and user automations change.
 
 ## Current Priorities
 
@@ -17,17 +17,17 @@ and user workflows change.
 - Keep real PTY behavior stable across Windows ConPTY, macOS, and Linux.
 - Preserve provider-specific launch policy, delivery evidence, transcript
   capture, status transitions, and terminal rendering as provider CLIs change.
-- Make failures inspectable through Queue, workflow history, conversation
+- Make failures inspectable through Queue, automation history, conversation
   archives, logs, and native E2E evidence.
 
 ### Reusable Context and Capabilities
 
-- Continue making the Library the home for prompts, skills, classes, workflow
+- Continue making the Library the home for prompts, skills, classes, automation
   blueprints, and future MCP definitions.
 - Keep reusable artifacts filesystem-backed and inspectable under the Wardian
   home instead of hiding them in opaque app state.
 - Expand safe deployment and synchronization of skills and context across
-  global, class, agent, workflow, workspace, and team scopes.
+  global, class, agent, automation, workspace, and team scopes.
 
 ### Coordination Surfaces
 
@@ -38,19 +38,19 @@ and user workflows change.
 - Preserve operator control over manually drawn connections, team-seeded
   topology, and workspace fallback behavior.
 
-### Workflow Operations
+### Automation Operations
 
-- Harden workflow authoring, validation, launch dialogs, schedules, run
+- Harden automation authoring, validation, launch dialogs, schedules, run
   observation, history, and failure records.
-- Keep the Rust workflow engine deterministic and testable while exposing
-  higher-level workflow ergonomics in the desktop app and CLI.
-- Make workflow outcomes easy to review, reuse, and promote into durable
+- Keep the Rust automation engine deterministic and testable while exposing
+  higher-level automation ergonomics in the desktop app and CLI.
+- Make automation outcomes easy to review, reuse, and promote into durable
   context.
 
 ### Remote, Packaging, and First-Run Polish
 
 - Improve the mobile remote PWA while keeping the desktop app the authority for
-  agents, PTYs, provider CLIs, filesystem access, and workflow execution.
+  agents, PTYs, provider CLIs, filesystem access, and automation execution.
 - Keep installer, updater, winget, Homebrew, APT, `.deb`, and AppImage guidance
   aligned with actual release artifacts.
 - Reduce first-run friction through better provider readiness checks,
@@ -63,7 +63,7 @@ and user workflows change.
 - Remote Queue hydration from desktop-owned Queue storage.
 - Broader package-manager coverage after sandbox and permission tradeoffs are
   understood.
-- More automation around file-watch, listener, and project-context workflows.
+- More automation around file-watch, listener, and project-context automations.
 
 ## What Is Not a Roadmap Contract
 

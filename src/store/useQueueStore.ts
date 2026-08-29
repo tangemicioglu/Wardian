@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { QueueEventType, QueueItem, QueuePreferences } from "../types";
 import { extractQueueContent, extractTerminalQueueContent } from "../utils/statusUtils";
-import { WorkflowTelemetryEvent } from "../types/workflow";
+import { AutomationTelemetryEvent } from "../types/automation";
 import { DEFAULT_QUEUE_PREFERENCES, normalizeQueuePreferences, normalizeQueueSoundVolume } from "../features/queue/queueFilters";
 import { dispatchQueueNotification } from "../features/queue/queueNotifications";
 import { isClearableLegacyCompletion, providerChoiceAcknowledgementUnresolved } from "../features/queue/queueTriage";
@@ -14,14 +14,14 @@ let persistQueue: Promise<void> = Promise.resolve();
 let queueMutationRevision = 0;
 let loadItemsInFlight: Promise<void> | null = null;
 
-type WorkflowRunIdentity = {
-  workflow_id: string;
-  workflow_run_id: string;
+type AutomationRunIdentity = {
+  automation_id: string;
+  automation_run_id: string;
 };
 
 function readProtected(item: QueueItem) {
   return Boolean(
-    item.workflow_approval
+    item.automation_approval
       || (item.type === "approval_request" && item.notification_status === "awaiting_reply")
       || providerChoiceAcknowledgementUnresolved(item),
   );
@@ -34,9 +34,9 @@ interface QueueState {
   loadingMoreInboxNotifications: boolean;
   preferences: QueuePreferences;
   _agentBuffers: Record<string, string>;
-  _workflowLastOutput: Record<string, string>;
+  _automationLastOutput: Record<string, string>;
   _readNotificationIds: string[];
-  _dismissedWorkflowRuns: string[];
+  _dismissedAutomationRuns: string[];
 
   loadItems: () => Promise<void>;
   loadMoreInboxNotifications: () => Promise<void>;
@@ -58,16 +58,16 @@ interface QueueState {
     evidenceId?: string,
     evidenceSource?: QueueItem["evidence_source"],
   ) => void;
-  trackWorkflowNodeOutput: (event: WorkflowTelemetryEvent) => void;
-  addWorkflowCompletion: (
+  trackAutomationNodeOutput: (event: AutomationTelemetryEvent) => void;
+  addAutomationCompletion: (
     payload: {
-      workflow_id: string;
+      automation_id: string;
       run_instance_id?: string;
       status: "completed" | "failed";
       error?: string;
       summary?: string;
     },
-    workflowName?: string,
+    automationName?: string,
   ) => void;
   dismissItem: (id: string) => void;
   recordProviderChoiceSent: (id: string, choice: string) => void;
@@ -80,46 +80,46 @@ interface QueueState {
   setSoundVolume: (volume: number) => void;
 }
 
-function workflowRunKeyFromIdentity(identity: WorkflowRunIdentity): string {
-  return JSON.stringify([identity.workflow_id, identity.workflow_run_id]);
+function automationRunKeyFromIdentity(identity: AutomationRunIdentity): string {
+  return JSON.stringify([identity.automation_id, identity.automation_run_id]);
 }
 
-function workflowRunIdentityFromKey(key: string): WorkflowRunIdentity | undefined {
+function automationRunIdentityFromKey(key: string): AutomationRunIdentity | undefined {
   try {
     const value: unknown = JSON.parse(key);
     if (!Array.isArray(value) || value.length !== 2 || value.some((part) => typeof part !== "string")) return undefined;
-    return { workflow_id: value[0], workflow_run_id: value[1] };
+    return { automation_id: value[0], automation_run_id: value[1] };
   } catch {
     return undefined;
   }
 }
 
-function workflowRunKey(item: QueueItem): string | undefined {
-  if (item.type !== "workflow_completed" || !item.workflow_id || !item.workflow_run_id) return undefined;
-  return workflowRunKeyFromIdentity({ workflow_id: item.workflow_id, workflow_run_id: item.workflow_run_id });
+function automationRunKey(item: QueueItem): string | undefined {
+  if (item.type !== "automation_completed" || !item.automation_id || !item.automation_run_id) return undefined;
+  return automationRunKeyFromIdentity({ automation_id: item.automation_id, automation_run_id: item.automation_run_id });
 }
 
-function workflowDismissalMarker(key: string): QueueItem | undefined {
-  const identity = workflowRunIdentityFromKey(key);
+function automationDismissalMarker(key: string): QueueItem | undefined {
+  const identity = automationRunIdentityFromKey(key);
   if (!identity) return undefined;
   return {
-    id: `workflow-dismissed:${identity.workflow_id}:${identity.workflow_run_id}`,
-    type: "workflow_completed",
+    id: `automation-dismissed:${identity.automation_id}:${identity.automation_run_id}`,
+    type: "automation_completed",
     timestamp: Date.now(),
     read: true,
     dismissed: true,
-    workflow_id: identity.workflow_id,
-    workflow_run_id: identity.workflow_run_id,
+    automation_id: identity.automation_id,
+    automation_run_id: identity.automation_run_id,
   };
 }
 
 function persistItems(
   items: QueueItem[],
   readNotificationIds: string[] = [],
-  dismissedWorkflowRuns: string[] = [],
+  dismissedAutomationRuns: string[] = [],
 ) {
   const legacyItems = items.filter(
-    (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
+    (item) => !item.inbox_notification_id && !item.automation_approval && !item.dismissed,
   );
   const readNotificationAcknowledgements = new Set([
     ...readNotificationIds,
@@ -134,13 +134,13 @@ function persistItems(
       read: true,
     inbox_notification_id: notificationId,
   }));
-  const workflowDismissalItems = dismissedWorkflowRuns
-    .map(workflowDismissalMarker)
+  const automationDismissalItems = dismissedAutomationRuns
+    .map(automationDismissalMarker)
     .filter((item): item is QueueItem => item !== undefined);
   persistQueue = persistQueue
     .catch(() => undefined)
     .then(() => invoke("save_queue_items", {
-      items: [...legacyItems, ...acknowledgementItems, ...workflowDismissalItems],
+      items: [...legacyItems, ...acknowledgementItems, ...automationDismissalItems],
     }).then(() => undefined, () => undefined));
 }
 
@@ -206,7 +206,7 @@ async function loadInboxNotificationItems(
   }
 }
 
-interface WorkflowInboxApprovalDto {
+interface AutomationInboxApprovalDto {
   blueprint_id: string;
   blueprint_path: string;
   run_id: string;
@@ -216,33 +216,33 @@ interface WorkflowInboxApprovalDto {
   created_at?: string;
 }
 
-interface WorkflowInboxTerminalDto {
-  workflow_id: string;
+interface AutomationInboxTerminalDto {
+  automation_id: string;
   run_instance_id: string;
-  workflow_name: string;
+  automation_name: string;
   status: "completed" | "failed";
   error?: string;
   summary?: string;
   updated_at?: string;
 }
 
-async function loadWorkflowApprovalItems(): Promise<QueueItem[]> {
+async function loadAutomationApprovalItems(): Promise<QueueItem[]> {
   try {
-    const approvals = await invoke<WorkflowInboxApprovalDto[]>("list_workflow_inbox_approvals");
+    const approvals = await invoke<AutomationInboxApprovalDto[]>("list_automation_inbox_approvals");
     return approvals.map((approval) => ({
-      id: `workflow-approval:${approval.blueprint_id}:${approval.run_id}:${approval.node}`,
+      id: `automation-approval:${approval.blueprint_id}:${approval.run_id}:${approval.node}`,
       type: "approval_request",
       timestamp: approval.created_at ? Date.parse(approval.created_at) || Date.now() : Date.now(),
       read: false,
-      workflow_id: approval.blueprint_id,
-      workflow_run_id: approval.run_id,
-      workflow_name: approval.title,
+      automation_id: approval.blueprint_id,
+      automation_run_id: approval.run_id,
+      automation_name: approval.title,
       notification_title: approval.title,
       summary: approval.prompt,
-      proposed_action: "Continue this workflow beyond its approval gate",
-      risk: "The workflow will execute the next authored steps after approval.",
+      proposed_action: "Continue this automation beyond its approval gate",
+      risk: "The automation will execute the next authored steps after approval.",
       approval_choices: ["Approve", "Reject"],
-      workflow_approval: {
+      automation_approval: {
         blueprint_id: approval.blueprint_id,
         blueprint_path: approval.blueprint_path,
         run_id: approval.run_id,
@@ -254,17 +254,17 @@ async function loadWorkflowApprovalItems(): Promise<QueueItem[]> {
   }
 }
 
-async function loadWorkflowTerminalItems(): Promise<QueueItem[]> {
+async function loadAutomationTerminalItems(): Promise<QueueItem[]> {
   try {
-    const terminalRuns = await invoke<WorkflowInboxTerminalDto[]>("list_workflow_inbox_terminal_runs");
+    const terminalRuns = await invoke<AutomationInboxTerminalDto[]>("list_automation_inbox_terminal_runs");
     return terminalRuns.map((run) => ({
-      id: `workflow-completion:${run.workflow_id}:${run.run_instance_id}`,
-      type: "workflow_completed",
+      id: `automation-completion:${run.automation_id}:${run.run_instance_id}`,
+      type: "automation_completed",
       timestamp: run.updated_at ? Date.parse(run.updated_at) || Date.now() : Date.now(),
       read: false,
-      workflow_id: run.workflow_id,
-      workflow_run_id: run.run_instance_id,
-      workflow_name: run.workflow_name,
+      automation_id: run.automation_id,
+      automation_run_id: run.run_instance_id,
+      automation_name: run.automation_name,
       status: run.status,
       error: run.error,
       summary: run.summary ? boundSummary(run.summary) : undefined,
@@ -310,9 +310,9 @@ export const useQueueStore = create<QueueState>((set, get) => ({
   loadingMoreInboxNotifications: false,
   preferences: DEFAULT_QUEUE_PREFERENCES,
   _agentBuffers: {},
-  _workflowLastOutput: {},
+  _automationLastOutput: {},
   _readNotificationIds: [],
-  _dismissedWorkflowRuns: [],
+  _dismissedAutomationRuns: [],
 
   loadItems() {
     if (loadItemsInFlight) return loadItemsInFlight;
@@ -330,29 +330,29 @@ export const useQueueStore = create<QueueState>((set, get) => ({
             .filter((item) => item.type === "agent_update" && item.read && item.inbox_notification_id)
             .map((item) => item.inbox_notification_id!),
         );
-        const dismissedWorkflowRuns = persistedItems
+        const dismissedAutomationRuns = persistedItems
           .filter((item) => item.dismissed)
-          .map(workflowRunKey)
+          .map(automationRunKey)
           .filter((key): key is string => key !== undefined);
         const legacyItems = persistedItems.filter(
-          (item) => !item.inbox_notification_id && !item.workflow_approval && !item.dismissed,
+          (item) => !item.inbox_notification_id && !item.automation_approval && !item.dismissed,
         );
-        const [notificationResult, workflowApprovals, workflowTerminals] = await Promise.all([
+        const [notificationResult, automationApprovals, automationTerminals] = await Promise.all([
           loadInboxNotificationItems(readNotificationIds),
-          loadWorkflowApprovalItems(),
-          loadWorkflowTerminalItems(),
+          loadAutomationApprovalItems(),
+          loadAutomationTerminalItems(),
         ]);
-        const persistedWorkflowRuns = new Set(
+        const persistedAutomationRuns = new Set(
           persistedItems
-            .filter((item) => !item.inbox_notification_id && !item.workflow_approval)
-            .map(workflowRunKey)
+            .filter((item) => !item.inbox_notification_id && !item.automation_approval)
+            .map(automationRunKey)
             .filter((key): key is string => key !== undefined),
         );
-        const reconciledTerminals = workflowTerminals.filter((item) => {
-          const key = workflowRunKey(item);
-          return !key || !persistedWorkflowRuns.has(key);
+        const reconciledTerminals = automationTerminals.filter((item) => {
+          const key = automationRunKey(item);
+          return !key || !persistedAutomationRuns.has(key);
         });
-        const items = [...notificationResult.items, ...workflowApprovals, ...reconciledTerminals, ...legacyItems]
+        const items = [...notificationResult.items, ...automationApprovals, ...reconciledTerminals, ...legacyItems]
           .sort((left, right) => right.timestamp - left.timestamp);
         if (loadRevision !== queueMutationRevision) return;
         set({
@@ -360,10 +360,10 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           inboxNotificationsTruncated: notificationResult.truncated,
           inboxNotificationsNextOffset: notificationResult.nextOffset,
           _readNotificationIds: [...readNotificationIds],
-          _dismissedWorkflowRuns: [...new Set(dismissedWorkflowRuns)],
+          _dismissedAutomationRuns: [...new Set(dismissedAutomationRuns)],
         });
         if (reconciledTerminals.length > 0) {
-          persistItems(items, [...readNotificationIds], dismissedWorkflowRuns);
+          persistItems(items, [...readNotificationIds], dismissedAutomationRuns);
         }
       } catch {
         // First run or unavailable: leave items empty.
@@ -417,12 +417,12 @@ export const useQueueStore = create<QueueState>((set, get) => ({
   },
 
   async resolveApprovalRequest(item, choice) {
-    if (item.workflow_approval) {
-      await invoke("workflow_approve", {
-        blueprintId: item.workflow_approval.blueprint_id,
-        runId: item.workflow_approval.run_id,
-        blueprintPath: item.workflow_approval.blueprint_path,
-        node: item.workflow_approval.node,
+    if (item.automation_approval) {
+      await invoke("automation_approve", {
+        blueprintId: item.automation_approval.blueprint_id,
+        runId: item.automation_approval.run_id,
+        blueprintPath: item.automation_approval.blueprint_path,
+        node: item.automation_approval.node,
         granted: choice === "Approve",
         actor: "user",
         note: null,
@@ -494,7 +494,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     queueMutationRevision += 1;
     set((s) => {
       const next = [item, ...s.items];
-      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, s._readNotificationIds, s._dismissedAutomationRuns);
       notifyForItem(item, s.preferences);
       return { items: next, _agentBuffers: { ...s._agentBuffers, [sessionId]: "" } };
     });
@@ -527,43 +527,43 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     queueMutationRevision += 1;
     set((s) => {
       const next = [item, ...s.items];
-      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, s._readNotificationIds, s._dismissedAutomationRuns);
       notifyForItem(item, s.preferences);
       return { items: next, _agentBuffers: { ...s._agentBuffers, [sessionId]: "" } };
     });
   },
 
-  trackWorkflowNodeOutput(event) {
+  trackAutomationNodeOutput(event) {
     if (event.status !== "completed") return;
     const output = event.output as Record<string, unknown> | undefined;
     const text = typeof output?.text === "string" ? output.text : undefined;
     if (text) {
-      set((s) => ({ _workflowLastOutput: { ...s._workflowLastOutput, [event.workflow_id]: text } }));
+      set((s) => ({ _automationLastOutput: { ...s._automationLastOutput, [event.automation_id]: text } }));
     }
   },
 
-  addWorkflowCompletion(payload, workflowName) {
-    const { workflow_id, run_instance_id, status, error } = payload;
+  addAutomationCompletion(payload, automationName) {
+    const { automation_id, run_instance_id, status, error } = payload;
     const existing = get().items.find(
-      (item) => item.type === "workflow_completed"
-        && item.workflow_id === workflow_id
-        && item.workflow_run_id === run_instance_id,
+      (item) => item.type === "automation_completed"
+        && item.automation_id === automation_id
+        && item.automation_run_id === run_instance_id,
     );
     if (existing) return;
-    const workflowKey = run_instance_id
-      ? workflowRunKeyFromIdentity({ workflow_id, workflow_run_id: run_instance_id })
+    const automationKey = run_instance_id
+      ? automationRunKeyFromIdentity({ automation_id, automation_run_id: run_instance_id })
       : undefined;
-    if (workflowKey && get()._dismissedWorkflowRuns.includes(workflowKey)) return;
-    const trackedOutput = get()._workflowLastOutput[workflow_id];
+    if (automationKey && get()._dismissedAutomationRuns.includes(automationKey)) return;
+    const trackedOutput = get()._automationLastOutput[automation_id];
     const summary = payload.summary?.trim() || trackedOutput?.trim();
     const item: QueueItem = {
       id: crypto.randomUUID(),
-      type: "workflow_completed",
+      type: "automation_completed",
       timestamp: Date.now(),
       read: false,
-      workflow_id,
-      workflow_run_id: run_instance_id,
-      workflow_name: workflowName ?? workflow_id,
+      automation_id,
+      automation_run_id: run_instance_id,
+      automation_name: automationName ?? automation_id,
       status,
       error,
       summary: summary ? boundSummary(summary) : undefined,
@@ -574,16 +574,16 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       const next = [
         item,
         ...s.items.filter((existingItem) => !(
-          existingItem.workflow_approval
-          && existingItem.workflow_approval.blueprint_id === workflow_id
-          && existingItem.workflow_approval.run_id === run_instance_id
+          existingItem.automation_approval
+          && existingItem.automation_approval.blueprint_id === automation_id
+          && existingItem.automation_approval.run_id === run_instance_id
         )),
       ];
-      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, s._readNotificationIds, s._dismissedAutomationRuns);
       notifyForItem(item, s.preferences);
       return {
         items: next,
-        _workflowLastOutput: { ...s._workflowLastOutput, [workflow_id]: "" },
+        _automationLastOutput: { ...s._automationLastOutput, [automation_id]: "" },
       };
     });
   },
@@ -593,13 +593,13 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       const item = s.items.find((candidate) => candidate.id === id);
       if (item && readProtected(item)) return {};
       queueMutationRevision += 1;
-      const workflowKey = item ? workflowRunKey(item) : undefined;
-      const dismissedWorkflowRuns = workflowKey
-        ? [...new Set([...s._dismissedWorkflowRuns, workflowKey])]
-        : s._dismissedWorkflowRuns;
+      const automationKey = item ? automationRunKey(item) : undefined;
+      const dismissedAutomationRuns = automationKey
+        ? [...new Set([...s._dismissedAutomationRuns, automationKey])]
+        : s._dismissedAutomationRuns;
       const next = s.items.filter((i) => i.id !== id);
-      persistItems(next, s._readNotificationIds, dismissedWorkflowRuns);
-      return { items: next, _dismissedWorkflowRuns: dismissedWorkflowRuns };
+      persistItems(next, s._readNotificationIds, dismissedAutomationRuns);
+      return { items: next, _dismissedAutomationRuns: dismissedAutomationRuns };
     });
   },
 
@@ -609,7 +609,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       const next = s.items.map((item) => (
         item.id === id ? { ...item, provider_choice_sent: choice } : item
       ));
-      persistItems(next, s._readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, s._readNotificationIds, s._dismissedAutomationRuns);
       return { items: next };
     });
   },
@@ -622,7 +622,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
       const readNotificationIds = notificationId
         ? [...new Set([...s._readNotificationIds, notificationId])]
         : s._readNotificationIds;
-      persistItems(next, readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, readNotificationIds, s._dismissedAutomationRuns);
       return { items: next, _readNotificationIds: readNotificationIds };
     });
   },
@@ -637,7 +637,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
           .filter((item) => item.type === "agent_update" && item.inbox_notification_id && item.read)
           .map((item) => item.inbox_notification_id!),
       ])];
-      persistItems(next, readNotificationIds, s._dismissedWorkflowRuns);
+      persistItems(next, readNotificationIds, s._dismissedAutomationRuns);
       return { items: next, _readNotificationIds: readNotificationIds };
     });
   },
@@ -645,16 +645,16 @@ export const useQueueStore = create<QueueState>((set, get) => ({
   clearRead() {
     queueMutationRevision += 1;
     set((s) => {
-      const dismissedWorkflowRuns = new Set(s._dismissedWorkflowRuns);
+      const dismissedAutomationRuns = new Set(s._dismissedAutomationRuns);
       const next = s.items.filter((item) => {
         if (!(item.read && isClearableLegacyCompletion(item))) return true;
-        const workflowKey = workflowRunKey(item);
-        if (workflowKey) dismissedWorkflowRuns.add(workflowKey);
+        const automationKey = automationRunKey(item);
+        if (automationKey) dismissedAutomationRuns.add(automationKey);
         return false;
       });
-      const dismissed = [...dismissedWorkflowRuns];
+      const dismissed = [...dismissedAutomationRuns];
       persistItems(next, s._readNotificationIds, dismissed);
-      return { items: next, _dismissedWorkflowRuns: dismissed };
+      return { items: next, _dismissedAutomationRuns: dismissed };
     });
   },
 

@@ -28,7 +28,7 @@ function classesIndex(): LibraryIndex {
     sections: {
       skills: { stubbed: false, tree: emptyTree },
       prompts: { stubbed: false, tree: emptyTree },
-      workflows: { stubbed: false, tree: emptyTree },
+      automations: { stubbed: false, tree: emptyTree },
       classes: {
         stubbed: false,
         tree: {

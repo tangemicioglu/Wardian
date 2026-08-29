@@ -214,11 +214,11 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
       case "save_queue_preferences":
         currentQueuePreferences = args?.preferences;
         return null;
-      // The workflow list commands return pages; only `schedule_list` is a
+      // The automation list commands return pages; only `schedule_list` is a
       // bare collection.
-      case "workflow_list_blueprints":
+      case "automation_list_blueprints":
         return { blueprints: [], truncated: false, next_offset: null };
-      case "workflow_list_runs":
+      case "automation_list_runs":
         return { runs: [], truncated: false, next_offset: null };
       case "schedule_list":
         return [];
@@ -306,7 +306,7 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
         return null;
       case "resize_agent_terminal":
         return null;
-      case "list_workflows":
+      case "list_automations":
         return [];
       case "list_scheduled_runs":
         return [];
@@ -314,8 +314,8 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
         return { type: "Folder", path: "", name: "Root", children: [] };
       case "list_deployed_skills":
         return [];
-      case "load_workflow_library":
-        return { folders: [], rootWorkflowIds: [] };
+      case "load_automation_library":
+        return { folders: [], rootAutomationIds: [] };
       case "load_app_settings":
         return {
           theme: "system",
@@ -527,7 +527,7 @@ beforeEach(() => {
   useQueueStore.setState({
     items: [],
     _agentBuffers: {},
-    _workflowLastOutput: {},
+    _automationLastOutput: {},
     preferences: normalizeQueuePreferences({}),
   });
   delete (window as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown }).__TAURI__;
@@ -994,12 +994,12 @@ describe("Workbench persistence boot integration", () => {
     await waitFor(() => expect(gridMode).toHaveAttribute("aria-pressed", "true"));
 
     const overviewTab = screen.getByRole("tab", { name: "Agents" });
-    fireEvent.click(screen.getByTestId("sidebar-tab-workflows"));
+    fireEvent.click(screen.getByTestId("sidebar-tab-automations"));
     expect(overviewTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByTestId("workflows-surface")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("automations-surface")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Monitor" }));
-    expect(await screen.findByTestId("workflows-surface")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("tab", { name: "Workflows" }))
+    expect(await screen.findByTestId("automations-surface")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Automations" }))
       .toHaveAttribute("aria-selected", "true"));
 
     act(() => {
@@ -1017,7 +1017,7 @@ describe("Workbench persistence boot integration", () => {
       "graph",
       "garden",
       "library",
-      "workflows",
+      "automations",
     ]) {
       expect(document.querySelector(`[role="option"][data-surface-type="${surfaceType}"]`))
         .not.toBeNull();
@@ -2450,7 +2450,7 @@ describe("Agent Watchlist Sidebar", () => {
     useQueueStore.setState({
       items: [],
       _agentBuffers: { "agent-1": "stale restored output" },
-      _workflowLastOutput: {},
+      _automationLastOutput: {},
     });
     const emitAgentMetrics = captureAgentMetricsListener();
 
@@ -2487,7 +2487,7 @@ describe("Agent Watchlist Sidebar", () => {
     useQueueStore.setState({
       items: [],
       _agentBuffers: { "agent-1": "stale restored output" },
-      _workflowLastOutput: {},
+      _automationLastOutput: {},
     });
     const { emitStatus } = captureQueueAgentListeners();
 

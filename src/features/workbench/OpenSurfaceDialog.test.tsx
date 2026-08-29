@@ -113,7 +113,7 @@ describe("OpenSurfaceDialog", () => {
       "graph",
       "garden",
       "library",
-      "workflows",
+      "automations",
       // Browser provisions its own session, so it is offered without the
       // caller having to supply a resource key first.
       "browser",

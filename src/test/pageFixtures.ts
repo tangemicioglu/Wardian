@@ -1,7 +1,7 @@
 /**
  * Page-shaped fixtures for the bounded list commands.
  *
- * `get_directory_tree`, `workflow_list_blueprints`, `workflow_list_runs`,
+ * `get_directory_tree`, `automation_list_blueprints`, `automation_list_runs`,
  * `list_inbox_notifications` and `get_pair_activity` each return one struct
  * carrying its collection plus `truncated` and `next_offset`. None of them
  * returns a bare array.
@@ -25,11 +25,11 @@ function page<K extends string, T>(key: K, items: T[], next: number | null) {
 /** `get_directory_tree` */
 export const dirPage = <T>(nodes: T[], next: number | null = null) => page("nodes", nodes, next);
 
-/** `workflow_list_blueprints` */
+/** `automation_list_blueprints` */
 export const blueprintPage = <T>(blueprints: T[], next: number | null = null) =>
   page("blueprints", blueprints, next);
 
-/** `workflow_list_runs` */
+/** `automation_list_runs` */
 export const runPage = <T>(runs: T[], next: number | null = null) => page("runs", runs, next);
 
 /** `list_inbox_notifications` */

@@ -257,10 +257,10 @@ async function installMock(page: Page) {
             return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
           if (command === "dismiss_onboarding_hint")
             return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
-          if (command === "list_workflows") return [];
+          if (command === "list_automations") return [];
           if (command === "list_scheduled_runs") return [];
-          if (command === "load_workflow_library")
-            return { folders: [], rootWorkflowIds: [] };
+          if (command === "load_automation_library")
+            return { folders: [], rootAutomationIds: [] };
           if (command === "get_library_tree")
             return { type: "Folder", path: "", name: "Root", children: [] };
           if (command === "list_deployed_skills") return [];

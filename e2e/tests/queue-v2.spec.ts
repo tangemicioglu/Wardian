@@ -7,12 +7,12 @@ async function installQueueV2IpcMock(page: Page) {
   await page.addInitScript((workbenchDocument) => {
     type QueueItem = {
       id: string;
-      type: "action_needed" | "agent_completed" | "workflow_completed";
+      type: "action_needed" | "agent_completed" | "automation_completed";
       timestamp: number;
       read: boolean;
       agent_session_id?: string;
       agent_name?: string;
-      workflow_name?: string;
+      automation_name?: string;
       status?: "completed" | "failed";
       summary?: string;
       error?: string;
@@ -48,23 +48,23 @@ async function installQueueV2IpcMock(page: Page) {
         summary: "Finished the test summary.",
       },
       {
-        id: "workflow-failed-1",
-        type: "workflow_completed",
+        id: "automation-failed-1",
+        type: "automation_completed",
         timestamp: now - 180_000,
         read: false,
-        workflow_name: "Release Drill",
+        automation_name: "Release Drill",
         status: "failed",
         error: "Verifier returned a non-zero exit code.",
       },
     ];
     let queuePreferences = {};
-    let workflowApprovals: Array<Record<string, unknown>> = [];
-    const workflowTerminalRuns: Array<Record<string, unknown>> = Array.isArray(
-      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: unknown })
-        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__,
+    let automationApprovals: Array<Record<string, unknown>> = [];
+    const automationTerminalRuns: Array<Record<string, unknown>> = Array.isArray(
+      (window as Window & { __WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__?: unknown })
+        .__WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__,
     )
-      ? (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__: Array<Record<string, unknown>> })
-        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__
+      ? (window as Window & { __WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__
       : [];
     const submittedPrompts: Array<{ sessionId: string; prompt: string }> = [];
     let callbackId = 1;
@@ -74,21 +74,21 @@ async function installQueueV2IpcMock(page: Page) {
       __TAURI_INTERNALS__?: Record<string, unknown>;
       __TAURI_EVENT_PLUGIN_INTERNALS__?: Record<string, unknown>;
       __WARDIAN_E2E_SUBMITTED_PROMPTS__?: Array<{ sessionId: string; prompt: string }>;
-      __WARDIAN_E2E_WORKFLOW_INBOX_UPDATE__?: (payload: Record<string, unknown>) => void;
+      __WARDIAN_E2E_AUTOMATION_INBOX_UPDATE__?: (payload: Record<string, unknown>) => void;
     };
 
     tauriWindow.__WARDIAN_E2E_SUBMITTED_PROMPTS__ = submittedPrompts;
-    tauriWindow.__WARDIAN_E2E_WORKFLOW_INBOX_UPDATE__ = (payload) => {
-      workflowApprovals = payload.status === "awaiting_approval" ? [{
-        blueprint_id: payload.workflow_id,
-        blueprint_path: "/workflows/release.md",
+    tauriWindow.__WARDIAN_E2E_AUTOMATION_INBOX_UPDATE__ = (payload) => {
+      automationApprovals = payload.status === "awaiting_approval" ? [{
+        blueprint_id: payload.automation_id,
+        blueprint_path: "/automations/release.md",
         run_id: payload.run_instance_id,
         node: "approve-release",
-        title: payload.workflow_name,
-        prompt: "Approve the release workflow?",
+        title: payload.automation_name,
+        prompt: "Approve the release automation?",
         created_at: new Date().toISOString(),
       }] : [];
-      const handlerId = eventHandlers.get("workflow-inbox-updated");
+      const handlerId = eventHandlers.get("automation-inbox-updated");
       const handler = handlerId === undefined
         ? undefined
         : callbacks.get(handlerId) as ((event: unknown) => void) | undefined;
@@ -174,8 +174,8 @@ async function installQueueV2IpcMock(page: Page) {
             created_at: new Date(now).toISOString(),
           }], truncated: false, next_offset: null };
         }
-        if (command === "list_workflow_inbox_approvals") return workflowApprovals;
-        if (command === "list_workflow_inbox_terminal_runs") return workflowTerminalRuns;
+        if (command === "list_automation_inbox_approvals") return automationApprovals;
+        if (command === "list_automation_inbox_terminal_runs") return automationTerminalRuns;
         if (command === "save_queue_items") {
           queueItems = args?.items as QueueItem[];
           return null;
@@ -201,9 +201,9 @@ async function installQueueV2IpcMock(page: Page) {
         }
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") return { type: "Folder", path: "", name: "Root", children: [] };
         if (command === "list_deployed_skills") return [];
         if (command === "plugin:event|listen") {
@@ -253,41 +253,41 @@ test.describe("Inbox", () => {
     ).toBe("1");
   });
 
-  test("projects workflow approval and completion events into Inbox", async ({ page }) => {
+  test("projects automation approval and completion events into Inbox", async ({ page }) => {
     await installQueueV2IpcMock(page);
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
     await openSurface(page, "inbox");
 
     await page.evaluate(() => {
-      window.__WARDIAN_E2E_WORKFLOW_INBOX_UPDATE__?.({
-        workflow_id: "release-workflow",
+      window.__WARDIAN_E2E_AUTOMATION_INBOX_UPDATE__?.({
+        automation_id: "release-automation",
         run_instance_id: "run-42",
-        workflow_name: "Release approval",
+        automation_name: "Release approval",
         status: "awaiting_approval",
       });
     });
     await expect(page.getByText("Release approval", { exact: true })).toBeVisible();
-    await expect(page.getByText("Approve the release workflow?", { exact: true })).toBeVisible();
+    await expect(page.getByText("Approve the release automation?", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
 
-    if (process.env.WARDIAN_WORKFLOW_INBOX_SCREENSHOT) {
+    if (process.env.WARDIAN_AUTOMATION_INBOX_SCREENSHOT) {
       await page
         .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
-        .screenshot({ path: process.env.WARDIAN_WORKFLOW_INBOX_SCREENSHOT, animations: "disabled" });
+        .screenshot({ path: process.env.WARDIAN_AUTOMATION_INBOX_SCREENSHOT, animations: "disabled" });
     }
 
     await page.evaluate(() => {
-      window.__WARDIAN_E2E_WORKFLOW_INBOX_UPDATE__?.({
-        workflow_id: "release-workflow",
+      window.__WARDIAN_E2E_AUTOMATION_INBOX_UPDATE__?.({
+        automation_id: "release-automation",
         run_instance_id: "run-42",
-        workflow_name: "Release approval",
+        automation_name: "Release approval",
         status: "completed",
-        summary: "Release workflow completed successfully.",
+        summary: "Release automation completed successfully.",
       });
     });
-    await expect(page.getByText("Workflow completed", { exact: true })).toBeVisible();
-    await expect(page.getByText("Release workflow completed successfully.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Automation completed", { exact: true })).toBeVisible();
+    await expect(page.getByText("Release automation completed successfully.", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeHidden();
   });
 
@@ -322,22 +322,22 @@ test.describe("Inbox", () => {
     }
   });
 
-  test("reconciles completed and failed workflow runs that predate the Inbox listener", async ({ page }) => {
+  test("reconciles completed and failed automation runs that predate the Inbox listener", async ({ page }) => {
     await page.addInitScript(() => {
-      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
-        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__ = [{
-          workflow_id: "completed-scheduled-workflow",
+      (window as Window & { __WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__ = [{
+          automation_id: "completed-scheduled-automation",
           run_instance_id: "run-completed-before-inbox",
-          workflow_name: "Completed scheduled workflow",
+          automation_name: "Completed scheduled automation",
           status: "completed",
-          summary: "The scheduled workflow finished before Inbox opened.",
+          summary: "The scheduled automation finished before Inbox opened.",
           updated_at: new Date().toISOString(),
         }, {
-          workflow_id: "missing-scheduled-workflow",
+          automation_id: "missing-scheduled-automation",
           run_instance_id: "run-before-inbox",
-          workflow_name: "Missing scheduled workflow",
+          automation_name: "Missing scheduled automation",
           status: "failed",
-          error: "The scheduled workflow blueprint was removed.",
+          error: "The scheduled automation blueprint was removed.",
           updated_at: new Date().toISOString(),
         }];
     });
@@ -346,27 +346,27 @@ test.describe("Inbox", () => {
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
     await openSurface(page, "inbox");
 
-    await expect(page.getByText("Completed scheduled workflow", { exact: true })).toBeVisible();
-    await expect(page.getByText("The scheduled workflow finished before Inbox opened.", { exact: true })).toBeVisible();
-    await expect(page.getByText("Missing scheduled workflow", { exact: true })).toBeVisible();
-    await expect(page.getByText("The scheduled workflow blueprint was removed.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Completed scheduled automation", { exact: true })).toBeVisible();
+    await expect(page.getByText("The scheduled automation finished before Inbox opened.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Missing scheduled automation", { exact: true })).toBeVisible();
+    await expect(page.getByText("The scheduled automation blueprint was removed.", { exact: true })).toBeVisible();
 
-    if (process.env.WARDIAN_WORKFLOW_INBOX_RECONCILIATION_SCREENSHOT) {
+    if (process.env.WARDIAN_AUTOMATION_INBOX_RECONCILIATION_SCREENSHOT) {
       await page
         .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
-        .screenshot({ path: process.env.WARDIAN_WORKFLOW_INBOX_RECONCILIATION_SCREENSHOT, animations: "disabled" });
+        .screenshot({ path: process.env.WARDIAN_AUTOMATION_INBOX_RECONCILIATION_SCREENSHOT, animations: "disabled" });
     }
   });
 
-  test("keeps workflow read and clear actions stable across Inbox refreshes", async ({ page }) => {
+  test("keeps automation read and clear actions stable across Inbox refreshes", async ({ page }) => {
     await page.addInitScript(() => {
-      (window as Window & { __WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
-        .__WARDIAN_E2E_WORKFLOW_TERMINAL_RUNS__ = [{
-          workflow_id: "release-workflow",
+      (window as Window & { __WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__?: Array<Record<string, unknown>> })
+        .__WARDIAN_E2E_AUTOMATION_TERMINAL_RUNS__ = [{
+          automation_id: "release-automation",
           run_instance_id: "run-triage",
-          workflow_name: "Release workflow",
+          automation_name: "Release automation",
           status: "completed",
-          summary: "The release workflow completed successfully.",
+          summary: "The release automation completed successfully.",
           updated_at: new Date().toISOString(),
         }];
     });
@@ -375,21 +375,21 @@ test.describe("Inbox", () => {
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
     await openSurface(page, "inbox");
 
-    const workflowCard = page.locator(".group").filter({ hasText: "Release workflow" }).first();
-    await expect(workflowCard).toBeVisible();
-    await workflowCard.click();
+    const automationCard = page.locator(".group").filter({ hasText: "Release automation" }).first();
+    await expect(automationCard).toBeVisible();
+    await automationCard.click();
     await expect(page.getByRole("button", { name: /clear read/i })).toBeEnabled();
 
-    if (process.env.WARDIAN_WORKFLOW_TRIAGE_SCREENSHOT) {
+    if (process.env.WARDIAN_AUTOMATION_TRIAGE_SCREENSHOT) {
       await page
         .locator('[data-testid="surface-panel"][data-surface-type="inbox"]')
-        .screenshot({ path: process.env.WARDIAN_WORKFLOW_TRIAGE_SCREENSHOT, animations: "disabled" });
+        .screenshot({ path: process.env.WARDIAN_AUTOMATION_TRIAGE_SCREENSHOT, animations: "disabled" });
     }
 
     await page.getByRole("button", { name: /clear read/i }).click();
-    await expect(page.getByText("Release workflow", { exact: true })).toBeHidden();
+    await expect(page.getByText("Release automation", { exact: true })).toBeHidden();
 
     await page.waitForTimeout(5_500);
-    await expect(page.getByText("Release workflow", { exact: true })).toBeHidden();
+    await expect(page.getByText("Release automation", { exact: true })).toBeHidden();
   });
 });

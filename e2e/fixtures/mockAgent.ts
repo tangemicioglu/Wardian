@@ -83,7 +83,7 @@ export function seededHome(scenario: string = "basic"): SeededHome {
  */
 /**
  * Seeds a library-redesign fixture set into the given WARDIAN_HOME: two
- * skills in nested folders, one prompt, one workflow, and one class — the
+ * skills in nested folders, one prompt, one automation, and one class — the
  * minimum shape `library-redesign.spec.ts` and
  * `library-deployment-native.test.mjs` both build their assertions against.
  *
@@ -100,7 +100,7 @@ export function seededHome(scenario: string = "basic"): SeededHome {
 export function seedLibraryFixtures(home: string): void {
   const librarySkills = path.join(home, "library", "skills");
   const libraryPrompts = path.join(home, "library", "prompts");
-  const libraryWorkflows = path.join(home, "library", "workflows");
+  const libraryAutomations = path.join(home, "library", "automations");
   const classesDir = path.join(home, "classes", "Architect");
 
   const plannerDir = path.join(librarySkills, "dev", "planner");
@@ -123,10 +123,10 @@ export function seedLibraryFixtures(home: string): void {
     "# Greeting\nSay hello to the team\n",
   );
 
-  fs.mkdirSync(libraryWorkflows, { recursive: true });
+  fs.mkdirSync(libraryAutomations, { recursive: true });
   fs.writeFileSync(
-    path.join(libraryWorkflows, "triage.md"),
-    "---\ndescription: Triage workflow\n---\n# Triage\n",
+    path.join(libraryAutomations, "triage.md"),
+    "---\ndescription: Triage automation\n---\n# Triage\n",
   );
 
   fs.mkdirSync(classesDir, { recursive: true });

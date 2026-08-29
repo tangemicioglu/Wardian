@@ -19,7 +19,7 @@ Use kebab-case for folders and filenames. Match the folder to the feature guide 
 - `docs/assets/screenshots/command-panel/`
 - `docs/assets/screenshots/watchlists/`
 - `docs/assets/screenshots/library/`
-- `docs/assets/screenshots/workflows/`
+- `docs/assets/screenshots/automations/`
 - `docs/assets/screenshots/source-control/`
 - `docs/assets/screenshots/settings/`
 - `docs/assets/screenshots/user-terminal/`
@@ -47,7 +47,7 @@ Use alt text that describes the visible state. Avoid vague labels such as `Scree
 - Compress large images before committing.
 - Refresh screenshots in the same PR when a visual change makes existing documentation images stale.
 
-## Recommended Workflow
+## Recommended Automation
 
 Start the app with an isolated home so screenshots are reproducible.
 

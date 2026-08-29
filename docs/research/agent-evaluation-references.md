@@ -1,6 +1,6 @@
 # Agent Evaluation References
 
-This document maps public agent evaluation, benchmark, observability, and security-testing systems to design patterns relevant to Wardian's verification strategy, workflow run evidence, provider comparison, and agent safety posture.
+This document maps public agent evaluation, benchmark, observability, and security-testing systems to design patterns relevant to Wardian's verification strategy, automation run evidence, provider comparison, and agent safety posture.
 
 This is not an endorsement, affiliation claim, product evaluation, or competitive teardown. The notes below describe public architecture and design pressure only.
 
@@ -16,22 +16,22 @@ Source basis: entries were selected through public research and checked against 
 - **Security robustness**: whether prompt injection, data exfiltration, unsafe commands, and credential misuse are tested.
 - **Regression loop**: whether production failures can become repeatable evals.
 - **Provider comparability**: whether different agents/providers can be measured under the same task harness.
-- **Workflow observability**: whether evaluation data can map onto Wardian workflow nodes and run history.
+- **Automation observability**: whether evaluation data can map onto Wardian automation nodes and run history.
 
 ## Summary Map
 
 | System | Primary Pattern | Wardian Takeaway |
 |---|---|---|
-| [Inspect](https://inspect.aisi.org.uk/) | General evaluation framework with agent and tool support. | Strong reference for Wardian's own provider/workflow evaluation harness. |
+| [Inspect](https://inspect.aisi.org.uk/) | General evaluation framework with agent and tool support. | Strong reference for Wardian's own provider/automation evaluation harness. |
 | [SWE-bench](https://github.com/swe-bench) | Software engineering issue-resolution benchmark. | Useful for coding-agent task realism and reproducible environment discipline. |
 | [tau-bench](https://sierra.ai/uk/resources/research/tau-bench) | Tool-agent-user benchmark for dynamic real-world interactions. | Useful for evaluating multi-turn tool use and policy adherence. |
 | [Claw Bench](https://github.com/claw-bench/claw-bench) | Real agent benchmark with pytest verifiers across many domains. | Directly relevant to agent-run scoring and skill-like task instructions. |
 | [AgentDojo](https://arxiv.org/abs/2406.13352) | Prompt-injection attack and defense benchmark for tool-using agents. | Strong reference for treating tool outputs and web content as untrusted. |
-| [Phoenix](https://github.com/Arize-ai/phoenix) | Open-source AI observability and eval platform. | Reference for trace-to-debug workflows and OpenTelemetry alignment. |
+| [Phoenix](https://github.com/Arize-ai/phoenix) | Open-source AI observability and eval platform. | Reference for trace-to-debug automations and OpenTelemetry alignment. |
 | [Helicone](https://github.com/Helicone/helicone) | LLM observability, cost, prompt, and request analytics. | Useful for model/provider cost and request visibility. |
 | [OpenLLMetry](https://github.com/traceloop/openllmetry) | OpenTelemetry instrumentation for LLM providers and vector DBs. | Strong reference for emitting portable telemetry instead of bespoke logs. |
 | [Future AGI](https://github.com/future-agi/future-agi) | End-to-end tracing, evals, simulation, gateway, and guardrails. | Useful as a broad platform reference for trace/eval/guardrail convergence. |
-| [Braintrust](https://www.braintrust.dev/) | Trace-to-eval production workflow. | Relevant for turning Wardian failures into repeatable regression cases. |
+| [Braintrust](https://www.braintrust.dev/) | Trace-to-eval production automation. | Relevant for turning Wardian failures into repeatable regression cases. |
 
 ## Reference Profiles
 
@@ -65,7 +65,7 @@ Source basis: entries were selected through public research and checked against 
 - Public trajectories and experiment data.
 - Agent harnesses and small reference agents.
 
-**Wardian relevance:** SWE-bench matters less as a benchmark Wardian must run and more as a quality bar. Wardian workflows that claim to validate coding work need environment setup, tests, artifacts, and failure evidence that are as explicit as benchmark harnesses.
+**Wardian relevance:** SWE-bench matters less as a benchmark Wardian must run and more as a quality bar. Wardian automations that claim to validate coding work need environment setup, tests, artifacts, and failure evidence that are as explicit as benchmark harnesses.
 
 ### tau-bench
 
@@ -80,7 +80,7 @@ Source basis: entries were selected through public research and checked against 
 - Multi-turn task completion.
 - Reliability focus.
 
-**Wardian relevance:** tau-bench is relevant for Wardian workflows that involve humans, tools, and policies. Wardian should eventually test not only "did the agent edit code?" but also "did the agent follow policy, ask when needed, and use tools correctly over several turns?"
+**Wardian relevance:** tau-bench is relevant for Wardian automations that involve humans, tools, and policies. Wardian should eventually test not only "did the agent edit code?" but also "did the agent follow policy, ask when needed, and use tools correctly over several turns?"
 
 ### Claw Bench
 
@@ -113,7 +113,7 @@ Source basis: entries were selected through public research and checked against 
 - Extensible environment for new attacks and tasks.
 - Emphasis on tool outputs as untrusted data.
 
-**Wardian relevance:** This should influence Wardian's runtime model. Any workflow node that reads web pages, GitHub issues, emails, docs, or tool output should preserve a trust boundary between user instructions, agent reasoning, and untrusted data.
+**Wardian relevance:** This should influence Wardian's runtime model. Any automation node that reads web pages, GitHub issues, emails, docs, or tool output should preserve a trust boundary between user instructions, agent reasoning, and untrusted data.
 
 ### Phoenix
 
@@ -126,10 +126,10 @@ Source basis: entries were selected through public research and checked against 
 - OpenTelemetry-compatible tracing.
 - OpenInference instrumentation.
 - LLM, tool, and retrieval traces.
-- Evaluation and debugging workflows.
+- Evaluation and debugging automations.
 - Local and hosted usage patterns.
 
-**Wardian relevance:** Phoenix is useful as an observability reference. Wardian's workflow run history should be exportable or mappable to trace concepts: spans, tool calls, attributes, errors, timing, cost, and artifacts.
+**Wardian relevance:** Phoenix is useful as an observability reference. Wardian's automation run history should be exportable or mappable to trace concepts: spans, tool calls, attributes, errors, timing, cost, and artifacts.
 
 ### Helicone
 
@@ -145,7 +145,7 @@ Source basis: entries were selected through public research and checked against 
 - Integrations with LLM frameworks and providers.
 - Data export and MCP-related data access.
 
-**Wardian relevance:** Helicone is relevant to Wardian's provider/runtime accounting. Users supervising many agents need cost, token, latency, and provider error visibility alongside PTY status and workflow node state.
+**Wardian relevance:** Helicone is relevant to Wardian's provider/runtime accounting. Users supervising many agents need cost, token, latency, and provider error visibility alongside PTY status and automation node state.
 
 ### OpenLLMetry
 
@@ -177,7 +177,7 @@ Source basis: entries were selected through public research and checked against 
 - Provider routing, caching, and virtual keys.
 - Trace-to-optimization loops.
 
-**Wardian relevance:** Future AGI is useful as a convergence reference: observability, evaluation, gateway control, and guardrails are moving toward one platform layer. Wardian should keep these concerns separate internally but let them meet in run history and workflow evidence.
+**Wardian relevance:** Future AGI is useful as a convergence reference: observability, evaluation, gateway control, and guardrails are moving toward one platform layer. Wardian should keep these concerns separate internally but let them meet in run history and automation evidence.
 
 ### Braintrust
 
@@ -187,12 +187,12 @@ Source basis: entries were selected through public research and checked against 
 
 **Distinctive components:**
 
-- Trace-to-eval workflow.
+- Trace-to-eval automation.
 - Dataset and experiment management.
 - CI-style evaluation gates.
 - Production failure capture.
 
-**Wardian relevance:** Braintrust's important pattern is not vendor-specific: production failures should become reusable test cases. Wardian should make it easy to turn a bad agent run into a regression fixture for the relevant provider, class, skill, or workflow.
+**Wardian relevance:** Braintrust's important pattern is not vendor-specific: production failures should become reusable test cases. Wardian should make it easy to turn a bad agent run into a regression fixture for the relevant provider, class, skill, or automation.
 
 ## Wardian Positioning
 
@@ -205,7 +205,7 @@ task/run -> observed trajectory -> artifacts -> verifier/evaluator -> score and 
 Near-term implications:
 
 - Store run evidence in a structured form, not only terminal transcripts.
-- Attach verifiers to workflow nodes where possible.
+- Attach verifiers to automation nodes where possible.
 - Treat "agent got stuck" as an evaluable failure mode.
 - Track provider/class/skill performance over repeatable tasks.
 - Preserve trust boundaries for untrusted tool outputs.

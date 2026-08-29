@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod agent_reach;
 pub mod artifacts;
+pub mod automation;
 pub mod browser;
 pub mod change_review;
 pub mod change_snapshot;
@@ -24,11 +25,11 @@ pub mod terminal_session;
 pub mod topology;
 pub mod watchlist;
 pub mod workbench;
-pub mod workflow;
 
 pub use agent::*;
 pub use agent_reach::*;
 pub use artifacts::*;
+pub use automation::*;
 pub use browser::*;
 pub use change_review::*;
 pub use chat::*;
@@ -48,4 +49,3 @@ pub use terminal_session::*;
 pub use topology::*;
 pub use watchlist::*;
 pub use workbench::*;
-pub use workflow::*;

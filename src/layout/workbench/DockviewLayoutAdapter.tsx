@@ -166,7 +166,7 @@ const WARDIAN_DOCKVIEW_THEME = {
 const KEEP_ALIVE_SURFACE_TYPES = new Set([
   "agents-overview",
   "library",
-  "workflows",
+  "automations",
 ]);
 const SPLIT_RATIO_FEEDBACK_EPSILON = 0.005;
 /** Matches Dockview's group floor while making Wardian's split contract explicit. */

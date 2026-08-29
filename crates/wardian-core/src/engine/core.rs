@@ -55,13 +55,13 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
         } => {
             if blueprint_id != &g.blueprint().id {
                 return Err(crate::engine::EngineError::InvalidState(format!(
-                    "workflow event belongs to blueprint `{blueprint_id}`, requested `{}`",
+                    "automation event belongs to blueprint `{blueprint_id}`, requested `{}`",
                     g.blueprint().id
                 )));
             }
             if *schema != g.blueprint().schema {
                 return Err(crate::engine::EngineError::InvalidState(format!(
-                    "workflow event schema is {schema}, requested blueprint schema is {}",
+                    "automation event schema is {schema}, requested blueprint schema is {}",
                     g.blueprint().schema
                 )));
             }
@@ -71,7 +71,7 @@ pub fn apply(g: &Graph, s: &mut RunState, ev: &Event) -> crate::engine::Result<(
                     && s.run_id != *run_id
                 {
                     return Err(crate::engine::EngineError::InvalidState(format!(
-                        "workflow run identity changed from `{}` to `{run_id}`",
+                        "automation run identity changed from `{}` to `{run_id}`",
                         s.run_id
                     )));
                 }
@@ -340,12 +340,12 @@ pub fn advance_loops(g: &Graph, s: &RunState) -> crate::engine::Result<Vec<Event
                     ))
                 })?;
                 let condition =
-                    crate::workflow::condition::validate_path(condition).map_err(|message| {
+                    crate::automation::condition::validate_path(condition).map_err(|message| {
                         crate::engine::EngineError::InvalidState(format!(
                             "loop `{lp}` until condition is invalid: {message}"
                         ))
                     })?;
-                crate::workflow::condition::lookup_truthy(&s.registry, &condition)
+                crate::automation::condition::lookup_truthy(&s.registry, &condition)
             }
         };
 
@@ -421,10 +421,10 @@ pub fn is_approval(g: &Graph, node: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::{Blueprint, Edge, Node};
     use crate::engine::event::EventKind;
     use crate::engine::graph::Graph;
     use crate::engine::state::{NodeStatus, RunState, RunStatus};
-    use crate::workflow::{Blueprint, Edge, Node};
 
     fn node(id: &str, ty: &str) -> Node {
         let mut fields = serde_json::Map::new();

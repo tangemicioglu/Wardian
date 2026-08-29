@@ -351,7 +351,7 @@ describe("RemoteInboxView", () => {
     useRemoteStore.setState({
       remoteQueueItems: [{
         id: "read-pending-completion",
-        type: "workflow_completed",
+        type: "automation_completed",
         timestamp: Date.now(),
         read: true,
         agent_name: "Coder",

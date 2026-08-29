@@ -75,14 +75,14 @@ Some Wardian objects compose with an agent without becoming part of it:
 
 ```text
 Prompt          → a saved message sent to one or more agents
-Workflow        → a reusable process that can coordinate agent work
+Automation        → a reusable process that can coordinate agent work
 Team/watchlist  → a working set of agents for people to monitor or target
-Inbox/evidence  → records the outcome of agent or workflow work
+Inbox/evidence  → records the outcome of agent or automation work
 Workbench tab   → one presentation of a running agent
 ```
 
 Those objects are deliberately separate. A class changes the reusable setup
-for new agents; a prompt is an on-demand message; a workflow is a process that
+for new agents; a prompt is an on-demand message; an automation is a process that
 may use agents. Closing a tab or removing an agent from a watchlist does not
 stop its running session.
 
@@ -110,7 +110,7 @@ made, or move back down when a simpler option is enough.
 More tailoring power
       │                                      Build a new custom tool
       │                                      or integration (advanced)
-      │                                Compose a workflow blueprint
+      │                                Compose an automation blueprint
       │                          Define a reusable role: Class
       │                    Write a reusable procedure: Skill
       │              Save a repeated request: Prompt
@@ -120,7 +120,7 @@ More tailoring power
         Less learning and effort             More learning and effort
 ```
 
-The point is not to turn every task into a workflow or every user into a
+The point is not to turn every task into an automation or every user into a
 programmer. Use the smallest adaptation that solves the problem. Move upward
 only when it cannot express the change you need.
 
@@ -131,7 +131,7 @@ only when it cannot express the change you need.
 | A request you keep rewriting | [Prompt](./library.md#2-prompts) | A message you can send again without making it permanent setup. |
 | A procedure that should be followed consistently | [Skill](./library.md#1-skills) | Guidance that can be deployed to one agent, a class, or your user profile. |
 | A role with a stable way of working | [Class](./library.md#3-classes) | Shared instructions and skills for new agents in that role. |
-| A process with connected steps | [Workflow blueprint](./library.md#4-workflows) | A design that can produce separate workflow runs. |
+| A process with connected steps | [Automation blueprint](./library.md#4-automations) | A design that can produce separate automation runs. |
 | A need none of those pieces can express | A custom tool or integration | A new capability; this is an advanced, higher-effort step. |
 
 Project files, instructions, results, and evidence stay alongside this slope.
@@ -148,25 +148,25 @@ Library
 ├── Prompts       → saved messages you send to selected agents
 ├── Skills        → reusable guidance deployed to an agent or class
 ├── Classes       → reusable starting setups for new agents
-└── Workflows     → saved automation designs that can start workflow runs
+└── Automations     → saved automation designs that can start automation runs
 ```
 
 A prompt is for a request you want to send again. A skill is for instructions
 or a procedure an agent should have available while it works. A class combines
-general instructions and skills for a repeatable role. A workflow coordinates
+general instructions and skills for a repeatable role. An automation coordinates
 work across steps or agents.
 
-## Workflow Runs
+## Automation Runs
 
 ```text
-Workflow blueprint (saved design)
+Automation blueprint (saved design)
 ├── Trigger or manual launch
 ├── Run (one execution of that design)
 │   └── Nodes (the individual steps)
-└── Results and history in Workflows and Inbox
+└── Results and history in Automations and Inbox
 ```
 
-Use a workflow blueprint when a process has repeatable steps. A run is one
+Use an automation blueprint when a process has repeatable steps. A run is one
 specific time you execute it; changing a blueprint does not rewrite a run that
 has already started.
 
@@ -174,5 +174,5 @@ has already started.
 
 - [UI Overview](./ui-overview.md) explains the Workbench and sidebars in detail.
 - [Agents](./agents-overview.md) explains monitoring and arranging agents.
-- [Library](./library.md) explains prompts, skills, classes, and workflows.
-- [Workflows](./workflows.md) explains building, launching, and monitoring workflow runs.
+- [Library](./library.md) explains prompts, skills, classes, and automations.
+- [Automations](./automations.md) explains building, launching, and monitoring automation runs.

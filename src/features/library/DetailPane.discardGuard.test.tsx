@@ -40,7 +40,7 @@ function buildIndex(): LibraryIndex {
         },
       },
       prompts: { stubbed: false, tree: emptyTree },
-      workflows: { stubbed: false, tree: emptyTree },
+      automations: { stubbed: false, tree: emptyTree },
       classes: { stubbed: false, tree: emptyTree },
       mcps: { stubbed: true, tree: emptyTree },
     },

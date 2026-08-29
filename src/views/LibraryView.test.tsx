@@ -8,7 +8,7 @@ const emptyIndex: LibraryIndex = {
   sections: {
     skills: { tree: { path: '', name: 'Root', children: [] }, stubbed: false },
     prompts: { tree: { path: '', name: 'Root', children: [] }, stubbed: false },
-    workflows: { tree: { path: '', name: 'Root', children: [] }, stubbed: false },
+    automations: { tree: { path: '', name: 'Root', children: [] }, stubbed: false },
     classes: { tree: { path: '', name: 'Root', children: [] }, stubbed: false },
     mcps: { tree: { path: '', name: 'Root', children: [] }, stubbed: true },
   },

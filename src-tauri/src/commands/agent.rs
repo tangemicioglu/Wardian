@@ -347,7 +347,7 @@ async fn lifecycle_config_for_session(
 /// Claims the persisted conversation exclusion lease before a lifecycle
 /// operation can start, replace, pause, or destroy an agent runtime. The
 /// in-process lifecycle gate prevents local overlap; this second guard closes
-/// the same race for a workflow or control request running in another Wardian
+/// the same race for an automation or control request running in another Wardian
 /// process against the same home.
 fn acquire_agent_lifecycle_transition_lease(
     config: &AgentConfig,
@@ -394,7 +394,7 @@ fn acquire_agent_lifecycle_transition_lease(
 }
 
 /// Acquires the durable guard before a caller waits for the local lifecycle
-/// gate. Headless workflows and direct delivery use this same ordering.
+/// gate. Headless automations and direct delivery use this same ordering.
 async fn acquire_agent_lifecycle_transition_lease_for_session(
     state: &AppState,
     session_id: &str,
@@ -1317,7 +1317,7 @@ pub(crate) fn canonical_agent_class_name(requested: &str) -> Result<String, Stri
 
 pub(crate) fn canonical_agent_provider_name(requested: &str) -> Result<String, String> {
     let provider = requested.trim().to_ascii_lowercase();
-    if wardian_core::workflow::assignment::is_known_provider(&provider) {
+    if wardian_core::automation::assignment::is_known_provider(&provider) {
         Ok(provider)
     } else {
         Err(format!("unsupported provider `{}`", requested.trim()))
@@ -3368,10 +3368,10 @@ pub async fn resume_agent(
     );
     if let Some(context) = session_close_context {
         if let Err(error) =
-            crate::workflow::session_close::invoke_matching(app.clone(), context).await
+            crate::automation::session_close::invoke_matching(app.clone(), context).await
         {
             return Err(format!(
-                "The agent resumed, but its session-close workflow was not durably accepted: {error}"
+                "The agent resumed, but its session-close automation was not durably accepted: {error}"
             ));
         }
     }
@@ -3592,7 +3592,7 @@ fn begin_agent_replacement_journal(
 ) -> Result<
     (
         wardian_core::agent_replacement::ReplacementJournalGuard,
-        Option<crate::workflow::session_close::SessionCloseContext>,
+        Option<crate::automation::session_close::SessionCloseContext>,
     ),
     String,
 > {
@@ -3650,7 +3650,7 @@ fn commit_clear_replacement(
 ) -> Result<
     (
         ActiveAgent,
-        crate::workflow::session_close::SessionCloseContext,
+        crate::automation::session_close::SessionCloseContext,
         wardian_core::agent_replacement::ReplacementJournalGuard,
     ),
     String,
@@ -3800,7 +3800,7 @@ fn commit_resume_replacement(
 ) -> Result<
     (
         ActiveAgent,
-        Option<crate::workflow::session_close::SessionCloseContext>,
+        Option<crate::automation::session_close::SessionCloseContext>,
         wardian_core::agent_replacement::ReplacementJournalGuard,
     ),
     String,
@@ -3967,12 +3967,12 @@ fn build_session_close_context(
     agent_id: &str,
     boundary_reason: ConversationBoundaryReason,
     closed_conversation: Option<&wardian_core::conversations::ConversationIndexEntry>,
-) -> crate::workflow::session_close::SessionCloseContext {
+) -> crate::automation::session_close::SessionCloseContext {
     let boundary_reason = serde_json::to_value(boundary_reason)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| "clear".to_string());
-    crate::workflow::session_close::SessionCloseContext {
+    crate::automation::session_close::SessionCloseContext {
         boundary_id: uuid::Uuid::new_v4().to_string(),
         agent_id: agent_id.to_string(),
         agent_name: config.session_name.clone(),
@@ -4251,13 +4251,13 @@ async fn clear_agent_session_inner(
         "agent-pty-output-ready",
         serde_json::json!({ "session_id": session_id }),
     );
-    // A session-close workflow is a post-commit lifecycle effect. Launch only
+    // A session-close automation is a post-commit lifecycle effect. Launch only
     // after the fresh provider is installed and durable metadata is updated.
     if let Err(error) =
-        crate::workflow::session_close::invoke_matching(app.clone(), session_close_context).await
+        crate::automation::session_close::invoke_matching(app.clone(), session_close_context).await
     {
         return Err(format!(
-            "The agent was cleared, but its session-close workflow was not durably accepted: {error}"
+            "The agent was cleared, but its session-close automation was not durably accepted: {error}"
         ));
     }
     if let Err(error) = replacement_journal.complete() {
@@ -5083,12 +5083,11 @@ pub async fn delete_agent_worktree(
     // member-agent check and deletion, leaving a provider pointed at a
     // worktree that this command has already approved for removal.
     let _headless_execution_mutation =
-        wardian_core::workflow_execution_lock::try_acquire_worktree_mutation_guard()?.ok_or_else(
-            || {
+        wardian_core::automation_execution_lock::try_acquire_worktree_mutation_guard()?
+            .ok_or_else(|| {
                 "Cannot delete a worktree while a headless provider execution is active."
                     .to_string()
-            },
-        )?;
+            })?;
     let configs = {
         let agents = state.agents.lock().await;
         agents

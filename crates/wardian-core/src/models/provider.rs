@@ -16,7 +16,7 @@ pub enum AgentEvent {
     /// The model is actively generating a response (agent is processing).
     Generating,
     /// The agent's full turn is complete (response + all tool calls finished).
-    /// This is the definitive signal the workflow engine waits for.
+    /// This is the definitive signal the automation engine waits for.
     TurnCompleted,
     /// The provider stopped the current turn without completing it.
     TurnInterrupted,

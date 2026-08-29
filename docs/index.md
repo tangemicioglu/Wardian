@@ -4,7 +4,7 @@
 
 Wardian runs the CLI agents you already use in real project folders. It keeps
 their sessions, output, and results easy to inspect, and lets you save useful
-prompts, skills, agent setups, and workflows when you need them again.
+prompts, skills, agent setups, and automations when you need them again.
 
 Start with the onboarding path below. After your first agent task, choose the
 next guide based on what you want to do: monitor agents, save a useful prompt,
@@ -28,7 +28,7 @@ sequence of features to adopt.
 ```text
 More tailoring power
                                       Build a custom tool or integration
-                                Compose a workflow blueprint
+                                Compose an automation blueprint
                           Define a reusable role: Class
                     Write a reusable procedure: Skill
               Save a repeated request: Prompt
@@ -64,7 +64,7 @@ it as the complete map of Wardian's user-facing features.
 
 - [Explorer](./guide/explorer.md) and [Source Control](./guide/source-control.md)
 - [Settings](./guide/settings.md) and [Remote Control](./guide/remote-control.md)
-- [Workflow View](./guide/workflows.md) and the [Workflow Reference](./workflows/index.md)
+- [Automation View](./guide/automations.md) and the [Automation Reference](./automations/index.md)
 
 ## Other Documentation
 

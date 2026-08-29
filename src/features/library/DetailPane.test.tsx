@@ -39,12 +39,12 @@ function buildIndex(): LibraryIndex {
           children: [entry({ kind: 'prompt', name: 'greet', path: 'greet.md', entry_ref: 'prompts/greet.md' })],
         },
       },
-      workflows: {
+      automations: {
         stubbed: false,
         tree: {
           path: '',
           name: 'Root',
-          children: [entry({ kind: 'workflow', name: 'triage', path: 'triage.md', entry_ref: 'workflows/triage.md' })],
+          children: [entry({ kind: 'automation', name: 'triage', path: 'triage.md', entry_ref: 'automations/triage.md' })],
         },
       },
       classes: {
@@ -121,13 +121,13 @@ describe('DetailPane', () => {
     expect(await screen.findByTestId('prompt-detail')).toBeInTheDocument();
   });
 
-  it('renders WorkflowDetail for a workflow selection', async () => {
+  it('renders AutomationDetail for an automation selection', async () => {
     useLibraryStore.setState({
-      selection: { section: 'workflows', entryRef: 'workflows/triage.md' },
+      selection: { section: 'automations', entryRef: 'automations/triage.md' },
       selectedContent: '# triage',
     });
     render(<DetailPane selectedAgentIds={new Set()} />);
-    expect(await screen.findByTestId('workflow-detail')).toBeInTheDocument();
+    expect(await screen.findByTestId('automation-detail')).toBeInTheDocument();
   });
 
   it('renders ClassDetail for a class selection', async () => {

@@ -16,7 +16,7 @@ Wardian's own CLI and agent runtime. Treat the local terminal as the command
 center, not the only worker.
 
 Immediately activate and use the `wardian-cli` skill whenever a request involves
-Wardian, agents, peers, delegation, reviews, workflows, status, workspaces, or
+Wardian, agents, peers, delegation, reviews, automations, status, workspaces, or
 cross-agent coordination.
 
 Start by inspecting the live roster:

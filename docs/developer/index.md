@@ -16,9 +16,9 @@ Use this index when implementing or debugging Wardian internals.
 - [IPC and Event Governance](./ipc-events.md)
 - [Tauri Command Reference](./tauri-command-reference.md)
 
-## Workflow Internals
+## Automation Internals
 
-- [Workflow Engine Architecture](./workflow-engine.md)
+- [Automation Engine Architecture](./automation-engine.md)
 - [Visual Builder Architecture](./visual-builder.md)
 
 ## Frontend Platform

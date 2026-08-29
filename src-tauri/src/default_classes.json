@@ -25,7 +25,7 @@
     },
     {
         "name":  "Evolver",
-        "description":  "Iteratively analyzes Wardian agent failures and improves shared prompts, skills, workflows, and system resources."
+        "description":  "Iteratively analyzes Wardian agent failures and improves shared prompts, skills, automations, and system resources."
     },
     {
         "name":  "Researcher",

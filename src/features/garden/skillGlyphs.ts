@@ -17,7 +17,7 @@
  * > An entity that is an **attribute** of another renders *on* it. An entity
  * > with **independent existence and its own lifecycle** gets a unit.
  *
- * Agents, workflow blueprints, and change sets pass that test. A skill
+ * Agents, automation blueprints, and change sets pass that test. A skill
  * *deployment* does not, so it renders as a glyph. The skill *itself* still has
  * independent existence — it just lives in the Library, and is found on the map
  * by highlighting the agents that carry it rather than by being placed.

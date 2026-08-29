@@ -6,20 +6,20 @@ const actionPreferences: QueuePreferences = {
   visible_event_types: {
     action_needed: true,
     agent_completed: true,
-    workflow_completed: true,
-    workflow_failed: true,
+    automation_completed: true,
+    automation_failed: true,
   },
   desktop_notifications: {
     action_needed: true,
     agent_completed: false,
-    workflow_completed: false,
-    workflow_failed: false,
+    automation_completed: false,
+    automation_failed: false,
   },
   sound_notifications: {
     action_needed: true,
     agent_completed: false,
-    workflow_completed: false,
-    workflow_failed: false,
+    automation_completed: false,
+    automation_failed: false,
   },
   sound_volume: 0.5,
 };

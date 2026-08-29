@@ -32,7 +32,7 @@ const SURFACE_ICONS: Readonly<Record<string, LucideIcon>> = {
   graph: Network,
   garden: Sprout,
   library: LibraryIcon,
-  workflows: GitBranch,
+  automations: GitBranch,
   "agent-session": SquareTerminal,
   files: FileCode2,
   "files-text": FileText,

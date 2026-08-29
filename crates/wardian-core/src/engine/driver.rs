@@ -1,3 +1,4 @@
+use crate::automation::{Blueprint, Node};
 use crate::engine::core::{self, finalize_if_done, is_approval, step};
 use crate::engine::event::{Event, EventKind};
 use crate::engine::executor::*;
@@ -8,7 +9,6 @@ use crate::engine::store::{
     append_event, read_checkpoint, read_events, write_blueprint_snapshot, write_checkpoint,
 };
 use crate::engine::{EngineError, StepError};
-use crate::workflow::{Blueprint, Node};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -135,7 +135,7 @@ impl Engine {
                     &g,
                     &mut s,
                     EventKind::RunFailed {
-                        error: "workflow cancelled by operator".into(),
+                        error: "automation cancelled by operator".into(),
                     },
                 )?;
                 clear_cancellation_request(run_root)?;
@@ -166,10 +166,10 @@ impl Engine {
         run_root: &Path,
     ) -> crate::engine::Result<RunState> {
         let state = read_checkpoint(run_root)?
-            .ok_or_else(|| EngineError::InvalidState("workflow checkpoint is missing".into()))?;
+            .ok_or_else(|| EngineError::InvalidState("automation checkpoint is missing".into()))?;
         if state.blueprint_id != blueprint_id {
             return Err(EngineError::InvalidState(format!(
-                "workflow checkpoint belongs to blueprint `{}`, requested `{blueprint_id}`",
+                "automation checkpoint belongs to blueprint `{}`, requested `{blueprint_id}`",
                 state.blueprint_id
             )));
         }
@@ -181,12 +181,13 @@ impl Engine {
         }) = events.first()
         else {
             return Err(EngineError::InvalidState(
-                "workflow launch-failure artifact must start with run_failed at sequence 0".into(),
+                "automation launch-failure artifact must start with run_failed at sequence 0"
+                    .into(),
             ));
         };
         if events.len() != 1 {
             return Err(EngineError::InvalidState(
-                "workflow launch-failure artifact must contain exactly one event".into(),
+                "automation launch-failure artifact must contain exactly one event".into(),
             ));
         }
         if state.status != RunStatus::Failed
@@ -194,7 +195,7 @@ impl Engine {
             || state.failure.as_deref() != Some(error.as_str())
         {
             return Err(EngineError::InvalidState(
-                "workflow launch-failure artifact does not match its failed checkpoint".into(),
+                "automation launch-failure artifact does not match its failed checkpoint".into(),
             ));
         }
         Ok(state)
@@ -219,7 +220,7 @@ impl Engine {
     }
 
     /// Persist an approval decision without executing the remainder of the
-    /// workflow. Callers that detach long-running continuation work can use
+    /// automation. Callers that detach long-running continuation work can use
     /// the returned running state with [`Self::drive_from_state`].
     pub fn record_approval_granted(
         bp: &Blueprint,
@@ -287,7 +288,7 @@ impl Engine {
         let _approval_decision = acquire_approval_decision_guard(run_root)?;
         let Some(mut s) = read_checkpoint(run_root)? else {
             return Err(EngineError::InvalidState(
-                "workflow checkpoint is missing".into(),
+                "automation checkpoint is missing".into(),
             ));
         };
         if s.status != RunStatus::AwaitingApproval {
@@ -297,20 +298,20 @@ impl Engine {
         let event_next_seq = validate_event_sequence(&events)?;
         if s.next_seq > event_next_seq {
             return Err(EngineError::InvalidState(format!(
-                "workflow checkpoint expects sequence {}, event log ends at {}",
+                "automation checkpoint expects sequence {}, event log ends at {}",
                 s.next_seq,
                 event_next_seq.saturating_sub(1)
             )));
         }
         if !events.iter().any(|event| {
-            matches!(&event.kind, EventKind::RunFailed { error } if error == "workflow cancelled by operator")
+            matches!(&event.kind, EventKind::RunFailed { error } if error == "automation cancelled by operator")
         }) {
             append_event(
                 run_root,
                 &Event::new(
                     event_next_seq,
                     EventKind::RunFailed {
-                        error: "workflow cancelled by operator".into(),
+                        error: "automation cancelled by operator".into(),
                     },
                 ),
             )?;
@@ -319,7 +320,7 @@ impl Engine {
             s.next_seq = event_next_seq;
         }
         s.status = RunStatus::Failed;
-        s.failure = Some("workflow cancelled by operator".into());
+        s.failure = Some("automation cancelled by operator".into());
         write_checkpoint(run_root, &s)?;
         clear_cancellation_request(run_root)?;
         Ok(s)
@@ -328,13 +329,13 @@ impl Engine {
 
 fn acquire_approval_decision_guard(
     run_root: &Path,
-) -> crate::engine::Result<crate::workflow_approval_lock::ApprovalDecisionGuard> {
-    match crate::workflow_approval_lock::acquire_approval_decision_guard(run_root) {
+) -> crate::engine::Result<crate::automation_approval_lock::ApprovalDecisionGuard> {
+    match crate::automation_approval_lock::acquire_approval_decision_guard(run_root) {
         Ok(guard) => Ok(guard),
-        Err(crate::workflow_approval_lock::ApprovalDecisionLockError::Contended) => {
+        Err(crate::automation_approval_lock::ApprovalDecisionLockError::Contended) => {
             Err(EngineError::ApprovalDecisionInProgress)
         }
-        Err(crate::workflow_approval_lock::ApprovalDecisionLockError::Io(error)) => {
+        Err(crate::automation_approval_lock::ApprovalDecisionLockError::Io(error)) => {
             Err(EngineError::Io(error))
         }
     }
@@ -358,16 +359,16 @@ fn load_state(g: &Graph<'_>, run_root: &Path) -> crate::engine::Result<RunState>
     Ok(s)
 }
 
-/// Stable hash of the parsed workflow graph. The markdown body is skipped by
+/// Stable hash of the parsed automation graph. The markdown body is skipped by
 /// `Blueprint` serialization, so documentation-only edits do not invalidate a
 /// parked run while graph or field edits do.
 pub fn blueprint_hash(bp: &Blueprint) -> String {
-    let bytes = serde_json::to_vec(bp).expect("workflow blueprints are serializable");
+    let bytes = serde_json::to_vec(bp).expect("automation blueprints are serializable");
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 fn ensure_valid_blueprint(bp: &Blueprint) -> crate::engine::Result<()> {
-    let report = crate::workflow::validate(bp);
+    let report = crate::automation::validate(bp);
     if report.is_valid() {
         return Ok(());
     }
@@ -378,14 +379,14 @@ fn ensure_valid_blueprint(bp: &Blueprint) -> crate::engine::Result<()> {
         .collect::<Vec<_>>()
         .join("; ");
     Err(EngineError::InvalidState(format!(
-        "workflow blueprint is invalid: {diagnostics}"
+        "automation blueprint is invalid: {diagnostics}"
     )))
 }
 
 fn ensure_blueprint_matches(bp: &Blueprint, state: &RunState) -> crate::engine::Result<()> {
     if state.blueprint_id != bp.id {
         return Err(EngineError::InvalidState(format!(
-            "workflow blueprint identity mismatch: run belongs to `{}`, requested `{}`",
+            "automation blueprint identity mismatch: run belongs to `{}`, requested `{}`",
             state.blueprint_id, bp.id
         )));
     }
@@ -393,7 +394,7 @@ fn ensure_blueprint_matches(bp: &Blueprint, state: &RunState) -> crate::engine::
         let actual = blueprint_hash(bp);
         if expected != actual {
             return Err(EngineError::InvalidState(format!(
-                "workflow blueprint changed after run start: expected {expected}, found {actual}"
+                "automation blueprint changed after run start: expected {expected}, found {actual}"
             )));
         }
     }
@@ -434,7 +435,7 @@ fn ensure_approval_node(
 fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::engine::Result<()> {
     if events.is_empty() {
         return Err(EngineError::InvalidState(
-            "workflow event log is empty".into(),
+            "automation event log is empty".into(),
         ));
     }
     let checkpoint_next_seq = s.next_seq;
@@ -444,14 +445,14 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
     for ev in events {
         if ev.seq != expected {
             return Err(EngineError::InvalidState(format!(
-                "workflow event sequence gap: expected {expected}, got {}",
+                "automation event sequence gap: expected {expected}, got {}",
                 ev.seq
             )));
         }
         if ev.seq >= checkpoint_next_seq {
             if ev.seq != s.next_seq {
                 return Err(EngineError::InvalidState(format!(
-                    "workflow event sequence gap: expected {}, got {}",
+                    "automation event sequence gap: expected {}, got {}",
                     s.next_seq, ev.seq
                 )));
             }
@@ -461,7 +462,7 @@ fn fold_event_log(g: &Graph<'_>, s: &mut RunState, events: &[Event]) -> crate::e
     }
     if event_next_seq < checkpoint_next_seq {
         return Err(EngineError::InvalidState(format!(
-            "workflow event log ends at sequence {}, checkpoint expects {}",
+            "automation event log ends at sequence {}, checkpoint expects {}",
             expected.saturating_sub(1),
             checkpoint_next_seq.saturating_sub(1)
         )));
@@ -492,7 +493,7 @@ fn validate_event_identity(
         }) => (run_id, blueprint_id, blueprint_hash, *schema),
         Some(event) => {
             return Err(EngineError::InvalidState(format!(
-                "workflow event log must start with run_started at sequence 0, found {:?}",
+                "automation event log must start with run_started at sequence 0, found {:?}",
                 event.kind
             )))
         }
@@ -502,19 +503,19 @@ fn validate_event_identity(
     let (run_id, blueprint_id, event_hash, schema) = startup;
     if blueprint_id != &g.blueprint().id {
         return Err(EngineError::InvalidState(format!(
-            "workflow event belongs to blueprint `{blueprint_id}`, requested `{}`",
+            "automation event belongs to blueprint `{blueprint_id}`, requested `{}`",
             g.blueprint().id
         )));
     }
     if schema != g.blueprint().schema {
         return Err(EngineError::InvalidState(format!(
-            "workflow event schema is {schema}, requested blueprint schema is {}",
+            "automation event schema is {schema}, requested blueprint schema is {}",
             g.blueprint().schema
         )));
     }
     if s.blueprint_id != g.blueprint().id {
         return Err(EngineError::InvalidState(format!(
-            "workflow checkpoint belongs to blueprint `{}`, requested `{}`",
+            "automation checkpoint belongs to blueprint `{}`, requested `{}`",
             s.blueprint_id,
             g.blueprint().id
         )));
@@ -523,7 +524,7 @@ fn validate_event_identity(
         if let Some(event_run_id) = run_id {
             if event_run_id != &s.run_id {
                 return Err(EngineError::InvalidState(format!(
-                    "workflow checkpoint belongs to run `{}`, event log belongs to `{event_run_id}`",
+                    "automation checkpoint belongs to run `{}`, event log belongs to `{event_run_id}`",
                     s.run_id
                 )));
             }
@@ -533,7 +534,7 @@ fn validate_event_identity(
         if let Some(checkpoint_hash) = s.blueprint_hash.as_deref() {
             if checkpoint_hash != event_hash {
                 return Err(EngineError::InvalidState(format!(
-                    "workflow checkpoint blueprint hash is `{checkpoint_hash}`, event log hash is `{event_hash}`"
+                    "automation checkpoint blueprint hash is `{checkpoint_hash}`, event log hash is `{event_hash}`"
                 )));
             }
         }
@@ -547,7 +548,7 @@ pub fn validate_event_sequence(events: &[Event]) -> crate::engine::Result<u64> {
     for ev in events {
         if ev.seq != expected {
             return Err(EngineError::InvalidState(format!(
-                "workflow event sequence gap: expected {expected}, got {}",
+                "automation event sequence gap: expected {expected}, got {}",
                 ev.seq
             )));
         }
@@ -586,7 +587,7 @@ async fn drive(
                         g,
                         s,
                         EventKind::RunFailed {
-                            error: "workflow cancelled by operator".into(),
+                            error: "automation cancelled by operator".into(),
                         },
                     )?;
                     clear_cancellation_request(run_root)?;
@@ -657,7 +658,7 @@ async fn drive(
                         g,
                         s,
                         EventKind::RunFailed {
-                            error: "workflow cancelled by operator".into(),
+                            error: "automation cancelled by operator".into(),
                         },
                     )?;
                 }
@@ -699,7 +700,8 @@ async fn dispatch(
         .ok_or_else(|| EngineError::InvalidState(format!("missing node {node_id}")))?
         .clone();
 
-    if crate::workflow::find_node_type(&node.r#type).is_some_and(|definition| !definition.supported)
+    if crate::automation::find_node_type(&node.r#type)
+        .is_some_and(|definition| !definition.supported)
     {
         emit(
             run_root,
@@ -708,7 +710,7 @@ async fn dispatch(
             EventKind::NodeFailed {
                 node: node.id.clone(),
                 error: format!(
-                    "node type `{}` is registered but not supported by the workflow runtime",
+                    "node type `{}` is registered but not supported by the automation runtime",
                     node.r#type
                 ),
             },
@@ -919,10 +921,10 @@ fn eval_branch(s: &RunState, node: &Node) -> crate::engine::Result<String> {
         .get("condition")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let path = crate::workflow::condition::validate_path(cond).map_err(|message| {
+    let path = crate::automation::condition::validate_path(cond).map_err(|message| {
         EngineError::InvalidState(format!("branch condition is invalid: {message}"))
     })?;
-    let truthy = crate::workflow::condition::lookup_truthy(&s.registry, &path);
+    let truthy = crate::automation::condition::lookup_truthy(&s.registry, &path);
     Ok(if truthy {
         "on_true".into()
     } else {
@@ -1181,7 +1183,7 @@ mod tests {
         let blueprint = Blueprint {
             schema: 2,
             id: "wf".into(),
-            name: "Workflow".into(),
+            name: "Automation".into(),
             nodes: vec![Node {
                 id: "t".into(),
                 r#type: "manual_trigger".into(),
@@ -1256,25 +1258,25 @@ mod tests {
                 task("no"),
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "agent-1".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "agent-1".into(),
                     from_port: "out".into(),
                     to: "route".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "route".into(),
                     from_port: "on_true".into(),
                     to: "yes".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "route".into(),
                     from_port: "on_false".into(),
                     to: "no".into(),
@@ -1346,7 +1348,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(error
+            .to_string()
+            .contains("automation blueprint is invalid"));
         assert!(exec.calls().is_empty());
         assert!(!dir.path().join("events.jsonl").exists());
         assert!(!dir.path().join("state.json").exists());
@@ -1401,19 +1405,19 @@ mod tests {
                 task("denied"),
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "choose".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "choose".into(),
                     from_port: "approve".into(),
                     to: "approved".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "choose".into(),
                     from_port: "deny".into(),
                     to: "denied".into(),
@@ -1498,13 +1502,13 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "choose".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "choose".into(),
                     from_port: "deny".into(),
                     to: "denied".into(),
@@ -1621,7 +1625,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(error
+            .to_string()
+            .contains("automation blueprint is invalid"));
         assert!(error.to_string().contains("operators and comparisons"));
         assert!(!dir.path().join("events.jsonl").exists());
         assert!(!dir.path().join("state.json").exists());
@@ -1674,13 +1680,13 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "lp".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "lp".into(),
                     from_port: "body".into(),
                     to: "body".into(),
@@ -1701,7 +1707,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("workflow blueprint is invalid"));
+        assert!(error
+            .to_string()
+            .contains("automation blueprint is invalid"));
         assert!(error.to_string().contains("operators and comparisons"));
         assert!(!dir.path().join("events.jsonl").exists());
         assert!(!dir.path().join("state.json").exists());
@@ -1738,13 +1746,13 @@ mod tests {
                 state_node("get", "get", serde_json::json!({"branch": null})),
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "set".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "set".into(),
                     from_port: "out".into(),
                     to: "get".into(),
@@ -1801,7 +1809,7 @@ mod tests {
                     position: None,
                 },
             ],
-            edges: vec![crate::workflow::Edge {
+            edges: vec![crate::automation::Edge {
                 from: "trigger".into(),
                 from_port: "out".into(),
                 to: "notice".into(),
@@ -1888,19 +1896,19 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "repeat".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "repeat".into(),
                     from_port: "body".into(),
                     to: "body".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "repeat".into(),
                     from_port: "done".into(),
                     to: "ship".into(),
@@ -2132,7 +2140,7 @@ mod tests {
     fn replay_launch_failure_accepts_a_terminal_artifact_without_a_blueprint() {
         let dir = tempfile::tempdir().unwrap();
         let message = "could not resolve blueprint path";
-        let mut state = RunState::new("run-launch-failure", "missing-workflow");
+        let mut state = RunState::new("run-launch-failure", "missing-automation");
         state.status = RunStatus::Failed;
         state.failure = Some(message.into());
         state.next_seq = 1;
@@ -2148,7 +2156,7 @@ mod tests {
         )
         .unwrap();
 
-        let replayed = Engine::replay_launch_failure("missing-workflow", dir.path()).unwrap();
+        let replayed = Engine::replay_launch_failure("missing-automation", dir.path()).unwrap();
 
         assert_eq!(replayed.status, RunStatus::Failed);
         assert_eq!(replayed.failure.as_deref(), Some(message));
@@ -2234,18 +2242,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_start_rejects_an_unsupported_sub_workflow_before_persisting() {
+    async fn fresh_start_rejects_an_unsupported_sub_automation_before_persisting() {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
             schema: 2,
-            id: "sub-workflow-contract".into(),
-            name: "Sub-workflow contract".into(),
+            id: "sub-automation-contract".into(),
+            name: "Sub-automation contract".into(),
             nodes: vec![Node {
                 id: "child".into(),
-                r#type: "sub_workflow".into(),
+                r#type: "sub_automation".into(),
                 name: None,
                 parent: None,
-                fields: serde_json::json!({"workflow": "nested"})
+                fields: serde_json::json!({"automation": "nested"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -2257,7 +2265,7 @@ mod tests {
 
         let error = Engine::start_with_id(
             &blueprint,
-            "run-sub-workflow",
+            "run-sub-automation",
             serde_json::json!({}),
             dir.path(),
             &MockExecutor::new(),
@@ -2267,7 +2275,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("node type `sub_workflow` is registered but not supported"));
+            .contains("node type `sub_automation` is registered but not supported"));
         assert!(!dir.path().join("events.jsonl").exists());
         assert!(!dir.path().join("state.json").exists());
         assert!(!dir.path().join("blueprint.json").exists());
@@ -2303,10 +2311,10 @@ mod tests {
         assert_eq!(state.status, RunStatus::Failed);
         assert_eq!(
             state.failure.as_deref(),
-            Some("workflow cancelled by operator")
+            Some("automation cancelled by operator")
         );
         assert!(read_events(dir.path()).unwrap().iter().any(|event| {
-            matches!(&event.kind, EventKind::RunFailed { error } if error == "workflow cancelled by operator")
+            matches!(&event.kind, EventKind::RunFailed { error } if error == "automation cancelled by operator")
         }));
         assert!(!dir.path().join("cancel.marker").exists());
     }
@@ -2391,7 +2399,7 @@ mod tests {
         Blueprint {
             schema: 2,
             id: "wf".into(),
-            name: "Workflow".into(),
+            name: "Automation".into(),
             nodes: vec![
                 Node {
                     id: "trigger".into(),
@@ -2425,13 +2433,13 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "gate".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "gate".into(),
                     from_port: "out".into(),
                     to: "task".into(),
@@ -2464,7 +2472,7 @@ mod tests {
         assert_eq!(cancelled.status, RunStatus::Failed);
         assert_eq!(
             cancelled.failure.as_deref(),
-            Some("workflow cancelled by operator")
+            Some("automation cancelled by operator")
         );
         assert_eq!(
             read_checkpoint(dir.path()).unwrap().unwrap().status,
@@ -2472,7 +2480,7 @@ mod tests {
         );
         assert!(read_events(dir.path()).unwrap().iter().any(|event| {
             matches!(&event.kind, EventKind::RunFailed { error }
-                if error == "workflow cancelled by operator")
+                if error == "automation cancelled by operator")
         }));
         assert!(!dir.path().join("cancel.marker").exists());
     }
@@ -2553,7 +2561,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("workflow blueprint changed after run start"));
+            .contains("automation blueprint changed after run start"));
         assert_eq!(
             read_checkpoint(dir.path()).unwrap().unwrap().status,
             RunStatus::Running
@@ -2581,11 +2589,11 @@ mod tests {
         assert_eq!(cancelled.status, RunStatus::Failed);
         assert_eq!(
             cancelled.failure.as_deref(),
-            Some("workflow cancelled by operator")
+            Some("automation cancelled by operator")
         );
         assert!(read_events(dir.path()).unwrap().iter().any(|event| {
             matches!(&event.kind, EventKind::RunFailed { error }
-                if error == "workflow cancelled by operator")
+                if error == "automation cancelled by operator")
         }));
     }
 
@@ -2604,7 +2612,7 @@ mod tests {
         .await
         .unwrap();
         let _approval_decision =
-            crate::workflow_approval_lock::acquire_approval_decision_guard(dir.path()).unwrap();
+            crate::automation_approval_lock::acquire_approval_decision_guard(dir.path()).unwrap();
 
         assert!(matches!(
             Engine::record_approval_granted(&blueprint, dir.path(), "gate", "user", None),
@@ -2622,7 +2630,7 @@ mod tests {
         let blueprint = Blueprint {
             schema: 2,
             id: "wf".into(),
-            name: "Workflow".into(),
+            name: "Automation".into(),
             nodes: vec![Node {
                 id: "t".into(),
                 r#type: "manual_trigger".into(),
@@ -2660,7 +2668,7 @@ mod tests {
         let blueprint = Blueprint {
             schema: 2,
             id: "wf".into(),
-            name: "Workflow".into(),
+            name: "Automation".into(),
             nodes: vec![Node {
                 id: "trigger".into(),
                 r#type: "manual_trigger".into(),
@@ -2704,7 +2712,7 @@ mod tests {
         let blueprint = Blueprint {
             schema: 2,
             id: "wf".into(),
-            name: "Workflow".into(),
+            name: "Automation".into(),
             nodes: vec![
                 Node {
                     id: "start".into(),
@@ -2729,7 +2737,7 @@ mod tests {
                     position: None,
                 },
             ],
-            edges: vec![crate::workflow::Edge {
+            edges: vec![crate::automation::Edge {
                 from: "start".into(),
                 from_port: "out".into(),
                 to: "task".into(),
@@ -2771,8 +2779,8 @@ mod tests {
         });
         let blueprint = Blueprint {
             schema: 2,
-            id: "memory-workflow".into(),
-            name: "Memory workflow".into(),
+            id: "memory-automation".into(),
+            name: "Memory automation".into(),
             nodes: vec![
                 Node {
                     id: "trigger".into(),
@@ -2806,13 +2814,13 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "extract".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "extract".into(),
                     from_port: "out".into(),
                     to: "commit".into(),
@@ -2843,8 +2851,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blueprint = Blueprint {
             schema: 2,
-            id: "spoofed-memory-workflow".into(),
-            name: "Spoofed memory workflow".into(),
+            id: "spoofed-memory-automation".into(),
+            name: "Spoofed memory automation".into(),
             nodes: vec![
                 Node {
                     id: "trigger".into(),
@@ -2881,13 +2889,13 @@ mod tests {
                 },
             ],
             edges: vec![
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "trigger".into(),
                     from_port: "out".into(),
                     to: "extract".into(),
                     to_port: "in".into(),
                 },
-                crate::workflow::Edge {
+                crate::automation::Edge {
                     from: "extract".into(),
                     from_port: "out".into(),
                     to: "commit".into(),

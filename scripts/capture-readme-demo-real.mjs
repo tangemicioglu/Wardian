@@ -163,7 +163,7 @@ async function seedDemoWorkspace() {
     path.join(demoWorkspace, "src", "app.js"),
     [
       "export function summarizeWorkspace() {",
-      '  return "Wardian is managing agents, prompts, skills, workflows, and queue evidence.";',
+      '  return "Wardian is managing agents, prompts, skills, automations, and queue evidence.";',
       "}",
       "",
     ].join("\n"),
@@ -173,7 +173,7 @@ async function seedDemoWorkspace() {
     [
       "# Demo Notes",
       "",
-      "Show the local agent habitat, a cloned provider pair, reusable capability, and workflow structure.",
+      "Show the local agent habitat, a cloned provider pair, reusable capability, and automation structure.",
       "",
     ].join("\n"),
   );
@@ -280,9 +280,9 @@ async function seedDemoHome() {
     },
   });
 
-  await fs.mkdir(path.join(demoHome, "library", "workflows"), { recursive: true });
+  await fs.mkdir(path.join(demoHome, "library", "automations"), { recursive: true });
   await fs.writeFile(
-    path.join(demoHome, "library", "workflows", "readme-release-pass.md"),
+    path.join(demoHome, "library", "automations", "readme-release-pass.md"),
     [
       "---",
       "schema: 2",
@@ -325,7 +325,7 @@ async function seedDemoHome() {
       "",
       "# README Release Pass",
       "",
-      "A compact local workflow for turning repeated README demo work into a durable process.",
+      "A compact local automation for turning repeated README demo work into a durable process.",
       "",
     ].join("\n"),
   );
@@ -821,8 +821,8 @@ async function main() {
     await waitForXpath(session.driver, "//*[contains(normalize-space(.), 'readme-auditor') or contains(normalize-space(.), 'diff-reviewer')]", 20000);
     await captureFor(1.8);
 
-    await openWorkbenchSurface("workflows");
-    await waitForCss(session.driver, '[data-testid="workflows-view"]');
+    await openWorkbenchSurface("automations");
+    await waitForCss(session.driver, '[data-testid="automations-view"]');
     await captureWhile(() => session.driver.executeScript(() => {
       const select = document.querySelector('[data-testid="blueprint-selector"] select');
       const option = Array.from(select?.options ?? []).find((item) => item.textContent?.includes("README Release Pass"));

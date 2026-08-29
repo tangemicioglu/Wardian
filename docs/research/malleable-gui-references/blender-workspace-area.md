@@ -391,7 +391,7 @@ Practical design implications:
 - Make the manipulable primitive a durable surface area, not a raw React
   component.
 - Let a surface switch type: terminal, browser, file, transcript, diff,
-  planner, metrics, runbook, skill library, agent roster, or workflow graph.
+  planner, metrics, runbook, skill library, agent roster, or automation graph.
 - Preserve previous per-type state inside each surface, so switching a surface
   away from terminal and back restores scrollback, session binding, and local
   UI state.

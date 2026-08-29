@@ -38,7 +38,7 @@
       },
       "perf-group-2": {
         "group_id": "perf-group-2",
-        "surface_ids": ["perf-agent-mirror-1", "perf-workflows", "perf-graph", "perf-garden", "perf-agent-02"],
+        "surface_ids": ["perf-agent-mirror-1", "perf-automations", "perf-graph", "perf-garden", "perf-agent-02"],
         "active_surface_id": "perf-agent-mirror-1"
       },
       "perf-group-3": {
@@ -59,7 +59,7 @@
       "perf-inbox": { "surface_id": "perf-inbox", "surface_type": "inbox", "state_schema_version": 1, "state": {} },
       "perf-library": { "surface_id": "perf-library", "surface_type": "library", "state_schema_version": 1, "state": {} },
       "perf-agent-mirror-1": { "surface_id": "perf-agent-mirror-1", "surface_type": "agent-session", "resource_key": "perf-agent-01", "state_schema_version": 1, "state": {} },
-      "perf-workflows": { "surface_id": "perf-workflows", "surface_type": "workflows", "state_schema_version": 1, "state": {} },
+      "perf-automations": { "surface_id": "perf-automations", "surface_type": "automations", "state_schema_version": 1, "state": {} },
       "perf-graph": { "surface_id": "perf-graph", "surface_type": "graph", "state_schema_version": 1, "state": { "enabled_reasons": [], "inspected_agent_id": null, "inspector_open": true, "selected_edge_id": null, "picker_search": "" } },
       "perf-garden": { "surface_id": "perf-garden", "surface_type": "garden", "state_schema_version": 1, "state": { "selected_unit_key": null } },
       "perf-agent-02": { "surface_id": "perf-agent-02", "surface_type": "agent-session", "resource_key": "perf-agent-02", "state_schema_version": 1, "state": {} },

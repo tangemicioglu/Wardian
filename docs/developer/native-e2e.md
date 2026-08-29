@@ -82,7 +82,7 @@ Use this layer when validating:
 - desktop/remote presentation ownership, geometry, snapshots, or event order
 - provider spawn, resume, or shutdown behavior
 - app and CLI shared-state behavior through isolated `WARDIAN_HOME`
-- workflow behavior that depends on native runtime state
+- automation behavior that depends on native runtime state
 
 The CLI shared-state smoke can be run directly:
 

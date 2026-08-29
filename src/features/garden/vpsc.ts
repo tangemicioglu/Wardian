@@ -3,7 +3,7 @@
  *
  * ## Why not push-apart
  *
- * Garden units have wildly different footprints — an agent dot, a workflow
+ * Garden units have wildly different footprints — an agent dot, an automation
  * tile, a folder card. Naive push-apart reorders neighbours, so the map
  * visibly changes shape when a label gets longer or a unit gains a badge. On a
  * canvas that is cosmetic. On a map it destroys the property the whole design

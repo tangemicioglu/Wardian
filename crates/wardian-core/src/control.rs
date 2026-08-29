@@ -194,14 +194,14 @@ pub enum ControlRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_echo_guard: Option<String>,
     },
-    WorkflowRun {
+    AutomationRun {
         path: String,
         provider: Option<String>,
         workspace: Option<String>,
         input: Option<serde_json::Value>,
         bindings: Option<HashMap<String, String>>,
-        assignments: Option<crate::models::WorkflowAssignments>,
-        /// Managed-process identity used only to authenticate workflow memory
+        assignments: Option<crate::models::AutomationAssignments>,
+        /// Managed-process identity used only to authenticate automation memory
         /// authority. The server validates it with `memory_capability` and
         /// never trusts `input.agent_id` as a principal.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -546,17 +546,17 @@ impl Default for OkResponse {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowRunLaunchStatus {
+pub enum AutomationRunLaunchStatus {
     Started,
     ValidationFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowRunResponse {
+pub struct AutomationRunResponse {
     pub schema: u8,
     pub ok: bool,
     pub executor: String,
-    pub status: WorkflowRunLaunchStatus,
+    pub status: AutomationRunLaunchStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -567,7 +567,7 @@ pub struct WorkflowRunResponse {
     pub diagnostics: Option<serde_json::Value>,
 }
 
-impl WorkflowRunResponse {
+impl AutomationRunResponse {
     pub fn started(
         executor: impl Into<String>,
         run_id: impl Into<String>,
@@ -578,7 +578,7 @@ impl WorkflowRunResponse {
             schema: CONTROL_SCHEMA,
             ok: true,
             executor: executor.into(),
-            status: WorkflowRunLaunchStatus::Started,
+            status: AutomationRunLaunchStatus::Started,
             run_id: Some(run_id.into()),
             blueprint_id: Some(blueprint_id.into()),
             run_dir: Some(run_dir.into()),
@@ -591,7 +591,7 @@ impl WorkflowRunResponse {
             schema: CONTROL_SCHEMA,
             ok: false,
             executor: executor.into(),
-            status: WorkflowRunLaunchStatus::ValidationFailed,
+            status: AutomationRunLaunchStatus::ValidationFailed,
             run_id: None,
             blueprint_id: None,
             run_dir: None,
@@ -1858,9 +1858,9 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_request_serializes_live_launch_options() {
-        let req = ControlRequest::WorkflowRun {
-            path: "<absolute-workspace-path>/library/workflows/autoreview.md".to_string(),
+    fn automation_run_request_serializes_live_launch_options() {
+        let req = ControlRequest::AutomationRun {
+            path: "<absolute-workspace-path>/library/automations/autoreview.md".to_string(),
             provider: Some("codex".to_string()),
             workspace: Some("<absolute-workspace-path>".to_string()),
             input: Some(serde_json::json!({ "target": "HEAD" })),
@@ -1876,26 +1876,25 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let roundtrip: ControlRequest = serde_json::from_str(&json).unwrap();
 
-        assert!(json.contains(r#""command":"workflow_run""#));
-        assert!(
-            json.contains(r#""path":"<absolute-workspace-path>/library/workflows/autoreview.md""#)
-        );
+        assert!(json.contains(r#""command":"automation_run""#));
+        assert!(json
+            .contains(r#""path":"<absolute-workspace-path>/library/automations/autoreview.md""#));
         assert!(json.contains(r#""provider":"codex""#));
         assert!(json.contains(r#""bindings":{"reviewer":"codex"}"#));
         assert_eq!(roundtrip, req);
     }
 
     #[test]
-    fn workflow_run_response_serializes_live_start_contract() {
-        let response = WorkflowRunResponse::started(
+    fn automation_run_response_serializes_live_start_contract() {
+        let response = AutomationRunResponse::started(
             "live",
             "run-1",
             "autoreview",
-            "<absolute-workspace-path>/logs/workflows/autoreview/run-1",
+            "<absolute-workspace-path>/logs/automations/autoreview/run-1",
         );
 
         let json = serde_json::to_string(&response).unwrap();
-        let roundtrip: WorkflowRunResponse = serde_json::from_str(&json).unwrap();
+        let roundtrip: AutomationRunResponse = serde_json::from_str(&json).unwrap();
 
         assert!(json.contains(r#""schema":1"#));
         assert!(json.contains(r#""executor":"live""#));

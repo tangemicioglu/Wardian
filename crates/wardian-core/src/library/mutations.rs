@@ -12,7 +12,7 @@ use crate::models::LibraryItemMetadata;
 /// Maps section + relative path to the actual content file path.
 /// - Skills: `<dir>/SKILL.md`
 /// - Classes: `<dir>/AGENTS.md`
-/// - Prompts/Workflows: the path itself
+/// - Prompts/Automations: the path itself
 pub(crate) fn content_file_path(
     home: &Path,
     section: LibrarySectionId,
@@ -34,7 +34,7 @@ pub fn validate_entry_destination(
 ) -> Result<(), String> {
     let target = resolve_entry_path(home, section, rel)?;
     match section {
-        LibrarySectionId::Prompts | LibrarySectionId::Workflows => {
+        LibrarySectionId::Prompts | LibrarySectionId::Automations => {
             let is_markdown = target
                 .extension()
                 .map(|extension| extension.eq_ignore_ascii_case("md"))
@@ -97,7 +97,7 @@ fn directory_contains_skill(directory: &Path) -> Result<bool, String> {
 /// Read the content of a library item.
 /// - Skills read `<dir>/SKILL.md`
 /// - Classes read `<dir>/AGENTS.md`
-/// - Prompts/Workflows read the file itself
+/// - Prompts/Automations read the file itself
 pub fn read_item(home: &Path, section: LibrarySectionId, rel: &str) -> Result<String, String> {
     let path = content_file_path(home, section, rel)?;
     fs::read_to_string(&path).map_err(|e| e.to_string())
@@ -107,7 +107,7 @@ pub fn read_item(home: &Path, section: LibrarySectionId, rel: &str) -> Result<St
 /// Creates parent directories as needed.
 /// - Skills write to `<dir>/SKILL.md`
 /// - Classes write to `<dir>/AGENTS.md`
-/// - Prompts/Workflows write to the file itself
+/// - Prompts/Automations write to the file itself
 pub fn save_item(
     home: &Path,
     section: LibrarySectionId,
@@ -364,7 +364,7 @@ mod tests {
         let home = temp.path();
 
         assert!(save_item(home, LibrarySectionId::Prompts, "audit", "body").is_err());
-        assert!(save_item(home, LibrarySectionId::Workflows, "audit.txt", "body").is_err());
+        assert!(save_item(home, LibrarySectionId::Automations, "audit.txt", "body").is_err());
 
         save_item(home, LibrarySectionId::Skills, "parent", "parent").unwrap();
         assert!(save_item(home, LibrarySectionId::Skills, "parent/child", "child").is_err());

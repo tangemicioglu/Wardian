@@ -76,7 +76,7 @@ describe("SettingsModal", () => {
     useQueueStore.setState({
       items: [],
       _agentBuffers: {},
-      _workflowLastOutput: {},
+      _automationLastOutput: {},
       preferences: normalizeQueuePreferences({}),
     });
     useOnboardingStore.setState({
@@ -185,14 +185,14 @@ describe("SettingsModal", () => {
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Inbox" }));
-    fireEvent.click(screen.getByLabelText("Desktop alert for workflow failures"));
+    fireEvent.click(screen.getByLabelText("Desktop alert for automation failures"));
     fireEvent.click(screen.getByLabelText("Sound alert for action required"));
     fireEvent.change(screen.getByLabelText("Sound alert volume"), {
       target: { value: "75" },
     });
 
     const { preferences } = useQueueStore.getState();
-    expect(preferences.desktop_notifications.workflow_failed).toBe(true);
+    expect(preferences.desktop_notifications.automation_failed).toBe(true);
     expect(preferences.sound_notifications.action_needed).toBe(false);
     expect(preferences.sound_volume).toBe(0.75);
   });

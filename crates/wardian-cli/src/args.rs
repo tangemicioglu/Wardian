@@ -15,7 +15,7 @@ pub enum Command {
     Conversation(ConversationArgs),
     Memory(MemoryArgs),
     Library(LibraryArgs),
-    Workflow(WorkflowArgs),
+    Automation(AutomationArgs),
     Team(TeamArgs),
     Watchlist(WatchlistArgs),
     Telemetry(TelemetryArgs),
@@ -351,7 +351,7 @@ pub struct LibraryArgs {
 pub enum LibraryCommand {
     /// List Library entries as a tree or agent-friendly flat rows.
     List {
-        /// Optional section: skills, prompts, classes, workflows, or mcps.
+        /// Optional section: skills, prompts, classes, automations, or mcps.
         section: Option<String>,
         /// Emit entries only, without tree, deployment, or orphan payloads.
         #[arg(long)]
@@ -366,7 +366,7 @@ pub enum LibraryCommand {
     },
     /// Print one entry's raw content without a JSON envelope.
     Read { entry_ref: String },
-    /// Create an entry. Workflow files are authored here; use wardian workflow for operations.
+    /// Create an entry. Automation files are authored here; use wardian automation for operations.
     Create {
         entry_ref: String,
         #[arg(long, conflicts_with = "file")]
@@ -621,31 +621,31 @@ pub enum TelemetryCommand {
 }
 
 // ---------------------------------------------------------------------------
-// wardian workflow
+// wardian automation
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
-pub struct WorkflowArgs {
+pub struct AutomationArgs {
     #[command(subcommand)]
-    pub command: WorkflowCommand,
+    pub command: AutomationCommand,
 
     #[arg(long, global = true)]
     pub pretty: bool,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum WorkflowCommand {
+pub enum AutomationCommand {
     /// Print the node type registry (the contract agents author against).
     NodeTypes {
         /// Emit the machine-readable JSON schema instead of a summary table.
         #[arg(long)]
         json: bool,
     },
-    /// List workflow blueprints in the Library.
+    /// List automation blueprints in the Library.
     List,
     /// Validate a blueprint `.md` file and report diagnostics.
     Validate { path: String },
-    /// Launch a workflow blueprint and write a durable run.
+    /// Launch an automation blueprint and write a durable run.
     Exec {
         path: String,
         /// Execution backend: live/real/full routes through the running app; mock is reserved for engine tests.
@@ -654,24 +654,24 @@ pub enum WorkflowCommand {
         /// JSON object of run input (entry input_schema values).
         #[arg(long)]
         input: Option<String>,
-        /// Default provider for unbound workflow roles.
+        /// Default provider for unbound automation roles.
         #[arg(long)]
         provider: Option<String>,
-        /// Workspace for live workflow tasks.
+        /// Workspace for live automation tasks.
         #[arg(long)]
         workspace: Option<String>,
         /// Role/class -> provider or agent-id binding, repeatable: --bind role=value
         #[arg(long)]
         bind: Vec<String>,
     },
-    /// List workflow runs under <home>/logs/workflows.
+    /// List automation runs under <home>/logs/automations.
     Runs,
-    /// Show one workflow run's state + event trace.
+    /// Show one automation run's state + event trace.
     RunShow {
         blueprint_id: String,
         run_id: String,
     },
-    /// Replay a workflow run's event log into its final state (no execution).
+    /// Replay an automation run's event log into its final state (no execution).
     Replay {
         blueprint_id: String,
         run_id: String,
@@ -688,7 +688,7 @@ pub enum WorkflowCommand {
     GenSchema {
         #[arg(
             long,
-            default_value = "src/features/workflows/nodeRegistry.schema.json"
+            default_value = "src/features/automations/nodeRegistry.schema.json"
         )]
         out: String,
         /// Exit non-zero if the file on disk differs (CI drift guard).
@@ -697,21 +697,21 @@ pub enum WorkflowCommand {
     },
     /// Write the generated node-type reference doc.
     GenDocs {
-        #[arg(long, default_value = "docs/workflows/node-reference.md")]
+        #[arg(long, default_value = "docs/automations/node-reference.md")]
         out: String,
         #[arg(long)]
         check: bool,
     },
-    /// Manage workflow schedules (schedules.json). UI lives in the app; these edit the file.
+    /// Manage automation schedules (schedules.json). UI lives in the app; these edit the file.
     #[command(subcommand)]
-    Schedule(Box<WorkflowScheduleCommand>),
-    /// Manage generic conversation-boundary workflow invokers.
+    Schedule(Box<AutomationScheduleCommand>),
+    /// Manage generic conversation-boundary automation invokers.
     #[command(subcommand)]
-    SessionClose(Box<WorkflowSessionCloseCommand>),
+    SessionClose(Box<AutomationSessionCloseCommand>),
 }
 
 #[derive(Debug, Subcommand)]
-pub enum WorkflowSessionCloseCommand {
+pub enum AutomationSessionCloseCommand {
     List,
     Add {
         #[arg(long)]
@@ -750,8 +750,8 @@ pub enum WorkflowSessionCloseCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum WorkflowScheduleCommand {
-    /// Add a schedule for a blueprint id (resolves to library/workflows/<id>.md).
+pub enum AutomationScheduleCommand {
+    /// Add a schedule for a blueprint id (resolves to library/automations/<id>.md).
     Add {
         #[arg(long)]
         blueprint: String,
@@ -1450,7 +1450,7 @@ mod tests {
         ));
 
         let cli =
-            Cli::try_parse_from(["wardian", "library", "show", "workflows/audit.md"]).unwrap();
+            Cli::try_parse_from(["wardian", "library", "show", "automations/audit.md"]).unwrap();
         let Command::Library(args) = cli.command else {
             panic!("expected Library")
         };
@@ -1459,7 +1459,7 @@ mod tests {
             LibraryCommand::Show {
                 ref entry_ref,
                 content: false
-            } if entry_ref == "workflows/audit.md"
+            } if entry_ref == "automations/audit.md"
         ));
 
         let cli = Cli::try_parse_from(["wardian", "library", "read", "classes/Reviewer"]).unwrap();
@@ -1639,18 +1639,18 @@ mod tests {
         let create_help = Cli::try_parse_from(["wardian", "library", "create", "--help"])
             .unwrap_err()
             .to_string();
-        assert!(create_help.contains("wardian workflow"));
+        assert!(create_help.contains("wardian automation"));
     }
 
     #[test]
-    fn parses_workflow_node_types_json() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "node-types", "--json"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_node_types_json() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "node-types", "--json"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::NodeTypes { json: true }
+            AutomationCommand::NodeTypes { json: true }
         ));
     }
 
@@ -1724,26 +1724,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_workflow_validate_path() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "validate", "wf.md"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_validate_path() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "validate", "wf.md"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Validate { ref path } if path == "wf.md"
+            AutomationCommand::Validate { ref path } if path == "wf.md"
         ));
     }
 
     #[test]
-    fn parses_workflow_exec_path_with_default_executor() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "exec", "wf.md"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_exec_path_with_default_executor() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "exec", "wf.md"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Exec { ref path, ref executor, ref provider, ref workspace, .. }
+            AutomationCommand::Exec { ref path, ref executor, ref provider, ref workspace, .. }
                 if path == "wf.md"
                     && executor == "live"
                     && provider.is_none()
@@ -1752,25 +1752,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_workflow_exec_executor() {
-        let cli =
-            Cli::try_parse_from(["wardian", "workflow", "exec", "wf.md", "--executor", "real"])
-                .unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_exec_executor() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "automation",
+            "exec",
+            "wf.md",
+            "--executor",
+            "real",
+        ])
+        .unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Exec { ref path, ref executor, .. }
+            AutomationCommand::Exec { ref path, ref executor, .. }
                 if path == "wf.md" && executor == "real"
         ));
     }
 
     #[test]
-    fn parses_workflow_exec_with_input_and_bind() {
+    fn parses_automation_exec_with_input_and_bind() {
         let cli = Cli::try_parse_from([
             "wardian",
-            "workflow",
+            "automation",
             "exec",
             "wf.md",
             "--input",
@@ -1783,12 +1789,12 @@ mod tests {
             "role=agent-123",
         ])
         .unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Exec { ref input, ref provider, ref workspace, ref bind, .. }
+            AutomationCommand::Exec { ref input, ref provider, ref workspace, ref bind, .. }
                 if input.as_deref() == Some("{\"x\":1}")
                     && provider.as_deref() == Some("codex")
                     && workspace.as_deref() == Some(".")
@@ -1797,19 +1803,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_workflow_runs() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "runs"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_runs() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "runs"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
-        assert!(matches!(args.command, WorkflowCommand::Runs));
+        assert!(matches!(args.command, AutomationCommand::Runs));
     }
 
     #[test]
     fn parses_schedule_add() {
         let cli = Cli::try_parse_from([
             "wardian",
-            "workflow",
+            "automation",
             "schedule",
             "add",
             "--blueprint",
@@ -1822,13 +1828,13 @@ mod tests {
             ".",
         ])
         .unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(ref command)
-                if matches!(command.as_ref(), WorkflowScheduleCommand::Add { .. })
+            AutomationCommand::Schedule(ref command)
+                if matches!(command.as_ref(), AutomationScheduleCommand::Add { .. })
         ));
     }
 
@@ -1836,7 +1842,7 @@ mod tests {
     fn parses_weekly_repeat_every() {
         let cli = Cli::try_parse_from([
             "wardian",
-            "workflow",
+            "automation",
             "schedule",
             "add",
             "--blueprint",
@@ -1851,13 +1857,13 @@ mod tests {
             ".",
         ])
         .unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(ref command)
-                if matches!(command.as_ref(), WorkflowScheduleCommand::Add { cadence, .. }
+            AutomationCommand::Schedule(ref command)
+                if matches!(command.as_ref(), AutomationScheduleCommand::Add { cadence, .. }
                     if cadence.weekly.as_deref() == Some("Sun@12:00")
                         && cadence.repeat_every == Some(2))
         ));
@@ -1867,7 +1873,7 @@ mod tests {
     fn rejects_repeat_every_with_interval_cadence() {
         let error = Cli::try_parse_from([
             "wardian",
-            "workflow",
+            "automation",
             "schedule",
             "add",
             "--blueprint",
@@ -1889,7 +1895,7 @@ mod tests {
     fn parses_schedule_update_with_extended_cadence_options() {
         let cli = Cli::try_parse_from([
             "wardian",
-            "workflow",
+            "automation",
             "schedule",
             "update",
             "s1",
@@ -1902,65 +1908,65 @@ mod tests {
             "--active",
         ])
         .unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Schedule(ref command)
-                if matches!(command.as_ref(), WorkflowScheduleCommand::Update { id, cadence, active, .. }
+            AutomationCommand::Schedule(ref command)
+                if matches!(command.as_ref(), AutomationScheduleCommand::Update { id, cadence, active, .. }
                     if id == "s1" && cadence.monthly.as_deref() == Some("1,15@09:30") && *active)
         ));
     }
 
     #[test]
-    fn parses_workflow_run_show() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "run-show", "wf", "r1"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_run_show() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "run-show", "wf", "r1"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::RunShow { ref blueprint_id, ref run_id }
+            AutomationCommand::RunShow { ref blueprint_id, ref run_id }
                 if blueprint_id == "wf" && run_id == "r1"
         ));
     }
 
     #[test]
-    fn parses_workflow_replay() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "replay", "wf", "r1"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_replay() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "replay", "wf", "r1"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Replay { ref blueprint_id, ref run_id }
+            AutomationCommand::Replay { ref blueprint_id, ref run_id }
                 if blueprint_id == "wf" && run_id == "r1"
         ));
     }
 
     #[test]
-    fn parses_workflow_parse() {
-        let cli = Cli::try_parse_from(["wardian", "workflow", "parse", "wf.md"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_parse() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "parse", "wf.md"]).unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Parse { ref path } if path == "wf.md"
+            AutomationCommand::Parse { ref path } if path == "wf.md"
         ));
     }
 
     #[test]
-    fn parses_workflow_normalize_write() {
-        let cli =
-            Cli::try_parse_from(["wardian", "workflow", "normalize", "wf.md", "--write"]).unwrap();
-        let Command::Workflow(args) = cli.command else {
-            panic!("expected Workflow")
+    fn parses_automation_normalize_write() {
+        let cli = Cli::try_parse_from(["wardian", "automation", "normalize", "wf.md", "--write"])
+            .unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
         };
         assert!(matches!(
             args.command,
-            WorkflowCommand::Normalize { ref path, write: true } if path == "wf.md"
+            AutomationCommand::Normalize { ref path, write: true } if path == "wf.md"
         ));
     }
 

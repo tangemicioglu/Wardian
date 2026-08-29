@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
  *
  * Installs a full `window.__TAURI_INTERNALS__.invoke` bridge covering every
  * command the app calls on initial mount (agents, classes, provider
- * readiness, watchlists, onboarding hints, workflows, shell/app settings)
+ * readiness, watchlists, onboarding hints, automations, shell/app settings)
  * plus the library-specific commands (`get_library_index`,
  * `read_library_item`, `save_library_item`, `update_library_metadata`, and
  * the rest of the library CRUD surface).
@@ -17,7 +17,7 @@ import type { Page } from "@playwright/test";
  */
 
 export interface LibraryEntryFixture {
-  kind: "skill" | "prompt" | "workflow" | "class";
+  kind: "skill" | "prompt" | "automation" | "class";
   path: string;
   entry_ref: string;
   name: string;
@@ -69,11 +69,11 @@ export function buildLibraryIndexFixture() {
     error: null,
   };
   const triage: LibraryEntryFixture = {
-    kind: "workflow",
+    kind: "automation",
     path: "triage.md",
-    entry_ref: "workflows/triage.md",
+    entry_ref: "automations/triage.md",
     name: "triage",
-    description: "Triage workflow",
+    description: "Triage automation",
     tags: [],
     is_starred: false,
     deployment_count: 0,
@@ -100,7 +100,7 @@ export function buildLibraryIndexFixture() {
     ],
   };
   const promptsTree: LibraryFolderFixture = { path: "", name: "Root", children: [greeting] };
-  const workflowsTree: LibraryFolderFixture = { path: "", name: "Root", children: [triage] };
+  const automationsTree: LibraryFolderFixture = { path: "", name: "Root", children: [triage] };
   const classesTree: LibraryFolderFixture = { path: "", name: "Root", children: [architect] };
   const mcpsTree: LibraryFolderFixture = { path: "", name: "Root", children: [] };
 
@@ -108,7 +108,7 @@ export function buildLibraryIndexFixture() {
     sections: {
       skills: { tree: skillsTree, stubbed: false },
       prompts: { tree: promptsTree, stubbed: false },
-      workflows: { tree: workflowsTree, stubbed: false },
+      automations: { tree: automationsTree, stubbed: false },
       classes: { tree: classesTree, stubbed: false },
       mcps: { tree: mcpsTree, stubbed: true },
     },
@@ -122,7 +122,7 @@ export function buildLibraryContentFixture(): Record<string, string> {
     "skills/dev/planner": "---\ndescription: Plans work\n---\n# Planner\nBody",
     "skills/ops/reviewer": "---\ndescription: Reviews code\n---\n# Reviewer\nBody",
     "prompts/greeting.md": "# Greeting\nSay hello to the team",
-    "workflows/triage.md": "---\ndescription: Triage workflow\n---\n# Triage",
+    "automations/triage.md": "---\ndescription: Triage automation\n---\n# Triage",
     "classes/Architect": "# Role: Architect\nDesigns systems",
   };
 }
@@ -211,9 +211,9 @@ export async function installLibraryIpcMock(
           if (command === "dismiss_onboarding_hint") {
             return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
           }
-          if (command === "list_workflows") return [];
+          if (command === "list_automations") return [];
           if (command === "list_scheduled_runs") return [];
-          if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+          if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
           if (command === "list_deployed_skills") return [];
           if (command === "load_app_settings") return null;
           if (command === "load_shell_settings") {

@@ -11,14 +11,14 @@ import { SidebarResizeHandle } from "../components/SidebarResizeHandle";
 import { ConfigureAgentPanel } from "../features/agents/ConfigureAgentPanel";
 import { SpawnAgentPanel } from "../features/agents/SpawnAgentPanel";
 import { CommandPanel } from "../features/commands/CommandPanel";
-import { WorkflowMonitorGlance } from "../features/workflows/monitor/WorkflowMonitorGlance";
+import { AutomationMonitorGlance } from "../features/automations/monitor/AutomationMonitorGlance";
 import { ExplorerPanel } from "../features/explorer/ExplorerPanel";
 import { GitPanel } from "../features/git/GitPanel";
 import type { SelectedAgentGitStatus } from "../features/git/useSelectedAgentGitStatus";
 import { ChangesPanel } from "../features/changes/ChangesPanel";
-import { useRunStore } from "../features/workflows/run/useRunStore";
+import { useRunStore } from "../features/automations/run/useRunStore";
 import { useSchedulesStore } from "../store/useSchedulesStore";
-import { useWorkflowsView } from "../store/useWorkflowsView";
+import { useAutomationsView } from "../store/useAutomationsView";
 
 interface SidebarContentPaneProps {
   activeTab: SidebarTab;
@@ -124,8 +124,8 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
             onBroadcast={onBroadcast}
           />
         )}
-        {activeTab === "workflows" && (
-          <WorkflowsGlancePane agents={agents} onOpenSurface={onOpenSurface} />
+        {activeTab === "automations" && (
+          <AutomationsGlancePane agents={agents} onOpenSurface={onOpenSurface} />
         )}
 
       </div>
@@ -161,12 +161,12 @@ function SidebarPaneHeader({
   );
 }
 
-interface WorkflowsGlancePaneProps {
+interface AutomationsGlancePaneProps {
   agents: AgentConfig[];
   onOpenSurface: (request: OpenSurfaceRequest) => void;
 }
 
-const WorkflowsGlancePane: React.FC<WorkflowsGlancePaneProps> = ({ agents, onOpenSurface }) => {
+const AutomationsGlancePane: React.FC<AutomationsGlancePaneProps> = ({ agents, onOpenSurface }) => {
   const schedules = useSchedulesStore((state) => state.schedules);
   const loadSchedules = useSchedulesStore((state) => state.load);
   const pauseSchedule = useSchedulesStore((state) => state.pause);
@@ -175,8 +175,8 @@ const WorkflowsGlancePane: React.FC<WorkflowsGlancePaneProps> = ({ agents, onOpe
   const runs = useRunStore((state) => state.runs);
   const loadRuns = useRunStore((state) => state.loadRuns);
   const openRun = useRunStore((state) => state.openRun);
-  const observeRun = useWorkflowsView((state) => state.observeRun);
-  const setMode = useWorkflowsView((state) => state.setMode);
+  const observeRun = useAutomationsView((state) => state.observeRun);
+  const setMode = useAutomationsView((state) => state.setMode);
   const activeRuns = runs.filter((run) => run.status === 'running' || run.status === 'awaiting_approval');
 
   useEffect(() => {
@@ -189,16 +189,16 @@ const WorkflowsGlancePane: React.FC<WorkflowsGlancePaneProps> = ({ agents, onOpe
   }, [loadRuns, loadSchedules, schedules.length]);
 
   return (
-    <WorkflowMonitorGlance
+    <AutomationMonitorGlance
       agents={agents}
       schedules={schedules}
       activeRuns={activeRuns}
       onOpenRun={(blueprintId, runId) => {
-        onOpenSurface({ surface_type: "workflows" });
+        onOpenSurface({ surface_type: "automations" });
         void openRun(blueprintId, runId).then(() => observeRun(blueprintId, runId));
       }}
       onOpenMonitor={() => {
-        onOpenSurface({ surface_type: "workflows" });
+        onOpenSurface({ surface_type: "automations" });
         setMode('monitor');
       }}
       onPauseSchedule={(id) => void pauseSchedule(id)}

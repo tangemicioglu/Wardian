@@ -13,7 +13,7 @@ use crate::models::{
 };
 
 /// Distinguishes how a section's directory tree maps onto index entries.
-/// Skills are directories that contain a `SKILL.md`; prompts and workflows
+/// Skills are directories that contain a `SKILL.md`; prompts and automations
 /// are individual `.md` files. Both shapes allow arbitrary folder nesting
 /// and share the same recursive tree walker.
 enum SectionShape {
@@ -84,12 +84,12 @@ pub fn build_library_index(home: &Path) -> Result<LibraryIndex, String> {
         )?,
     );
     sections.insert(
-        "workflows".to_string(),
+        "automations".to_string(),
         build_section(
             home,
-            LibrarySectionId::Workflows,
+            LibrarySectionId::Automations,
             SectionShape::MarkdownFiles,
-            "workflow",
+            "automation",
             &metadata,
             &no_deployment_count,
         )?,
@@ -192,13 +192,13 @@ pub fn list_library_entries_page(
     } else {
         let deployment_count_for: &dyn Fn(&str) -> u32 = match section {
             LibrarySectionId::Skills => &skill_deployment_count,
-            LibrarySectionId::Prompts | LibrarySectionId::Workflows => &no_deployment_count,
+            LibrarySectionId::Prompts | LibrarySectionId::Automations => &no_deployment_count,
             LibrarySectionId::Classes | LibrarySectionId::Mcps => unreachable!(),
         };
         let (shape, kind) = match section {
             LibrarySectionId::Skills => (SectionShape::SkillDirs, "skill"),
             LibrarySectionId::Prompts => (SectionShape::MarkdownFiles, "prompt"),
-            LibrarySectionId::Workflows => (SectionShape::MarkdownFiles, "workflow"),
+            LibrarySectionId::Automations => (SectionShape::MarkdownFiles, "automation"),
             LibrarySectionId::Classes | LibrarySectionId::Mcps => unreachable!(),
         };
         let root = section.root_for_home(home);
@@ -682,10 +682,10 @@ mod tests {
             "# Greeting\nHello",
         )
         .unwrap();
-        // workflow
-        fs::create_dir_all(home.join("library").join("workflows")).unwrap();
+        // automation
+        fs::create_dir_all(home.join("library").join("automations")).unwrap();
         fs::write(
-            home.join("library").join("workflows").join("triage.md"),
+            home.join("library").join("automations").join("triage.md"),
             "---\ndescription: Triage\n---\n",
         )
         .unwrap();
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(greet.name, "greet");
         assert_eq!(greet.description, "Greeting");
 
-        assert_eq!(index.sections["workflows"].tree.children.len(), 1);
+        assert_eq!(index.sections["automations"].tree.children.len(), 1);
 
         let classes = &index.sections["classes"];
         let architect = match &classes.tree.children[0] {
@@ -792,7 +792,7 @@ mod tests {
         let json = serde_json::to_string(&index).expect("serialize");
         let round_tripped: LibraryIndex = serde_json::from_str(&json).expect("deserialize");
 
-        for key in ["skills", "prompts", "workflows", "classes", "mcps"] {
+        for key in ["skills", "prompts", "automations", "classes", "mcps"] {
             assert!(
                 round_tripped.sections.contains_key(key),
                 "missing section {key}"

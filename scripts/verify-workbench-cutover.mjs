@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const defaultRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scanRoots = Object.freeze(["src", "e2e", "e2e-native", "scripts"]);
-const surfaceNames = "Grid|Dashboard|Queue|Library|Workflows|Graph|Garden";
+const surfaceNames = "Grid|Dashboard|Queue|Library|Automations|Graph|Garden";
 
 const frozenAudit = Object.freeze([
   ["e2e/tests/agent-lifecycle.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
@@ -20,9 +20,9 @@ const frozenAudit = Object.freeze([
   ["e2e/tests/run-params.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
   ["e2e/tests/run-view.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
   ["e2e/tests/schedule-monitor.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
-  ["e2e/tests/workflow-builder.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
-  ["e2e/tests/workflow.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
-  ["e2e/tests/workflows.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
+  ["e2e/tests/automation-builder.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
+  ["e2e/tests/automation.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
+  ["e2e/tests/automations.spec.ts", "migrated", "Task 15 semantic workbench helper migration."],
   ["e2e-native/tests/real-provider-rendering-native.test.mjs", "migrated", "Task 17 native semantic helper migration."],
   ["e2e-native/tests/terminal-geometry-sweep-native.test.mjs", "migrated", "Task 17 native semantic helper migration."],
   ["e2e-native/tests/terminal-rendering-native.test.mjs", "migrated", "Task 17 native semantic helper migration."],
@@ -124,10 +124,10 @@ const allowlistedMatches = Object.freeze([
     reason: "This match selects the Agents Overview Grid mode; other App legacy matches remain forbidden.",
   },
   {
-    path: "e2e/tests/workflows.spec.ts",
+    path: "e2e/tests/automations.spec.ts",
     rule_ids: ["legacy-role-button-selector"],
-    context: /titlebar[\s\S]*Workflows[\s\S]*toHaveCount\(0\)/,
-    reason: "This negative assertion proves the removed legacy titlebar Workflows button stays absent.",
+    context: /titlebar[\s\S]*Automations[\s\S]*toHaveCount\(0\)/,
+    reason: "This negative assertion proves the removed legacy titlebar Automations button stays absent.",
   },
 ]);
 

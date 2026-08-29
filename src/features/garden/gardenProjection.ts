@@ -4,11 +4,11 @@ import type { AgentTeam } from "../../layout/watchlist/types";
 import type {
   GardenAgentUnit,
   GardenPosition,
-  GardenWorkflowRunStatus,
-  GardenWorkflowUnit,
+  GardenAutomationRunStatus,
+  GardenAutomationUnit,
 } from "./garden.types";
-import { agentRef, entityKey, normalizeEntityPath, workflowRef } from "./entityRef";
-import { emitAgentFacets, emitWorkflowFacets } from "./facets";
+import { agentRef, entityKey, normalizeEntityPath, automationRef } from "./entityRef";
+import { emitAgentFacets, emitAutomationFacets } from "./facets";
 import {
   buildDistrictAffinity,
   districtId,
@@ -23,13 +23,13 @@ import { layoutGarden, type LayoutEntity } from "./gardenLayout";
 import type { GardenScene } from "./gardenScene";
 import { groundRadiusFor, quantizeAnchor, type TerrainDistrict } from "./terrain";
 
-export interface GardenWorkflowInput {
+export interface GardenAutomationInput {
   id: string;
   label: string;
-  runStatus: GardenWorkflowRunStatus;
+  runStatus: GardenAutomationRunStatus;
   nodeCount: number;
   /**
-   * Concrete agent ids the workflow is bound to: `agent_ref` node fields that
+   * Concrete agent ids the automation is bound to: `agent_ref` node fields that
    * name an agent, pooled with the agents its schedules deploy it onto.
    */
   agentIds?: readonly string[];
@@ -49,7 +49,7 @@ export interface GardenWorkflowInput {
  * geometry depend on font loading.
  */
 const AGENT_UNIT_SIZE = { width: 96, height: 42 };
-const WORKFLOW_UNIT_SIZE = { width: 120, height: 52 };
+const AUTOMATION_UNIT_SIZE = { width: 120, height: 52 };
 
 /**
  * Footprint of an agent carrying `crownLength` skills.
@@ -72,7 +72,7 @@ export interface GardenProjectionInput {
   /** Display data — labels, status, colour — plus communication edges. */
   projection: AgentGraphProjection;
   teams: readonly AgentTeam[];
-  workflows: readonly GardenWorkflowInput[];
+  automations: readonly GardenAutomationInput[];
   skills?: readonly GardenSkillInput[];
   scene: GardenScene;
   /** Workspace roots each agent has written under; see `useGardenReach`. */
@@ -245,7 +245,7 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
   // than nest away.
   const rootsByDistrict = new Map<string, Set<string>>();
   // Which root each agent works in, so the ground can be laid out under the
-  // agents rather than beside them. Agents only: a workflow has no workspace.
+  // agents rather than beside them. Agents only: an automation has no workspace.
   const rootByUnitKey = new Map<string, string>();
   for (const node of input.projection.nodes) {
     const ref = agentRef(node.id);
@@ -279,30 +279,30 @@ export function computeGardenLayout(input: GardenProjectionInput): GardenProject
     entities.map((entity) => ({ tokens: entity.facets.tokens, districtId: entity.districtId })),
   );
 
-  for (const workflow of input.workflows) {
-    const ref = workflowRef(workflow.id);
+  for (const automation of input.automations) {
+    const ref = automationRef(automation.id);
     // A blueprint binds no agent until a run assigns roles, which is why these
     // all used to sit in the commons. But a blueprint is not short of evidence:
     // an `agent_ref` field is an outright binding, and a `path` field — a shell
-    // node's `cwd`, say — names the directory the workflow operates on, which
-    // the agents living there also carry. See `workflowContext.ts`.
-    const facets = emitWorkflowFacets(ref, {
-      assignedAgentIds: workflow.agentIds,
-      // Roles and classes cannot place a workflow — they name a kind of agent,
-      // not one — but they are strong evidence of kinship between workflows, and
+    // node's `cwd`, say — names the directory the automation operates on, which
+    // the agents living there also carry. See `automationContext.ts`.
+    const facets = emitAutomationFacets(ref, {
+      assignedAgentIds: automation.agentIds,
+      // Roles and classes cannot place an automation — they name a kind of agent,
+      // not one — but they are strong evidence of kinship between automations, and
       // that is what the affinity fallback reads when no binding exists.
-      roleNames: workflow.roleNames,
-      classNames: workflow.classNames,
-      workspacePaths: workflow.workspacePaths,
-      libraryFolder: workflow.libraryFolder,
+      roleNames: automation.roleNames,
+      classNames: automation.classNames,
+      workspacePaths: automation.workspacePaths,
+      libraryFolder: automation.libraryFolder,
     });
     entities.push({
       ref,
       facets,
       // Falls back to the commons when the evidence is too thin to act on,
-      // rather than guessing the workflow into someone's district.
+      // rather than guessing the automation into someone's district.
       districtId: resolveEntityDistrict(facets.tokens, districtByAgentId, affinity),
-      ...WORKFLOW_UNIT_SIZE,
+      ...AUTOMATION_UNIT_SIZE,
     });
   }
 
@@ -429,7 +429,7 @@ const ACTIVITY_WEIGHT: Record<CommEdgeState, number> = {
 export function gardenLayoutSignature(
   projection: AgentGraphProjection,
   teams: readonly AgentTeam[],
-  workflows: readonly GardenWorkflowInput[],
+  automations: readonly GardenAutomationInput[],
   skills: readonly GardenSkillInput[] = [],
   reach: readonly AgentReachEntry[] = [],
 ): string {
@@ -457,17 +457,17 @@ export function gardenLayoutSignature(
     .map((team) => `${team.id}:${[...team.agentIds].sort().join(",")}`)
     .join(";");
 
-  // Everything that can move a workflow: its identity plus the evidence that
+  // Everything that can move an automation: its identity plus the evidence that
   // places it. Run status and node count are display, and stay out.
-  const workflowKey = [...workflows]
-    .map((workflow) =>
+  const automationKey = [...automations]
+    .map((automation) =>
       [
-        workflow.id,
-        (workflow.agentIds ?? []).join(","),
-        (workflow.roleNames ?? []).join(","),
-        (workflow.classNames ?? []).join(","),
-        (workflow.workspacePaths ?? []).join(","),
-        workflow.libraryFolder ?? "",
+        automation.id,
+        (automation.agentIds ?? []).join(","),
+        (automation.roleNames ?? []).join(","),
+        (automation.classNames ?? []).join(","),
+        (automation.workspacePaths ?? []).join(","),
+        automation.libraryFolder ?? "",
       ].join("|"),
     )
     .sort()
@@ -504,7 +504,7 @@ export function gardenLayoutSignature(
     .sort()
     .join(";");
 
-  return [agents, teamKey, workflowKey, edgeKey, skillKey, reachKey].join("#");
+  return [agents, teamKey, automationKey, edgeKey, skillKey, reachKey].join("#");
 }
 
 /** Attach live display fields to computed positions. */
@@ -523,15 +523,15 @@ export function buildAgentUnits(
   }));
 }
 
-export function buildWorkflowUnits(
-  workflows: readonly GardenWorkflowInput[],
+export function buildAutomationUnits(
+  automations: readonly GardenAutomationInput[],
   positions: ReadonlyMap<string, GardenPosition>,
-): GardenWorkflowUnit[] {
-  return workflows.map((workflow) => ({
-    ref: { kind: "workflow", id: workflow.id },
-    label: workflow.label,
-    runStatus: workflow.runStatus,
-    nodeCount: workflow.nodeCount,
-    position: positions.get(entityKey(workflowRef(workflow.id))) ?? { x: 0, y: 0 },
+): GardenAutomationUnit[] {
+  return automations.map((automation) => ({
+    ref: { kind: "automation", id: automation.id },
+    label: automation.label,
+    runStatus: automation.runStatus,
+    nodeCount: automation.nodeCount,
+    position: positions.get(entityKey(automationRef(automation.id))) ?? { x: 0, y: 0 },
   }));
 }

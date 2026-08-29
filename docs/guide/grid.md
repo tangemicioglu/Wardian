@@ -2,7 +2,7 @@
 
 Grid is a display mode inside the [Agents](./agents-overview.md) Workbench surface. It is no longer a global page or a title-bar destination.
 
-This compatibility guide preserves the familiar Grid workflows and points older instructions to their current location.
+This compatibility guide preserves the familiar Grid automations and points older instructions to their current location.
 
 ![Agents in Grid mode showing active agent cards](../assets/screenshots/grid/app-shell.png)
 

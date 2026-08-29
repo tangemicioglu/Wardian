@@ -9,7 +9,7 @@ Located in `src-tauri/src/state/app_state.rs`, the `AppState` is managed as a Ta
 - **`agents: Mutex<HashMap<String, ActiveAgent>>`**: The core map of all active agent sessions. Protected by a `tokio::sync::Mutex` for safe async access.
 - **`agent_order: Mutex<Vec<String>>`**: Maintains the visual order of agents in the UI roster and grid.
 - **`input_senders: RwLock<HashMap<String, Sender<Vec<u8>>>>`**: A specialized, lightweight map for routing terminal input. Uses `std::sync::RwLock` to allow low-contention reads for direct text and binary PTY input commands.
-- **`workflow_triggers: Mutex<HashMap<String, Vec<JoinHandle<()>>>>`**: Tracks active background tasks (like Cron jobs) for each workflow, allowing for surgical termination (Muting).
+- **`automation_triggers: Mutex<HashMap<String, Vec<JoinHandle<()>>>>`**: Tracks active background tasks (like Cron jobs) for each automation, allowing for surgical termination (Muting).
 - **`terminal_sessions: Arc<TerminalSessionBroker>`**: Shares the broker handle
   that owns one actor per PTY runtime, including canonical geometry, runtime
   generation, lease epoch, ordered stream sequence, bounded parser/replay state,
@@ -61,7 +61,7 @@ Conflicts freeze saving without overwriting the local draft.
 
 The document contains split/group/tab placement, bounded surface presentation
 state, recently closed entries, and shell dimensions. It excludes agents,
-workflows, Inbox/library data, PTY contents, terminal leases, runtime geometry,
+automations, Inbox/library data, PTY contents, terminal leases, runtime geometry,
 DOM focus, drag state, group zoom, credentials, and other recomputable or live
 truth. See [Workbench Surfaces](./workbench-surfaces.md) for migration and
 versioning rules.

@@ -21,7 +21,7 @@ wardian library orphans
 ```
 
 Use section-qualified refs: `skills/<path>`, `prompts/<path>.md`,
-`classes/<Name>`, or `workflows/<path>.md`. Prompts and workflows require the
+`classes/<Name>`, or `automations/<path>.md`. Prompts and automations require the
 `.md` extension. A skill is a directory containing `SKILL.md`; do not nest a
 skill inside another skill. Default class files initialize on first access.
 
@@ -30,8 +30,8 @@ non-empty, deduplicated list. Never pass an empty variable as the target list.
 Use `--clear` only when removing every deployment. Use `orphan delete` only
 after the current scan still identifies that deployment as orphaned.
 
-Library workflow commands only author blueprint files. Use `wardian workflow`
-commands for workflow-specific behavior.
+Library automation commands only author blueprint files. Use `wardian automation`
+commands for automation-specific behavior.
 
 ## Present Durable Artifacts
 

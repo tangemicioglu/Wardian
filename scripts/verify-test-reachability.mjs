@@ -38,8 +38,8 @@ const GRANDFATHERED_SKIPS = Object.freeze([
       + "mislabelled — it is pure UI and duplicates a passing test above it.",
   },
   {
-    file: "e2e/tests/workflow.spec.ts",
-    reason: "Workflow lifecycle needs a running mock agent, same blocker as agent-lifecycle.",
+    file: "e2e/tests/automation.spec.ts",
+    reason: "Automation lifecycle needs a running mock agent, same blocker as agent-lifecycle.",
   },
   {
     file: "e2e/tests/graph-topology.spec.ts",

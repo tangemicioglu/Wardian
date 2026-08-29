@@ -306,7 +306,7 @@ export const RemoteAccessSettings: React.FC = () => {
             <h4 className="text-sm font-semibold text-primary">Remote Access</h4>
           </div>
           <p className="mt-2 max-w-2xl text-xs leading-relaxed text-muted-neutral">
-            Pair a phone through the local HTTPS gateway. A paired phone can send prompts, run workflows, and stop agents with full remote control.
+            Pair a phone through the local HTTPS gateway. A paired phone can send prompts, run automations, and stop agents with full remote control.
           </p>
           <div className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-wardian-warning">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />

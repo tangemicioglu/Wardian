@@ -1,19 +1,19 @@
 # The Library System
 
 The Library is the single home for everything reusable in Wardian: skills,
-prompts, classes, and workflow blueprints. It stores the capabilities and
+prompts, classes, and automation blueprints. It stores the capabilities and
 context you want agents to reuse across sessions, and it is where you deploy
 those capabilities into the scopes that need them.
 
 Use it when you want to save a repeatable prompt, manage a deployable skill,
-edit a class's `AGENTS.md`, or find a workflow blueprint before launching a
+edit a class's `AGENTS.md`, or find an automation blueprint before launching a
 run.
 
 The Library lets you start small and reuse what proves useful. A one-off
 instruction can become a saved prompt; a repeated procedure can become a
 skill; and a skill can be shared with every agent, a class, or one agent.
 
-For a visual map of how prompts, skills, classes, and workflows relate, see
+For a visual map of how prompts, skills, classes, and automations relate, see
 [Key Concepts](./key-concepts.md#reusable-work).
 
 ## When to Use It
@@ -23,7 +23,7 @@ For a visual map of how prompts, skills, classes, and workflows relate, see
 - Deploy skills globally, by class, or to a specific active agent, and see at a
   glance which items are already deployed.
 - Edit a class's instructions and manage its deployed skills in one place.
-- Find a workflow blueprint before launching a run from the [Workflows view](./workflows.md).
+- Find an automation blueprint before launching a run from the [Automations view](./automations.md).
 
 ## Layout: Rail, List, Detail
 
@@ -31,14 +31,14 @@ Open **Library** from a pane's **+** menu or Quick Open palette. It is a
 self-contained three-pane surface that does not replace the global left sidebar:
 
 - **Section rail** — a slim vertical strip on the left with one icon-and-label
-  button per section (Skills, Prompts, Classes, Workflows, MCPs) and a count
+  button per section (Skills, Prompts, Classes, Automations, MCPs) and a count
   badge showing how many entries live in each. Click a section to switch to it.
 - **List** — the middle pane. It shows the active section's contents as
   collapsible folder groups (browsing) or a flattened, ranked list of matches
   (searching). Its toolbar has a search box, a starred-only filter, a **New**
   menu (new item / new folder), and a reveal-in-file-manager shortcut.
 - **Detail pane** — the right pane. Selecting a row opens an inline editor and
-  a panel specific to that entry's kind (skill, prompt, class, or workflow).
+  a panel specific to that entry's kind (skill, prompt, class, or automation).
   There are no more modals: everything you need to inspect or change an entry
   happens in this pane.
 
@@ -96,18 +96,18 @@ the Library instead of a separate sidebar panel.
 - Spawning an agent from a class still happens from the agent spawn flow, not
   from the Library.
 
-### 4. Workflows
+### 4. Automations
 
-Workflow **blueprints** live in the Library; workflow **runs** do not.
+Automation **blueprints** live in the Library; automation **runs** do not.
 
 - **Organization**: blueprints are stored as `.md` files under
-  `<wardian-home>/library/workflows/`.
+  `<wardian-home>/library/automations/`.
 - **Editing**: the detail pane opens the same inline markdown editor as other
   sections, plus a **Launch Run** button that resolves the blueprint on disk
   and opens the run-launch dialog.
-- **Observation stays in Workflows**: monitoring an in-progress or completed
-  run, history, and scheduling still live in the [Workflows view](./workflows.md).
-  Use **Open in Workflows view** from a blueprint's detail pane to jump there.
+- **Observation stays in Automations**: monitoring an in-progress or completed
+  run, history, and scheduling still live in the [Automations view](./automations.md).
+  Use **Open in Automations view** from a blueprint's detail pane to jump there.
 
 ### 5. MCPs (stub)
 
@@ -138,7 +138,7 @@ wardian library restore-default classes/Reviewer
 
 `read` emits raw markdown for the entry. `show` emits JSON metadata and
 resolved paths, with optional content via `--content`. `list --flat` emits only
-entry rows; without a section it combines every section. Prompt and workflow
+entry rows; without a section it combines every section. Prompt and automation
 refs must end in `.md`, and a skill cannot contain another skill.
 
 `deploy --targets` deduplicates and reconciles the supplied non-empty target
@@ -157,13 +157,13 @@ uses the new instructions. The same command accepts
 folder was moved or renamed. Managed worktrees remain on the
 `wardian agent worktree` surface.
 
-Library workflow commands author blueprint files only. Use the `wardian
-workflow` namespace to validate, parse, normalize, execute, schedule, or
-inspect workflow runs.
+Library automation commands author blueprint files only. Use the `wardian
+automation` namespace to validate, parse, normalize, execute, schedule, or
+inspect automation runs.
 
 ## Folder Organization and Drag-to-Move
 
-Skills, prompts, and workflows can be organized into folders on disk:
+Skills, prompts, and automations can be organized into folders on disk:
 
 - Use **New → New folder** in the list toolbar to create one.
 - Drag a row onto a folder's header to move that entry into the folder. A
@@ -241,8 +241,8 @@ deployments as part of the same operation, so links never dangle.
 - Skill deployments may use links or fallback copies depending on platform
   support and filesystem permissions; check the copied-badge note if edits
   stop propagating to a target.
-- Workflow runs, history, and scheduling live in the
-  [Workflows view](./workflows.md), not the Library.
+- Automation runs, history, and scheduling live in the
+  [Automations view](./automations.md), not the Library.
 - The MCPs section is a stub in this release; there is nothing to configure yet.
 - Use [Provider Runtimes](../providers.md) when skill visibility differs by CLI provider.
 
@@ -262,6 +262,6 @@ If Gemini skills are missing, ensure **Auto-patch Gemini CLI** is enabled in the
 ## Related Links
 
 - [Command Panel](./command-panel.md)
-- [Workflows](./workflows.md)
+- [Automations](./automations.md)
 - [Watchlists](./watchlists.md)
 - [Provider Runtimes](../providers.md)

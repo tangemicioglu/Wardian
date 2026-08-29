@@ -39,9 +39,9 @@ async function installProofIpcMock(page: Page) {
         if (command === "load_queue_preferences") return {};
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: [] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: [] };
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") return { type: "Folder", path: "", name: "Root", children: [] };
         if (command === "list_deployed_skills") return [];
         if (command === "load_app_settings") return null;
@@ -49,8 +49,8 @@ async function installProofIpcMock(page: Page) {
         if (command === "list_available_shells") return [];
         if (command === "get_topology") return { edges: [], ignored_pairs: [], fallback_groups: [] };
         if (command === "get_pair_activity") return { pairs: [], truncated: false, next_offset: null };
-        if (command === "workflow_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
-        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
+        if (command === "automation_list_blueprints") return { blueprints: [], truncated: false, next_offset: null };
+        if (command === "automation_list_runs") return { runs: [], truncated: false, next_offset: null };
         if (command === "schedule_list") return [];
         if (command === "plugin:event|listen") return callbackId++;
         if (command === "plugin:event|unlisten") return null;

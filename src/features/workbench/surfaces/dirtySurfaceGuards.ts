@@ -6,7 +6,7 @@ import type {
   SurfaceCloseResourceObservation,
 } from "../surfaceRegistry";
 
-export type DirtySurfaceType = "library" | "workflows" | "files";
+export type DirtySurfaceType = "library" | "automations" | "files";
 export type DirtySurfaceChoice = "save" | "discard" | "cancel";
 
 export interface DirtySurfacePromptRequest {
@@ -116,25 +116,25 @@ export function createLibrarySurfaceCloseAdapter(
   };
 }
 
-export function createWorkflowsSurfaceCloseAdapter(
+export function createAutomationsSurfaceCloseAdapter(
   prompt: DirtySurfacePrompt,
 ): SurfaceCloseResourceAdapter {
   const collectChoice = createChoiceCollector(prompt, {
-    surface_type: "workflows",
-    title: "Workflows",
-    message: "Save workflow changes before closing?",
+    surface_type: "automations",
+    title: "Automations",
+    message: "Save automation changes before closing?",
   });
   return {
     observe: (): SurfaceCloseResourceObservation => {
       const state = useBuilderStore.getState();
       return {
-        resource_id: "workflows:builder",
+        resource_id: "automations:builder",
         resource_generation: state.resourceRevision,
         dirty: state.dirty,
       };
     },
     prepare: async (request) => {
-      if (request.resource.resource_id !== "workflows:builder") return null;
+      if (request.resource.resource_id !== "automations:builder") return null;
       const observed = useBuilderStore.getState();
       if (observed.resourceRevision !== request.resource.resource_generation) return null;
       const expected = {

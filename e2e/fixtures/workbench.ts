@@ -7,7 +7,7 @@ export type CoreWorkbenchSurfaceType =
   | "graph"
   | "garden"
   | "library"
-  | "workflows"
+  | "automations"
   | "agent-session";
 
 export type PointerTarget = { x: number; y: number };

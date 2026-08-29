@@ -49,7 +49,7 @@
       "../scripts/*",
       "resources/bin/*",
       "resources/library/skills/**/*",
-      "resources/library/workflows/**/*",
+      "resources/library/automations/**/*",
       "conpty/x64/conpty.dll",
       "conpty/x64/OpenConsole.exe"
     ]

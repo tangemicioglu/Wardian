@@ -240,7 +240,7 @@ describe("useWorkbenchCommands", () => {
       ["g", "graph"],
       ["h", "garden"],
       ["b", "library"],
-      ["w", "workflows"],
+      ["w", "automations"],
     ] as const;
 
     for (const [key, surfaceType] of shortcuts) {

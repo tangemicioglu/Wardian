@@ -1,4 +1,5 @@
 pub mod artifact_service;
+pub mod automation;
 pub mod commands;
 pub mod control;
 pub mod delivery;
@@ -11,7 +12,6 @@ pub mod state;
 mod topology_audit;
 mod topology_watch;
 pub mod utils;
-pub mod workflow;
 pub use wardian_core::models;
 
 // Tauri's Windows resource contains the Common Controls v6 manifest required by
@@ -174,6 +174,9 @@ pub fn run() {
     crate::utils::fs::ensure_process_wardian_home_env();
 
     crate::utils::migration::migrate_home_layout();
+    if let Err(error) = wardian_core::automation_migration::migrate_current_home() {
+        eprintln!("Failed to migrate legacy automation storage: {error}");
+    }
 
     let db_init_result = crate::utils::fs::get_wardian_home()
         .map(|home| home.join("state.db"))
@@ -346,11 +349,11 @@ pub fn run() {
             // whole log deltas while holding the state database's write lock.
             state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
 
-            if let Some(runs_dir) = wardian_core::paths::workflow_runs_dir() {
-                let interrupted = crate::workflow::runs::fail_interrupted_runs(&runs_dir);
+            if let Some(runs_dir) = wardian_core::paths::automation_runs_dir() {
+                let interrupted = crate::automation::runs::fail_interrupted_runs(&runs_dir);
                 if !interrupted.is_empty() {
                     crate::utils::logging::log_debug(&format!(
-                        "[workflow] marked {} interrupted run(s) failed on startup: {:?}",
+                        "[automation] marked {} interrupted run(s) failed on startup: {:?}",
                         interrupted.len(),
                         interrupted
                     ));
@@ -365,7 +368,7 @@ pub fn run() {
                 if let Err(e) = reconcile_headless_agents().await {
                     eprintln!("Failed to reconcile headless agents: {}", e);
                 }
-                crate::workflow::schedule::start_scheduler(app_handle.clone()).await;
+                crate::automation::schedule::start_scheduler(app_handle.clone()).await;
 
                 if let Some(app_dir) = manager::get_wardian_home() {
                     let state_path = app_dir.join("settings/state.json");
@@ -570,7 +573,7 @@ pub fn run() {
                 }
                 for recovered in recovered_replacements {
                     if let Some(intent) = recovered.session_close_intent {
-                        if let Err(error) = crate::workflow::session_close::invoke_matching(
+                        if let Err(error) = crate::automation::session_close::invoke_matching(
                             app_handle.clone(),
                             intent.into(),
                         )
@@ -806,34 +809,34 @@ pub fn run() {
             commands::watchlist::save_agent_interactions,
             commands::inbox::list_inbox_notifications,
             commands::inbox::resolve_inbox_notification,
-            commands::inbox::list_workflow_inbox_approvals,
-            commands::inbox::list_workflow_inbox_terminal_runs,
+            commands::inbox::list_automation_inbox_approvals,
+            commands::inbox::list_automation_inbox_terminal_runs,
             commands::topology::get_topology,
             commands::topology::add_topology_edge,
             commands::topology::remove_topology_edge,
             commands::topology::ignore_topology_pair,
             commands::topology::unignore_topology_pair,
             commands::topology::get_pair_activity,
-            commands::workflow::workflow_parse,
-            commands::workflow::workflow_validate,
-            commands::workflow::workflow_write,
-            commands::workflow::workflow_list_blueprints,
-            commands::workflow::workflow_list_runs,
-            commands::workflow::workflow_read_run,
-            commands::workflow::workflow_run,
-            commands::workflow::workflow_resume,
-            commands::workflow::workflow_approve,
-            commands::workflow::workflow_cancel,
-            commands::workflow::schedule_create,
-            commands::workflow::schedule_update,
-            commands::workflow::schedule_list,
-            commands::workflow::session_close_invoker_list,
-            commands::workflow::session_close_invoker_save,
-            commands::workflow::session_close_invoker_delete,
-            commands::workflow::schedule_pause,
-            commands::workflow::schedule_resume,
-            commands::workflow::schedule_remove,
-            commands::workflow::schedule_run_now,
+            commands::automation::automation_parse,
+            commands::automation::automation_validate,
+            commands::automation::automation_write,
+            commands::automation::automation_list_blueprints,
+            commands::automation::automation_list_runs,
+            commands::automation::automation_read_run,
+            commands::automation::automation_run,
+            commands::automation::automation_resume,
+            commands::automation::automation_approve,
+            commands::automation::automation_cancel,
+            commands::automation::schedule_create,
+            commands::automation::schedule_update,
+            commands::automation::schedule_list,
+            commands::automation::session_close_invoker_list,
+            commands::automation::session_close_invoker_save,
+            commands::automation::session_close_invoker_delete,
+            commands::automation::schedule_pause,
+            commands::automation::schedule_resume,
+            commands::automation::schedule_remove,
+            commands::automation::schedule_run_now,
             commands::library::get_library_index,
             commands::library::get_library_index_page,
             commands::library::read_library_item,

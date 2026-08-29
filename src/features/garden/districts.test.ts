@@ -459,7 +459,7 @@ describe("district affinity", () => {
 
   it("places on a rare shared facet", () => {
     expect(
-      resolveDistrictByAffinity(["section:workflows", "path:d:/trading/trident"], affinity),
+      resolveDistrictByAffinity(["section:automations", "path:d:/trading/trident"], affinity),
     ).toBe("workspace:d:/trading/trident");
   });
 

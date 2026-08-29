@@ -61,7 +61,7 @@ export type FacetClass =
   | "deployed"
   | "tag"
   | "section"
-  | "workflow"
+  | "automation"
   | "role"
   | "origin"
   | "worktree"
@@ -89,7 +89,7 @@ export const FACET_KAPPA: Record<FacetClass, number> = {
   deployed: 1.3, // canonical cross-kind edge from the library index
   tag: 0.9,
   section: 0.4,
-  workflow: 1.1,
+  automation: 1.1,
   role: 1.0,
   origin: 1.5, // artifact -> producing agent; provenance is near-identifying
   worktree: 1.2,
@@ -434,17 +434,17 @@ export function emitSkillFacets(
   return { ref, tokens: dedupeTokens(tokens), excludes: [] };
 }
 
-export interface WorkflowFacetContext {
+export interface AutomationFacetContext {
   /** Role names referenced by `task`/`decision` nodes. */
   roleNames?: readonly string[];
-  /** Agent ids bound through `WorkflowAssignments`. */
+  /** Agent ids bound through `AutomationAssignments`. */
   assignedAgentIds?: readonly string[];
   /** Class refs referenced as `class:<name>` in an agent field. */
   classNames?: readonly string[];
   /**
-   * Directories the workflow operates on, from `path`-kind node fields.
+   * Directories the automation operates on, from `path`-kind node fields.
    *
-   * These are what tie a workflow to a place when it binds no agent at all: a
+   * These are what tie an automation to a place when it binds no agent at all: a
    * blueprint whose shell node runs in `D:/Trading/trident` shares the ancestor
    * chain of the agents living there, and IDF makes the deep, rare segments
    * decisive while the drive root costs nothing.
@@ -455,17 +455,17 @@ export interface WorkflowFacetContext {
   tags?: readonly string[];
 }
 
-export function emitWorkflowFacets(
+export function emitAutomationFacets(
   ref: EntityRef,
-  context: WorkflowFacetContext = {},
+  context: AutomationFacetContext = {},
 ): GardenEntityFacets {
-  const tokens: FacetToken[] = ["section:workflows", `workflow:${ref.id.toLowerCase()}`];
+  const tokens: FacetToken[] = ["section:automations", `automation:${ref.id.toLowerCase()}`];
   for (const role of context.roleNames ?? []) tokens.push(`role:${role.toLowerCase()}`);
   for (const agentId of context.assignedAgentIds ?? []) tokens.push(`deployed:agent:${agentId}`);
   for (const className of context.classNames ?? []) tokens.push(`class:${className.toLowerCase()}`);
   for (const path of context.workspacePaths ?? []) tokens.push(...pathAncestorFacets(path));
   if (context.libraryFolder) {
-    tokens.push(...libraryPathFacets("workflows", context.libraryFolder));
+    tokens.push(...libraryPathFacets("automations", context.libraryFolder));
   }
   for (const tag of context.tags ?? []) tokens.push(`tag:${tag.toLowerCase()}`);
   return { ref, tokens: dedupeTokens(tokens), excludes: [] };

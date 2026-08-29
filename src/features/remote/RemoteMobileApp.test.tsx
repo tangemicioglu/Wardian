@@ -193,8 +193,8 @@ function mockRemoteAgentDetailFetch(
         ),
       );
     }
-    if (url === "/remote/api/workflows") {
-      return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+    if (url === "/remote/api/automations") {
+      return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
     }
     if (requestUrl.pathname === "/remote/api/agents/agent-1/chat") {
       const pageSize = 40;
@@ -302,7 +302,7 @@ describe("RemoteMobileApp", () => {
     vi.mocked(signRemoteAuthChallenge).mockResolvedValue("signature-der");
     useRemoteStore.setState({
       agents: [],
-      workflows: [],
+      automations: [],
       remoteQueueItems: [],
       watchlists: [],
       teams: [],
@@ -791,7 +791,7 @@ describe("RemoteMobileApp", () => {
           latest_text: null,
         },
       ],
-      workflows: [],
+      automations: [],
       teams: [],
       watchlists: [],
       watchlistPrefs: { columns: [], sort: null, preserve_team_grouping_when_sorted: false, collapsed_team_ids: [] },
@@ -925,8 +925,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -1004,8 +1004,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -1045,7 +1045,7 @@ describe("RemoteMobileApp", () => {
     expect(fetchMock.mock.calls.some(([url]) => url === "/remote/api/agents/action")).toBe(false);
   });
 
-  it("keeps the remote shell usable when workflow listing is unavailable", async () => {
+  it("keeps the remote shell usable when automation listing is unavailable", async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === "/remote/api/session") {
         return Promise.resolve(
@@ -1079,7 +1079,7 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
+      if (url === "/remote/api/automations") {
         return Promise.resolve(new Response("{}", { status: 404 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
@@ -1134,8 +1134,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(new Response("{}", { status: 503 }));
@@ -1191,8 +1191,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -1297,8 +1297,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -1442,8 +1442,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/agents/agent-1/chat") {
         return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
@@ -1730,8 +1730,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/agents/agent-1/chat") {
         chatCalls += 1;
@@ -1827,8 +1827,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/agents/agent-1/chat") {
         chatCalls += 1;
@@ -2144,8 +2144,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -2449,8 +2449,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -2526,8 +2526,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -2633,8 +2633,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -2698,8 +2698,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -2770,8 +2770,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3086,8 +3086,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3165,8 +3165,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3240,8 +3240,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3318,8 +3318,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3393,8 +3393,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3616,8 +3616,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3690,8 +3690,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3761,8 +3761,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3851,8 +3851,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3911,9 +3911,9 @@ describe("RemoteMobileApp", () => {
             type: "approval_request",
             timestamp: 1779417600000,
             read: false,
-            workflow_name: "Release workflow",
+            automation_name: "Release automation",
             summary: "Approve the release deployment.",
-            workflow_approval: true,
+            automation_approval: true,
             approval_choices: ["Approve", "Reject"],
           }],
         }), { status: 200 }));
@@ -3938,8 +3938,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -3956,7 +3956,7 @@ describe("RemoteMobileApp", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Inbox" }));
 
     expect(await screen.findByText("Approval requested")).toBeVisible();
-    expect(screen.getByText("Release workflow")).toBeVisible();
+    expect(screen.getByText("Release automation")).toBeVisible();
     expect(screen.getByText("Approve the release deployment.")).toBeVisible();
   });
 
@@ -4011,8 +4011,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4104,8 +4104,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4200,8 +4200,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4280,8 +4280,8 @@ describe("RemoteMobileApp", () => {
         terminalCalls += 1;
         return Promise.resolve(new Response("{}", { status: 500 }));
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4352,8 +4352,8 @@ describe("RemoteMobileApp", () => {
       if (url === "/remote/api/agents/agent-1/terminal") {
         return Promise.resolve(new Response(JSON.stringify({ ok: false, code: "agent_terminal_failed" }), { status: 400 }));
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         wsTicketCalls += 1;
@@ -4422,8 +4422,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4499,8 +4499,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4559,8 +4559,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4635,8 +4635,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(
@@ -4843,8 +4843,8 @@ describe("RemoteMobileApp", () => {
           ),
         );
       }
-      if (url === "/remote/api/workflows") {
-        return Promise.resolve(new Response(JSON.stringify({ workflows: [] }), { status: 200 }));
+      if (url === "/remote/api/automations") {
+        return Promise.resolve(new Response(JSON.stringify({ automations: [] }), { status: 200 }));
       }
       if (url === "/remote/api/ws-ticket" && init?.method === "POST") {
         return Promise.resolve(

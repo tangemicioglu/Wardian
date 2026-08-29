@@ -13,7 +13,7 @@ export const LIBRARY_SECTIONS: { id: LibrarySectionId; label: string; kindLabel:
     { id: 'skills', label: 'Skills', kindLabel: 'skill', kindLabelPlural: 'skills' },
     { id: 'prompts', label: 'Prompts', kindLabel: 'prompt', kindLabelPlural: 'prompts' },
     { id: 'classes', label: 'Classes', kindLabel: 'class', kindLabelPlural: 'classes' },
-    { id: 'workflows', label: 'Workflows', kindLabel: 'workflow', kindLabelPlural: 'workflows' },
+    { id: 'automations', label: 'Automations', kindLabel: 'automation', kindLabelPlural: 'automations' },
     { id: 'mcps', label: 'MCPs', kindLabel: 'MCP server', kindLabelPlural: 'MCP servers' },
 ];
 
@@ -34,7 +34,7 @@ interface SectionRailProps {
 
 /**
  * Slim vertical strip inside LibraryView for switching between library
- * sections (skills/prompts/classes/workflows/mcps). This is intentionally
+ * sections (skills/prompts/classes/automations/mcps). This is intentionally
  * scoped to the library view — it does not touch the global left sidebar.
  */
 export const SectionRail: React.FC<SectionRailProps> = ({ activeSection, sections, onSelect }) => {

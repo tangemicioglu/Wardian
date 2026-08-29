@@ -17,11 +17,11 @@ type QueueNotificationDependencies = {
 const QUEUE_NOTIFICATION_PEAK_GAIN = 0.36;
 
 function notificationTitle(item: QueueItem): string {
-  const source = item.agent_name ?? item.workflow_name ?? "Wardian";
+  const source = item.agent_name ?? item.automation_name ?? "Wardian";
   const eventType = queueEventTypeForItem(item);
   if (eventType === "action_needed") return `Action required: ${source}`;
-  if (eventType === "workflow_failed") return `Workflow failed: ${source}`;
-  if (eventType === "workflow_completed") return `Workflow completed: ${source}`;
+  if (eventType === "automation_failed") return `Automation failed: ${source}`;
+  if (eventType === "automation_completed") return `Automation completed: ${source}`;
   return `Agent completed: ${source}`;
 }
 

@@ -1,10 +1,10 @@
-import type { RunStatusKind } from "../workflows/run/runTypes";
+import type { RunStatusKind } from "../automations/run/runTypes";
 import type { GardenSkillGlyph } from "./skillGlyphs";
 
 /**
  * Kinds the Garden can address.
  *
- * A subset of `EntityRef`'s vocabulary. Only `agent` and `workflow` are
+ * A subset of `EntityRef`'s vocabulary. Only `agent` and `automation` are
  * *placed*: `skill` is addressable so a glyph can be selected and deep-linked,
  * but a skill has no position of its own — it renders on the agents that carry
  * it. See `skillGlyphs.ts` for why.
@@ -15,7 +15,7 @@ import type { GardenSkillGlyph } from "./skillGlyphs";
  * and never enters the layout. Its id is a normalized absolute path, so the
  * key space stays the one `entityRef.ts` established.
  */
-export type GardenEntityKind = "agent" | "workflow" | "skill" | "path";
+export type GardenEntityKind = "agent" | "automation" | "skill" | "path";
 
 export interface GardenEntityRef {
   kind: GardenEntityKind;
@@ -43,12 +43,12 @@ export interface GardenAgentUnit {
   crown: GardenSkillGlyph[];
 }
 
-export type GardenWorkflowRunStatus = RunStatusKind | "none";
+export type GardenAutomationRunStatus = RunStatusKind | "none";
 
-export interface GardenWorkflowUnit {
-  ref: GardenEntityRef; // kind === "workflow"
+export interface GardenAutomationUnit {
+  ref: GardenEntityRef; // kind === "automation"
   label: string;
-  runStatus: GardenWorkflowRunStatus;
+  runStatus: GardenAutomationRunStatus;
   nodeCount: number;
   position: GardenPosition;
 }

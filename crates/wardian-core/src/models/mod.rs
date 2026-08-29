@@ -1,6 +1,7 @@
 pub mod agent_config;
 pub mod agent_telemetry;
 pub mod app_telemetry;
+pub mod automation;
 pub mod chat;
 pub mod fs;
 pub mod git;
@@ -9,7 +10,6 @@ pub mod provider;
 pub mod session_policy;
 pub mod terminal_session;
 pub mod workbench;
-pub mod workflow;
 
 pub use agent_config::{
     AgentClassDefinition, AgentConfig, AntigravityProviderConfig, ClaudeProviderConfig,
@@ -18,14 +18,14 @@ pub use agent_config::{
 };
 pub use agent_telemetry::AgentTelemetry;
 pub use app_telemetry::AppTelemetry;
+pub use automation::*;
 pub use chat::{AgentChatEvent, AgentChatEventKind, AgentChatRole, AgentChatStatus};
 pub use fs::*;
 pub use library::*;
 pub use provider::{AgentEvent, AgentProvider};
 pub use session_policy::{
     AgentExecutionPolicy, AgentSessionPersistence, AgentSessionPersistenceOverride,
-    WorkflowAgentMode,
+    AutomationAgentMode,
 };
 pub use terminal_session::*;
 pub use workbench::*;
-pub use workflow::*;

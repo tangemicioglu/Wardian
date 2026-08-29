@@ -78,9 +78,9 @@ async function installRunParamsIpcMock(page: Page) {
         if (command === "load_queue_preferences") return {};
         if (command === "load_onboarding_hints") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         if (command === "dismiss_onboarding_hint") return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
-        if (command === "list_workflows") return [];
+        if (command === "list_automations") return [];
         if (command === "list_scheduled_runs") return [];
-        if (command === "load_workflow_library") return { folders: [], rootWorkflowIds: [] };
+        if (command === "load_automation_library") return { folders: [], rootAutomationIds: [] };
         if (command === "get_library_tree") return { type: "Folder", path: "", name: "Root", children: [] };
         if (command === "list_deployed_skills") return [];
         if (command === "load_app_settings") return null;
@@ -98,16 +98,16 @@ async function installRunParamsIpcMock(page: Page) {
         if (command === "plugin:event|unlisten") return null;
         if (command === "sync_provider_theme_settings") return null;
 
-        if (command === "workflow_list_blueprints") {
+        if (command === "automation_list_blueprints") {
           return { blueprints: [{ id: "wf", name: "Parameterized WF", path: "/x/wf.md" }], truncated: false, next_offset: null };
         }
-        if (command === "workflow_parse") return { blueprint: blueprintFixture, diagnostics: [] };
-        if (command === "workflow_validate") return { ok: true, diagnostics: [] };
-        if (command === "workflow_run") {
+        if (command === "automation_parse") return { blueprint: blueprintFixture, diagnostics: [] };
+        if (command === "automation_validate") return { ok: true, diagnostics: [] };
+        if (command === "automation_run") {
           return { ok: true, run_id: "run-params-1", blueprint_id: "wf", run_dir: "/runs/run-params-1" };
         }
-        if (command === "workflow_list_runs") return { runs: [], truncated: false, next_offset: null };
-        if (command === "workflow_read_run") {
+        if (command === "automation_list_runs") return { runs: [], truncated: false, next_offset: null };
+        if (command === "automation_read_run") {
           return {
             state: {
               run_id: "run-params-1",
@@ -136,20 +136,20 @@ async function installRunParamsIpcMock(page: Page) {
   }, { blueprintFixture: blueprint });
 }
 
-test("parameterized run dialog sends entry input to workflow_run", async ({ page }) => {
+test("parameterized run dialog sends entry input to automation_run", async ({ page }) => {
   await installRunParamsIpcMock(page);
   await page.setViewportSize({ width: 1700, height: 980 });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
-  await openSurface(page, "workflows");
+  await openSurface(page, "automations");
   await page.evaluate(async () => {
     const { useSettingsStore } = await import("/src/store/useSettingsStore.ts");
     useSettingsStore.setState({ default_provider: "codex" });
   });
 
   await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
-  await page.getByTestId("workflows-view").getByRole("button", { name: /^Run$/ }).click();
+  await page.getByTestId("automations-view").getByRole("button", { name: /^Run$/ }).click();
 
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
@@ -159,8 +159,8 @@ test("parameterized run dialog sends entry input to workflow_run", async ({ page
   await dialog.screenshot({ path: "e2e/screenshots/run-params/param-form.png" });
   await dialog.getByRole("button", { name: /^Run$/ }).click();
 
-  await page.waitForFunction(() => window.__runParamsInvokes?.some((call) => call.command === "workflow_run"));
-  const runCall = await page.evaluate(() => window.__runParamsInvokes?.find((call) => call.command === "workflow_run"));
+  await page.waitForFunction(() => window.__runParamsInvokes?.some((call) => call.command === "automation_run"));
+  const runCall = await page.evaluate(() => window.__runParamsInvokes?.find((call) => call.command === "automation_run"));
   expect(runCall?.args).toMatchObject({
     path: "/x/wf.md",
     input: { symbol: "SPY" },

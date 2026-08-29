@@ -125,7 +125,7 @@ impl CliError {
             exit_code: ExitCode::Generic,
             code: "unknown_section",
             message: format!("Unknown library section: {section}"),
-            hint: Some("Use one of: skills, prompts, classes, workflows, mcps.".to_string()),
+            hint: Some("Use one of: skills, prompts, classes, automations, mcps.".to_string()),
             details: Some(Box::new(serde_json::json!({ "section": section }))),
         }
     }

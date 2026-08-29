@@ -90,7 +90,7 @@ import {
 } from "../features/workbench/surfaces/coreSurfaceDefinitions";
 import type { WorkbenchSurfaceRenderer } from "../layout/workbench/DockviewLayoutAdapter";
 import { LibrarySurface } from "../features/workbench/surfaces/LibrarySurface";
-import { WorkflowsSurface } from "../features/workbench/surfaces/WorkflowsSurface";
+import { AutomationsSurface } from "../features/workbench/surfaces/AutomationsSurface";
 import { useDirtySurfacePrompt } from "../features/workbench/surfaces/DirtySurfacePromptDialog";
 import { FilesSurface } from "../features/files/FilesSurface";
 import { BrowserSurface } from "../features/browser/BrowserSurface";
@@ -242,10 +242,10 @@ type NativeWindowResizePayload = {
   height?: number;
 };
 
-type WorkflowInboxUpdate = {
-  workflow_id: string;
+type AutomationInboxUpdate = {
+  automation_id: string;
   run_instance_id: string;
-  workflow_name: string;
+  automation_name: string;
   status: "awaiting_approval" | "completed" | "failed";
   error?: string;
   summary?: string;
@@ -452,7 +452,7 @@ function AppBody() {
   const appendAgentEvent = useQueueStore((s) => s.appendAgentEvent);
   const flushAgentCompletion = useQueueStore((s) => s.flushAgentCompletion);
   const addActionNeeded = useQueueStore((s) => s.addActionNeeded);
-  const addWorkflowCompletion = useQueueStore((s) => s.addWorkflowCompletion);
+  const addAutomationCompletion = useQueueStore((s) => s.addAutomationCompletion);
   const loadQueueItems = useQueueStore((s) => s.loadItems);
   const loadQueuePreferences = useQueueStore((s) => s.loadPreferences);
 
@@ -1071,24 +1071,24 @@ function AppBody() {
   }, [loadQueueItems, loadQueuePreferences, loadWatchlistState]);
 
   useEffect(() => {
-    const unlistenWorkflowInbox = listen<WorkflowInboxUpdate>("workflow-inbox-updated", (event) => {
+    const unlistenAutomationInbox = listen<AutomationInboxUpdate>("automation-inbox-updated", (event) => {
       const update = event.payload;
       if (update.status === "awaiting_approval") {
         void loadQueueItems();
         return;
       }
-      addWorkflowCompletion({
-        workflow_id: update.workflow_id,
+      addAutomationCompletion({
+        automation_id: update.automation_id,
         run_instance_id: update.run_instance_id,
         status: update.status,
         error: update.error,
         summary: update.summary,
-      }, update.workflow_name);
+      }, update.automation_name);
     });
     return () => {
-      unlistenWorkflowInbox.then((cleanup) => cleanup());
+      unlistenAutomationInbox.then((cleanup) => cleanup());
     };
-  }, [addWorkflowCompletion, loadQueueItems]);
+  }, [addAutomationCompletion, loadQueueItems]);
 
   async function sendCommand(sessionId: string, cmd: string, inboxItemId?: string) {
     try {
@@ -1229,8 +1229,8 @@ function AppBody() {
     workbenchNavigation.open(request);
   }, [workbenchNavigation]);
 
-  const openWorkflowsView = useCallback(() => {
-    openAuxiliarySurface({ surface_type: "workflows" });
+  const openAutomationsView = useCallback(() => {
+    openAuxiliarySurface({ surface_type: "automations" });
   }, [openAuxiliarySurface]);
 
   const openAgent = useCallback((sessionId: string) => {
@@ -1271,9 +1271,9 @@ function AppBody() {
     openAuxiliarySurface({ surface_type: "graph" });
   }, [openAuxiliarySurface]);
 
-  const prepareTourWorkflow = useCallback(() => {
-    openWorkflowsView();
-  }, [openWorkflowsView]);
+  const prepareTourAutomation = useCallback(() => {
+    openAutomationsView();
+  }, [openAutomationsView]);
 
   useEffect(() => {
     const startTour = () => beginGuidedTour("review");
@@ -1817,14 +1817,14 @@ function AppBody() {
         <LibrarySurface
           surface_id={surface.surface_id}
           selectedAgentIds={selectedAgentIds}
-          onOpenWorkflowsView={openWorkflowsView}
+          onOpenAutomationsView={openAutomationsView}
         />
       );
     }
 
-    if (surface.surface_type === "workflows") {
+    if (surface.surface_type === "automations") {
       return (
-        <WorkflowsSurface
+        <AutomationsSurface
           surface_id={surface.surface_id}
           theme={theme}
           visibility={visibility}
@@ -2027,7 +2027,7 @@ function AppBody() {
                 onPrepareAgentCreation={prepareTourAgentCreation}
                 onPrepareEvolver={prepareTourEvolver}
                 onPrepareGraph={prepareTourGraph}
-                onPrepareWorkflow={prepareTourWorkflow}
+                onPrepareAutomation={prepareTourAutomation}
               />
             ) : null}
           </>}

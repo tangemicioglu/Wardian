@@ -1,6 +1,6 @@
 # README Demo Capture
 
-Use this workflow to refresh the animated demo shown near the top of the project README.
+Use this automation to refresh the animated demo shown near the top of the project README.
 
 ```bash
 npm run docs:demo-gif
@@ -12,7 +12,7 @@ PowerShell:
 npm run docs:demo-gif
 ```
 
-The capture script starts the native Wardian app, uses an isolated `WARDIAN_HOME`, seeds safe prompts, skills, classes, a workflow, and a tiny git repository, drives actual Wardian UI controls, and converts captured app frames to `public/demo.gif` with `ffmpeg`.
+The capture script starts the native Wardian app, uses an isolated `WARDIAN_HOME`, seeds safe prompts, skills, classes, an automation, and a tiny git repository, drives actual Wardian UI controls, and converts captured app frames to `public/demo.gif` with `ffmpeg`.
 
 The filmed flow uses real providers inside the isolated demo workspace. By default it spawns a Claude agent, opens the single-agent context menu, creates a custom Antigravity clone, sends a terminal prompt to the clone, and runs a seeded Command-panel Quick Prompt against Claude. This keeps the demo focused on Wardian's GUI-first coordination surface instead of a single provider transcript.
 

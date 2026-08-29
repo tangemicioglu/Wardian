@@ -1,20 +1,20 @@
-//! Persistence and matching for generic workflow session-close invokers.
+//! Persistence and matching for generic automation session-close invokers.
 
-use crate::models::WorkflowAssignments;
+use crate::models::AutomationAssignments;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorkflowSessionCloseInvoker {
+pub struct AutomationSessionCloseInvoker {
     pub id: String,
     pub blueprint_id: String,
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
     /// Skip this invocation when the lifecycle boundary has no durable
-    /// conversation archive. This remains generic workflow behavior.
+    /// conversation archive. This remains generic automation behavior.
     #[serde(default)]
     pub require_archive: bool,
     #[serde(default)]
@@ -30,10 +30,10 @@ pub struct WorkflowSessionCloseInvoker {
     #[serde(default)]
     pub bindings: HashMap<String, String>,
     #[serde(default)]
-    pub assignments: WorkflowAssignments,
+    pub assignments: AutomationAssignments,
 }
 
-pub fn load_invokers() -> Vec<WorkflowSessionCloseInvoker> {
+pub fn load_invokers() -> Vec<AutomationSessionCloseInvoker> {
     let Some(path) = crate::paths::session_close_invokers_path() else {
         return Vec::new();
     };
@@ -43,7 +43,7 @@ pub fn load_invokers() -> Vec<WorkflowSessionCloseInvoker> {
         .unwrap_or_default()
 }
 
-pub fn save_invokers(invokers: &[WorkflowSessionCloseInvoker]) -> std::io::Result<()> {
+pub fn save_invokers(invokers: &[AutomationSessionCloseInvoker]) -> std::io::Result<()> {
     mutate_invokers(|stored| {
         *stored = invokers.to_vec();
         Ok(())
@@ -53,7 +53,7 @@ pub fn save_invokers(invokers: &[WorkflowSessionCloseInvoker]) -> std::io::Resul
 /// Serialize the complete read-modify-write operation across app and CLI
 /// processes. Atomic replacement alone prevents torn JSON, not lost updates.
 pub fn mutate_invokers<T>(
-    mutate: impl FnOnce(&mut Vec<WorkflowSessionCloseInvoker>) -> std::io::Result<T>,
+    mutate: impl FnOnce(&mut Vec<AutomationSessionCloseInvoker>) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let path = crate::paths::session_close_invokers_path().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "Wardian home is unavailable")
@@ -81,7 +81,7 @@ pub fn mutate_invokers<T>(
 pub fn matching_invokers(
     agent_id: &str,
     boundary_reason: &str,
-) -> Vec<WorkflowSessionCloseInvoker> {
+) -> Vec<AutomationSessionCloseInvoker> {
     load_invokers()
         .into_iter()
         .filter(|invoker| {
@@ -100,7 +100,7 @@ pub fn matching_invokers(
 }
 
 pub fn archive_requirement_satisfied(
-    invoker: &WorkflowSessionCloseInvoker,
+    invoker: &AutomationSessionCloseInvoker,
     archive_available: bool,
 ) -> bool {
     !invoker.require_archive || archive_available
@@ -139,8 +139,8 @@ mod tests {
         }
     }
 
-    fn invoker(id: &str) -> WorkflowSessionCloseInvoker {
-        WorkflowSessionCloseInvoker {
+    fn invoker(id: &str) -> AutomationSessionCloseInvoker {
+        AutomationSessionCloseInvoker {
             id: id.into(),
             blueprint_id: "memory-consolidation".into(),
             name: id.into(),
@@ -152,13 +152,13 @@ mod tests {
             workspace: None,
             input: serde_json::json!({}),
             bindings: HashMap::new(),
-            assignments: WorkflowAssignments::new(),
+            assignments: AutomationAssignments::new(),
         }
     }
 
     #[test]
     fn matching_is_disabled_by_default_and_honors_filters() {
-        let invoker = WorkflowSessionCloseInvoker {
+        let invoker = AutomationSessionCloseInvoker {
             id: "one".into(),
             blueprint_id: "memory-consolidation".into(),
             name: "Memory".into(),
@@ -170,7 +170,7 @@ mod tests {
             workspace: None,
             input: serde_json::json!({}),
             bindings: HashMap::new(),
-            assignments: WorkflowAssignments::new(),
+            assignments: AutomationAssignments::new(),
         };
         assert!(invoker.enabled);
         assert_eq!(invoker.source_agent_id.as_deref(), Some("agent-a"));

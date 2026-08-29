@@ -1,6 +1,10 @@
 pub mod agent_replacement;
 pub mod artifacts;
 mod atomic_file;
+pub mod automation;
+mod automation_approval_lock;
+pub mod automation_execution_lock;
+pub mod automation_migration;
 pub mod browser;
 pub mod classes;
 pub mod control;
@@ -20,9 +24,6 @@ pub mod session_close;
 pub mod telemetry;
 pub mod topology;
 pub mod workbench;
-pub mod workflow;
-mod workflow_approval_lock;
-pub mod workflow_execution_lock;
 
 #[cfg(test)]
 mod tests {

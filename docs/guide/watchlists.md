@@ -11,7 +11,7 @@ Use it when you need persistent awareness of all agents while working in any Wor
 - Spot agents that are idle, processing, blocked, off, or errored without opening every terminal.
 - Open a specific agent session in the current Workbench pane or to its side.
 
-## Basic Workflow
+## Basic Automation
 
 1. Spawn agents from [Getting Started](./getting-started.md) or the left Agent Configuration tab.
 2. Use the roster to select the agents you want to inspect or target.

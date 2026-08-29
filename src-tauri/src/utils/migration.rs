@@ -120,7 +120,7 @@ fn run_migration_1(home: &Path) -> bool {
             &home.join("scheduled_runs.json"),
             &home.join("scheduled_workflows.json"),
         ),
-        move_dir(&home.join("workflow_logs"), &home.join("logs/workflows")),
+        move_dir(&home.join("workflow_logs"), &home.join("logs/automations")),
     ]
     .iter()
     .all(|&ok| ok)
@@ -202,7 +202,7 @@ mod tests {
             "old scheduled removed"
         );
         assert!(
-            home.join("logs/workflows/wf-1/run.log").exists(),
+            home.join("logs/automations/wf-1/run.log").exists(),
             "workflow logs moved"
         );
         assert_eq!(get_schema_version(&home), CURRENT_SCHEMA_VERSION);

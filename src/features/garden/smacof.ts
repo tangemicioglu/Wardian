@@ -205,7 +205,7 @@ export function initSmacof(input: SmacofInput): SmacofState {
       // with n rather than sqrt(n). It only shows up when a parcel is
       // metrically degenerate — entities that share no distinguishing facet
       // have no neighbours to be pulled toward, so they stay near their seeds
-      // and the seed pattern becomes the layout. Thirty workflows with nothing
+      // and the seed pattern becomes the layout. Thirty automations with nothing
       // but their own ids smeared across ~1800 world units, which then set the
       // grid pitch for every district on the map.
       const ringRadius = scale * 0.3 * Math.sqrt(unanchoredSeen);

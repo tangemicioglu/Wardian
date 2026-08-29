@@ -24,10 +24,10 @@ Source basis: entries were selected through public research and checked against 
 |---|---|---|
 | [LiveStore](https://github.com/livestorejs/livestore) | Reactive SQLite state layer with event-sourced sync. | Strong reference for separating local materialized state from replayable events. |
 | [PowerSync](https://powersync.com/) | Backend-database-to-local-SQLite sync engine. | Useful for local UI responsiveness with explicit backend write acceptance. |
-| [Triplit](https://github.com/aspen-cloud/triplit) | Full-stack syncing database with client/server real-time sync. | Query-scoped sync and property-level conflict handling are relevant to roster/workflow views. |
+| [Triplit](https://github.com/aspen-cloud/triplit) | Full-stack syncing database with client/server real-time sync. | Query-scoped sync and property-level conflict handling are relevant to roster/automation views. |
 | [Jazz](https://github.com/garden-co/jazz) | Distributed local-first relational database. | Strong reference for relational semantics plus history, permissions, and sync. |
 | [SQLite Sync](https://github.com/sqliteai/sqlite-sync) | CRDT-based offline-first sync extension for SQLite. | Directly relevant to Wardian because it mentions AI agent memory and Markdown knowledge-base sync. |
-| [Automerge](https://github.com/automerge/automerge) | CRDT document model and sync. | Useful where Wardian needs collaborative document/workflow editing. |
+| [Automerge](https://github.com/automerge/automerge) | CRDT document model and sync. | Useful where Wardian needs collaborative document/automation editing. |
 | [Yjs](https://github.com/yjs/yjs) | Mature shared-data CRDT ecosystem. | Useful for graph or editor collaboration if Wardian later adds multi-user live editing. |
 | [ElectricSQL](https://github.com/electric-sql/electric) | Postgres-to-local reactive sync. | Relevant if Wardian ever mirrors local state from a team/shared service. |
 
@@ -47,7 +47,7 @@ Source basis: entries were selected through public research and checked against 
 - Synchronous UI updates from local materialized queries.
 - Explicit design discussion around compaction, conflicts, and partitioning.
 
-**Wardian relevance:** Wardian already has multiple truths: app state, CLI-readable state, Markdown/docs, workflow files, PTY streams, and provider telemetry. LiveStore suggests a useful split: store append-only events for replay and audit, then materialize fast local Habitat views.
+**Wardian relevance:** Wardian already has multiple truths: app state, CLI-readable state, Markdown/docs, automation files, PTY streams, and provider telemetry. LiveStore suggests a useful split: store append-only events for replay and audit, then materialize fast local Habitat views.
 
 ### PowerSync
 
@@ -63,7 +63,7 @@ Source basis: entries were selected through public research and checked against 
 - Backend-controlled write validation.
 - SDK orientation across client platforms.
 
-**Wardian relevance:** PowerSync is useful where Wardian needs fast local interaction but eventual authoritative validation. For example, workflow edits, agent roster changes, and skill activation changes could become immediate local events while still allowing a later validator to accept, reject, or repair them.
+**Wardian relevance:** PowerSync is useful where Wardian needs fast local interaction but eventual authoritative validation. For example, automation edits, agent roster changes, and skill activation changes could become immediate local events while still allowing a later validator to accept, reject, or repair them.
 
 ### Triplit
 
@@ -79,7 +79,7 @@ Source basis: entries were selected through public research and checked against 
 - Property-level conflict handling.
 - Framework adapters for common frontend stacks.
 
-**Wardian relevance:** Wardian's Habitat views are query-heavy: "which agents are active?", "which workflows are stuck?", "which skills are enabled?", "which runs changed?". Triplit is a useful reference for making those views query-scoped and reactive instead of rebuilding a whole global state object.
+**Wardian relevance:** Wardian's Habitat views are query-heavy: "which agents are active?", "which automations are stuck?", "which skills are enabled?", "which runs changed?". Triplit is a useful reference for making those views query-scoped and reactive instead of rebuilding a whole global state object.
 
 ### Jazz
 
@@ -96,7 +96,7 @@ Source basis: entries were selected through public research and checked against 
 - Reactive subscriptions over local state.
 - Architecture docs that explicitly separate current state, history, sync, and durability.
 
-**Wardian relevance:** Jazz is a strong conceptual reference for Wardian because Wardian needs both inspectable local truth and structured relational views. Agent sessions, workflow runs, skills, classes, workspaces, and events are relational enough that a durable table-first model may stay clearer than ad hoc JSON blobs.
+**Wardian relevance:** Jazz is a strong conceptual reference for Wardian because Wardian needs both inspectable local truth and structured relational views. Agent sessions, automation runs, skills, classes, workspaces, and events are relational enough that a durable table-first model may stay clearer than ad hoc JSON blobs.
 
 ### SQLite Sync
 
@@ -128,7 +128,7 @@ Source basis: entries were selected through public research and checked against 
 - Sync protocol and storage ecosystem.
 - Collaboration-first posture.
 
-**Wardian relevance:** Automerge is most relevant to Wardian workflow definitions, notes, and agent-authored documents. It is less directly relevant to high-volume telemetry, where event logs or SQLite tables are likely a better fit.
+**Wardian relevance:** Automerge is most relevant to Wardian automation definitions, notes, and agent-authored documents. It is less directly relevant to high-volume telemetry, where event logs or SQLite tables are likely a better fit.
 
 ### Yjs
 
@@ -143,7 +143,7 @@ Source basis: entries were selected through public research and checked against 
 - Strong editor integration ecosystem.
 - Awareness/presence patterns.
 
-**Wardian relevance:** Yjs matters if Wardian adds true multi-user graph editing, collaborative workflow authoring, or live shared notes. It should not be the default for core agent telemetry unless Wardian needs collaborative document semantics.
+**Wardian relevance:** Yjs matters if Wardian adds true multi-user graph editing, collaborative automation authoring, or live shared notes. It should not be the default for core agent telemetry unless Wardian needs collaborative document semantics.
 
 ### ElectricSQL
 
@@ -173,7 +173,7 @@ That keeps agent-readable files and Markdown visible while allowing the app to q
 Near-term implications:
 
 - Treat important state changes as replayable events, not only mutable rows.
-- Keep stable file formats for workflows, skills, and specs.
+- Keep stable file formats for automations, skills, and specs.
 - Use SQLite/materialized views for fast Habitat queries.
 - Version all durable state formats explicitly.
 - Separate local acceptance from later validation or remote sync.

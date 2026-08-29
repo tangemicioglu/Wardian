@@ -1,4 +1,4 @@
-use crate::{state::AppState, workflow::runs};
+use crate::{automation::runs, state::AppState};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use wardian_core::control::{
@@ -31,7 +31,7 @@ pub struct InboxNotificationListResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct WorkflowInboxApprovalDto {
+pub struct AutomationInboxApprovalDto {
     pub blueprint_id: String,
     pub blueprint_path: String,
     pub run_id: String,
@@ -41,34 +41,38 @@ pub struct WorkflowInboxApprovalDto {
     pub created_at: Option<String>,
 }
 
-/// Terminal workflow runs are durable Inbox evidence. The frontend uses this
-/// reconciliation query at startup, while `workflow-inbox-updated` remains the
+/// Terminal automation runs are durable Inbox evidence. The frontend uses this
+/// reconciliation query at startup, while `automation-inbox-updated` remains the
 /// low-latency path for a currently open window.
 #[tauri::command]
-pub async fn list_workflow_inbox_terminal_runs() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_terminal_runs_blocking)
+pub async fn list_automation_inbox_terminal_runs(
+) -> Result<Vec<runs::AutomationInboxUpdate>, String> {
+    tokio::task::spawn_blocking(list_automation_inbox_terminal_runs_blocking)
         .await
-        .map_err(|error| format!("workflow terminal inbox task failed: {error}"))?
+        .map_err(|error| format!("automation terminal inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_terminal_runs_blocking() -> Result<Vec<runs::WorkflowInboxUpdate>, String> {
+fn list_automation_inbox_terminal_runs_blocking() -> Result<Vec<runs::AutomationInboxUpdate>, String>
+{
     let mut updates = Vec::new();
-    for run in crate::commands::workflow::workflow_list_runs_blocking(None)?.runs {
+    for run in crate::commands::automation::automation_list_runs_blocking(None)?.runs {
         let Some(run_root) = run.get("path").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let Some(workflow_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str) else {
+        let Some(automation_id) = run.get("blueprint_id").and_then(serde_json::Value::as_str)
+        else {
             continue;
         };
-        let workflow_name = run
+        let automation_name = run
             .get("blueprint_path")
             .and_then(serde_json::Value::as_str)
-            .and_then(|path| wardian_core::workflow::parse_file(std::path::Path::new(path)).ok())
+            .and_then(|path| wardian_core::automation::parse_file(std::path::Path::new(path)).ok())
             .map(|blueprint| blueprint.name)
-            .unwrap_or_else(|| workflow_id.to_string());
-        let Some(update) =
-            runs::workflow_inbox_update_with_name(&workflow_name, std::path::Path::new(run_root))
-        else {
+            .unwrap_or_else(|| automation_id.to_string());
+        let Some(update) = runs::automation_inbox_update_with_name(
+            &automation_name,
+            std::path::Path::new(run_root),
+        ) else {
             continue;
         };
         if matches!(update.status.as_str(), "completed" | "failed") {
@@ -153,14 +157,14 @@ pub async fn resolve_inbox_notification(
 }
 
 #[tauri::command]
-pub async fn list_workflow_inbox_approvals() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    tokio::task::spawn_blocking(list_workflow_inbox_approvals_blocking)
+pub async fn list_automation_inbox_approvals() -> Result<Vec<AutomationInboxApprovalDto>, String> {
+    tokio::task::spawn_blocking(list_automation_inbox_approvals_blocking)
         .await
-        .map_err(|error| format!("workflow approval inbox task failed: {error}"))?
+        .map_err(|error| format!("automation approval inbox task failed: {error}"))?
 }
 
-fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalDto>, String> {
-    let runs = crate::commands::workflow::workflow_list_runs_blocking(None)?.runs;
+fn list_automation_inbox_approvals_blocking() -> Result<Vec<AutomationInboxApprovalDto>, String> {
+    let runs = crate::commands::automation::automation_list_runs_blocking(None)?.runs;
     let mut approvals = Vec::new();
     for run in runs {
         if run.get("status").and_then(serde_json::Value::as_str) != Some("awaiting_approval") {
@@ -178,7 +182,7 @@ fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalD
         else {
             continue;
         };
-        let detail = crate::commands::workflow::workflow_read_run(
+        let detail = crate::commands::automation::automation_read_run(
             blueprint_id.to_string(),
             run_id.to_string(),
         )?;
@@ -196,13 +200,13 @@ fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalD
         else {
             continue;
         };
-        let blueprint: wardian_core::workflow::Blueprint = serde_json::from_value(
+        let blueprint: wardian_core::automation::Blueprint = serde_json::from_value(
             detail
                 .get("blueprint")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )
-        .map_err(|_| "could not read workflow approval blueprint".to_string())?;
+        .map_err(|_| "could not read automation approval blueprint".to_string())?;
         let Some(approval_node) = blueprint
             .nodes
             .iter()
@@ -214,9 +218,9 @@ fn list_workflow_inbox_approvals_blocking() -> Result<Vec<WorkflowInboxApprovalD
             .fields
             .get("prompt")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("Approve this workflow step?")
+            .unwrap_or("Approve this automation step?")
             .to_string();
-        approvals.push(WorkflowInboxApprovalDto {
+        approvals.push(AutomationInboxApprovalDto {
             blueprint_id: blueprint_id.to_string(),
             blueprint_path: blueprint_path.to_string(),
             run_id: run_id.to_string(),
@@ -296,33 +300,33 @@ mod tests {
         let run_root = home
             .path()
             .join("logs")
-            .join("workflows")
-            .join("missing-scheduled-workflow")
+            .join("automations")
+            .join("missing-scheduled-automation")
             .join("run-1");
-        let mut state = RunState::new("run-1", "missing-scheduled-workflow");
+        let mut state = RunState::new("run-1", "missing-scheduled-automation");
         state.status = RunStatus::Failed;
-        state.failure = Some("workflow blueprint was removed".to_string());
+        state.failure = Some("automation blueprint was removed".to_string());
         write_checkpoint(&run_root, &state).unwrap();
         append_event(
             &run_root,
             &Event::new(
                 0,
                 EventKind::RunFailed {
-                    error: "workflow blueprint was removed".to_string(),
+                    error: "automation blueprint was removed".to_string(),
                 },
             ),
         )
         .unwrap();
 
-        let updates = list_workflow_inbox_terminal_runs().await.unwrap();
+        let updates = list_automation_inbox_terminal_runs().await.unwrap();
 
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].workflow_id, "missing-scheduled-workflow");
-        assert_eq!(updates[0].workflow_name, "missing-scheduled-workflow");
+        assert_eq!(updates[0].automation_id, "missing-scheduled-automation");
+        assert_eq!(updates[0].automation_name, "missing-scheduled-automation");
         assert_eq!(updates[0].status, "failed");
         assert_eq!(
             updates[0].error.as_deref(),
-            Some("workflow blueprint was removed")
+            Some("automation blueprint was removed")
         );
     }
 }

@@ -49,7 +49,7 @@ async function invokeTauri(driver, command, args = {}) {
 }
 
 function seedBlueprint(home) {
-  const dir = path.join(home, "library", "workflows");
+  const dir = path.join(home, "library", "automations");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "sched-fires.md"), BLUEPRINT, "utf8");
 }
@@ -59,7 +59,7 @@ function mockScriptPath(repoRoot) {
 }
 
 async function waitForCompletedRun(home, blueprintId, timeoutMs = 30000) {
-  const base = path.join(home, "logs", "workflows", blueprintId);
+  const base = path.join(home, "logs", "automations", blueprintId);
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
@@ -84,7 +84,7 @@ async function waitForCompletedRun(home, blueprintId, timeoutMs = 30000) {
   assert.fail(`Timed out waiting for a completed run under ${base}`);
 }
 
-test("the workflow scheduler tick loop fires a scheduled run", { timeout: 180000 }, async (t) => {
+test("the automation scheduler tick loop fires a scheduled run", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
   assert.ok(harness.appPath);
 

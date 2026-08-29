@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { Blueprint, Diagnostic } from '../features/workflows/builder/blueprintTypes';
+import type { Blueprint, Diagnostic } from '../features/automations/builder/blueprintTypes';
 
 interface BuilderState {
   blueprint: Blueprint | null;
@@ -13,7 +13,7 @@ interface BuilderState {
   editRevision: number;
   /** Monotonic identity/content revision for close preparation and deferred effects. */
   resourceRevision: number;
-  /** Monotonic workflow identity token used to reject stale async save responses. */
+  /** Monotonic automation identity token used to reject stale async save responses. */
   resourceIdentityRevision: number;
   load: (path: string) => Promise<void>;
   validate: () => Promise<void>;
@@ -36,7 +36,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   resourceRevision: 0,
   resourceIdentityRevision: 0,
   async load(path) {
-    const res = await invoke<{ blueprint: Blueprint; diagnostics: Diagnostic[] }>('workflow_parse', { path });
+    const res = await invoke<{ blueprint: Blueprint; diagnostics: Diagnostic[] }>('automation_parse', { path });
     set((state) => ({
       blueprint: res.blueprint,
       baseline: res.blueprint,
@@ -52,13 +52,13 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   async validate() {
     const bp = get().blueprint;
     if (!bp) return;
-    const res = await invoke<{ ok: boolean; diagnostics: Diagnostic[] }>('workflow_validate', { blueprint: bp });
+    const res = await invoke<{ ok: boolean; diagnostics: Diagnostic[] }>('automation_validate', { blueprint: bp });
     set({ diagnostics: res.diagnostics });
   },
   async save() {
     const { blueprint, path, editRevision, resourceIdentityRevision } = get();
     if (!blueprint || !path) return false;
-    const res = await invoke<{ written: boolean; diagnostics: Diagnostic[] }>('workflow_write', { path, blueprint });
+    const res = await invoke<{ written: boolean; diagnostics: Diagnostic[] }>('automation_write', { path, blueprint });
     if (
       get().path !== path
       || get().resourceIdentityRevision !== resourceIdentityRevision

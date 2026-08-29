@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { AgentConfig, TopologySnapshot } from "../types";
-import type { WorkflowSchedule } from "../types/workflow";
+import type { AutomationSchedule } from "../types/automation";
 
 interface OnboardingTourProps {
   agents: AgentConfig[];
@@ -12,7 +12,7 @@ interface OnboardingTourProps {
   onPrepareAgentCreation: () => void;
   onPrepareEvolver: (agent: AgentConfig) => void;
   onPrepareGraph: () => void;
-  onPrepareWorkflow: () => void;
+  onPrepareAutomation: () => void;
 }
 
 interface OnboardingWelcomeProps {
@@ -28,12 +28,12 @@ type TourStepId =
   | "create-evolver"
   | "create-orchestrator"
   | "connect-graph"
-  | "workflow-blueprint"
-  | "workflow-run"
-  | "workflow-schedule-mode"
-  | "workflow-evolver-assignment"
-  | "workflow-cadence"
-  | "workflow-save-schedule";
+  | "automation-blueprint"
+  | "automation-run"
+  | "automation-schedule-mode"
+  | "automation-evolver-assignment"
+  | "automation-cadence"
+  | "automation-save-schedule";
 
 type TourStep = {
   id: TourStepId;
@@ -88,40 +88,40 @@ const STEPS: readonly TourStep[] = [
     target: '[data-tour-target="graph-canvas"]',
   },
   {
-    id: "workflow-blueprint",
+    id: "automation-blueprint",
     title: "Open Conversation Pattern Review",
     detail: "Choose Conversation Pattern Review from the blueprint picker. It analyzes prior conversations and reports recommendations only.",
-    target: '[data-tour-target="workflow-blueprint-selector"]',
+    target: '[data-tour-target="automation-blueprint-selector"]',
   },
   {
-    id: "workflow-run",
+    id: "automation-run",
     title: "Open its launch settings",
-    detail: "Choose Run. This opens the one-off and scheduled invocation settings for this workflow.",
-    target: '[data-tour-target="workflow-run-button"]',
+    detail: "Choose Run. This opens the one-off and scheduled invocation settings for this automation.",
+    target: '[data-tour-target="automation-run-button"]',
   },
   {
-    id: "workflow-schedule-mode",
+    id: "automation-schedule-mode",
     title: "Switch to Schedule",
     detail: "In the launch settings, choose Schedule so this analysis will recur instead of running only once.",
-    target: '[data-tour-target="workflow-schedule-mode"]',
+    target: '[data-tour-target="automation-schedule-mode"]',
   },
   {
-    id: "workflow-evolver-assignment",
+    id: "automation-evolver-assignment",
     title: "Assign the Evolver",
     detail: "For the evolver role, choose your Evolver agent. It will inspect past Wardian conversations without making changes.",
-    target: '[data-tour-target="workflow-evolver-assignment"]',
+    target: '[data-tour-target="automation-evolver-assignment"]',
   },
   {
-    id: "workflow-cadence",
+    id: "automation-cadence",
     title: "Choose a weekly cadence",
     detail: "Set the schedule to Weekly and choose the day and time that suits your habitat.",
-    target: '[data-tour-target="workflow-schedule-editor"]',
+    target: '[data-tour-target="automation-schedule-editor"]',
   },
   {
-    id: "workflow-save-schedule",
+    id: "automation-save-schedule",
     title: "Save the review schedule",
     detail: "Save the schedule when the Evolver assignment and weekly cadence look right. Wardian will wait here until it exists.",
-    target: '[data-tour-target="workflow-save-schedule"]',
+    target: '[data-tour-target="automation-save-schedule"]',
   },
 ] as const;
 
@@ -133,17 +133,17 @@ const EVOLVER_SETUP_STEP_IDS = new Set<TourStepId>([
   "create-evolver",
 ]);
 
-const WORKFLOW_SETUP_STEP_IDS = new Set<TourStepId>([
-  "workflow-blueprint",
-  "workflow-run",
-  "workflow-schedule-mode",
-  "workflow-evolver-assignment",
-  "workflow-cadence",
-  "workflow-save-schedule",
+const AUTOMATION_SETUP_STEP_IDS = new Set<TourStepId>([
+  "automation-blueprint",
+  "automation-run",
+  "automation-schedule-mode",
+  "automation-evolver-assignment",
+  "automation-cadence",
+  "automation-save-schedule",
 ]);
 
 const EVOLVER_SETUP_STEPS = STEPS.filter((step) => EVOLVER_SETUP_STEP_IDS.has(step.id));
-const WORKFLOW_SETUP_STEPS = STEPS.filter((step) => WORKFLOW_SETUP_STEP_IDS.has(step.id));
+const AUTOMATION_SETUP_STEPS = STEPS.filter((step) => AUTOMATION_SETUP_STEP_IDS.has(step.id));
 
 function agentWithClass(agents: AgentConfig[], agentClass: string): AgentConfig | undefined {
   return agents.find((agent) => agent.agent_class.trim().toLocaleLowerCase() === agentClass);
@@ -154,13 +154,13 @@ function nextStep(
   linked: boolean,
   reviewScheduled: boolean,
   evolverSetupIndex: number,
-  workflowSetupIndex: number,
+  automationSetupIndex: number,
 ): TourStepId | null {
   const evolver = agentWithClass(agents, "evolver");
   if (!evolver) return EVOLVER_SETUP_STEPS[evolverSetupIndex]?.id ?? "create-evolver";
   if (!agentWithClass(agents, "orchestrator")) return "create-orchestrator";
   if (!linked) return "connect-graph";
-  if (!reviewScheduled) return WORKFLOW_SETUP_STEPS[workflowSetupIndex]?.id ?? "workflow-save-schedule";
+  if (!reviewScheduled) return AUTOMATION_SETUP_STEPS[automationSetupIndex]?.id ?? "automation-save-schedule";
   return null;
 }
 
@@ -205,7 +205,7 @@ export function OnboardingTour({
   onPrepareAgentCreation,
   onPrepareEvolver,
   onPrepareGraph,
-  onPrepareWorkflow,
+  onPrepareAutomation,
 }: OnboardingTourProps) {
   const evolver = useMemo(() => agentWithClass(agents, "evolver"), [agents]);
   const orchestrator = useMemo(() => agentWithClass(agents, "orchestrator"), [agents]);
@@ -213,11 +213,11 @@ export function OnboardingTour({
   const [reviewScheduled, setReviewScheduled] = useState(false);
   const [reviewStepIndex, setReviewStepIndex] = useState(0);
   const [evolverSetupIndex, setEvolverSetupIndex] = useState(0);
-  const [workflowSetupIndex, setWorkflowSetupIndex] = useState(0);
+  const [automationSetupIndex, setAutomationSetupIndex] = useState(0);
   const [wardianHome, setWardianHome] = useState<string | null>(null);
   const activeStepId = reviewMode
     ? STEPS[reviewStepIndex]?.id ?? null
-    : nextStep(agents, linked, reviewScheduled, evolverSetupIndex, workflowSetupIndex);
+    : nextStep(agents, linked, reviewScheduled, evolverSetupIndex, automationSetupIndex);
   const step = STEPS.find((candidate) => candidate.id === activeStepId) ?? null;
   const canAdvanceSetup = Boolean(
     !reviewMode
@@ -226,15 +226,15 @@ export function OnboardingTour({
     && EVOLVER_SETUP_STEP_IDS.has(step.id)
     && step.id !== "create-evolver",
   );
-  const canAdvanceWorkflow = Boolean(
+  const canAdvanceAutomation = Boolean(
     !reviewMode
     && evolver
     && orchestrator
     && linked
     && !reviewScheduled
     && step
-    && WORKFLOW_SETUP_STEP_IDS.has(step.id)
-    && step.id !== "workflow-save-schedule",
+    && AUTOMATION_SETUP_STEP_IDS.has(step.id)
+    && step.id !== "automation-save-schedule",
   );
 
   useEffect(() => {
@@ -274,11 +274,11 @@ export function OnboardingTour({
   }, [activeStepId, evolver, orchestrator, reviewMode]);
 
   useEffect(() => {
-    if (reviewMode || activeStepId !== "workflow-save-schedule") return;
+    if (reviewMode || activeStepId !== "automation-save-schedule") return;
     let cancelled = false;
     const refresh = async () => {
       try {
-        const schedules = await invoke<WorkflowSchedule[]>("schedule_list");
+        const schedules = await invoke<AutomationSchedule[]>("schedule_list");
         if (!cancelled) setReviewScheduled(schedules.some((schedule) => schedule.blueprint_id === "conversation-pattern-review"));
       } catch {
         // Scheduling remains usable even if the guide cannot observe this optional state.
@@ -298,8 +298,8 @@ export function OnboardingTour({
       onPrepareEvolver(evolver);
     }
     if (activeStepId === "connect-graph") onPrepareGraph();
-    if (activeStepId && WORKFLOW_SETUP_STEP_IDS.has(activeStepId)) onPrepareWorkflow();
-  }, [activeStepId, evolver, onPrepareAgentCreation, onPrepareEvolver, onPrepareGraph, onPrepareWorkflow]);
+    if (activeStepId && AUTOMATION_SETUP_STEP_IDS.has(activeStepId)) onPrepareAutomation();
+  }, [activeStepId, evolver, onPrepareAgentCreation, onPrepareEvolver, onPrepareGraph, onPrepareAutomation]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -330,7 +330,7 @@ export function OnboardingTour({
       reviewMode={reviewMode}
       wardianHome={wardianHome}
       onClose={onClose}
-      showNext={reviewMode || canAdvanceSetup || canAdvanceWorkflow}
+      showNext={reviewMode || canAdvanceSetup || canAdvanceAutomation}
       nextLabel={reviewMode
         ? (step.id === STEPS[STEPS.length - 1].id ? "Finish review" : "Next area")
         : canAdvanceSetup ? "Next field" : "Next action"}
@@ -347,7 +347,7 @@ export function OnboardingTour({
           setEvolverSetupIndex((index) => index + 1);
           return;
         }
-        setWorkflowSetupIndex((index) => index + 1);
+        setAutomationSetupIndex((index) => index + 1);
       }}
     />
   );

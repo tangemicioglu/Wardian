@@ -135,17 +135,17 @@ pub fn agent_conversation_dir(agent_id: &str, conversation_id: &str) -> Option<P
     agent_conversations_dir(agent_id).map(|dir| dir.join(conversation_id))
 }
 
-/// `<wardian-home>/logs/workflows` — root of all workflow run logs.
-pub fn workflow_runs_dir() -> Option<PathBuf> {
-    wardian_home().map(|home| home.join("logs").join("workflows"))
+/// `<wardian-home>/logs/automations` — root of all automation run logs.
+pub fn automation_runs_dir() -> Option<PathBuf> {
+    wardian_home().map(|home| home.join("logs").join("automations"))
 }
 
-/// `<wardian-home>/logs/workflows/<blueprint_id>/<run_id>` — one run's durable root.
-pub fn workflow_run_dir(blueprint_id: &str, run_id: &str) -> Option<PathBuf> {
+/// `<wardian-home>/logs/automations/<blueprint_id>/<run_id>` — one run's durable root.
+pub fn automation_run_dir(blueprint_id: &str, run_id: &str) -> Option<PathBuf> {
     if !is_safe_path_component(blueprint_id) || !is_safe_path_component(run_id) {
         return None;
     }
-    workflow_runs_dir().map(|dir| dir.join(blueprint_id).join(run_id))
+    automation_runs_dir().map(|dir| dir.join(blueprint_id).join(run_id))
 }
 
 pub fn is_safe_path_component(value: &str) -> bool {
@@ -158,17 +158,17 @@ pub fn is_safe_path_component(value: &str) -> bool {
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
-/// `<wardian-home>/library/workflows` — where workflow blueprints live.
-pub fn library_workflows_dir() -> Option<PathBuf> {
-    wardian_home().map(|home| home.join("library").join("workflows"))
+/// `<wardian-home>/library/automations` — where automation blueprints live.
+pub fn library_automations_dir() -> Option<PathBuf> {
+    wardian_home().map(|home| home.join("library").join("automations"))
 }
 
-/// `<wardian-home>/library/workflows/<blueprint_id>.md`.
+/// `<wardian-home>/library/automations/<blueprint_id>.md`.
 pub fn blueprint_path(blueprint_id: &str) -> Option<PathBuf> {
-    library_workflows_dir().map(|dir| dir.join(format!("{blueprint_id}.md")))
+    library_automations_dir().map(|dir| dir.join(format!("{blueprint_id}.md")))
 }
 
-/// `<wardian-home>/library/schedules.json` — the workflow schedule index.
+/// `<wardian-home>/library/schedules.json` — the automation schedule index.
 pub fn schedules_path() -> Option<PathBuf> {
     wardian_home().map(|home| home.join("library").join("schedules.json"))
 }
@@ -242,21 +242,21 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_paths_use_home_logs_workflows_layout() {
+    fn automation_run_paths_use_home_logs_automations_layout() {
         let _guard = crate::tests::env_lock();
         std::env::set_var("WARDIAN_HOME", "/tmp/wardian-run-view");
 
         assert_eq!(
-            workflow_runs_dir().unwrap(),
+            automation_runs_dir().unwrap(),
             PathBuf::from("/tmp/wardian-run-view")
                 .join("logs")
-                .join("workflows")
+                .join("automations")
         );
         assert_eq!(
-            workflow_run_dir("wf", "run-1").unwrap(),
+            automation_run_dir("wf", "run-1").unwrap(),
             PathBuf::from("/tmp/wardian-run-view")
                 .join("logs")
-                .join("workflows")
+                .join("automations")
                 .join("wf")
                 .join("run-1")
         );
@@ -265,15 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_dir_rejects_path_traversal_components() {
+    fn automation_run_dir_rejects_path_traversal_components() {
         let _guard = crate::tests::env_lock();
         std::env::set_var("WARDIAN_HOME", "/tmp/wardian-run-view");
 
-        assert!(workflow_run_dir("../../outside", "run-1").is_none());
-        assert!(workflow_run_dir("wf", "../outside").is_none());
-        assert!(workflow_run_dir("wf/name", "run-1").is_none());
-        assert!(workflow_run_dir("wf", "run\\one").is_none());
-        assert!(workflow_run_dir("wf.name_1", "run-1").is_some());
+        assert!(automation_run_dir("../../outside", "run-1").is_none());
+        assert!(automation_run_dir("wf", "../outside").is_none());
+        assert!(automation_run_dir("wf/name", "run-1").is_none());
+        assert!(automation_run_dir("wf", "run\\one").is_none());
+        assert!(automation_run_dir("wf.name_1", "run-1").is_some());
 
         std::env::remove_var("WARDIAN_HOME");
     }

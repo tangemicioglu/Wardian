@@ -407,20 +407,20 @@ async function pushAgentOutput(driver, sessionId, output, transcriptText = null)
   assert.equal(result.ok, true, `debug_push_agent_watch_output failed: ${result.error}`);
 }
 
-async function invokeWorkflowRun(driver, payload) {
-  const result = await driver.executeAsyncScript((workflowPayload, done) => {
-    window.__TAURI_INTERNALS__.invoke("workflow_run", workflowPayload).then(
+async function invokeAutomationRun(driver, payload) {
+  const result = await driver.executeAsyncScript((automationPayload, done) => {
+    window.__TAURI_INTERNALS__.invoke("automation_run", automationPayload).then(
       (value) => done({ ok: true, value }),
       (error) => done({ ok: false, error: String(error) }),
     );
   }, payload);
 
-  assert.equal(result.ok, true, `workflow_run failed: ${result.error}`);
-  assert.equal(result.value?.ok, true, `workflow_run did not start: ${JSON.stringify(result.value)}`);
+  assert.equal(result.ok, true, `automation_run failed: ${result.error}`);
+  assert.equal(result.value?.ok, true, `automation_run did not start: ${JSON.stringify(result.value)}`);
   return result.value;
 }
 
-async function waitForCompletedWorkflow(runDir, timeoutMs = 30000) {
+async function waitForCompletedAutomation(runDir, timeoutMs = 30000) {
   const statePath = path.join(runDir, "state.json");
   const startedAt = Date.now();
   let lastState = null;
@@ -433,16 +433,16 @@ async function waitForCompletedWorkflow(runDir, timeoutMs = 30000) {
           return lastState;
         }
         if (lastState.status === "failed") {
-          assert.fail(`workflow failed: ${JSON.stringify(lastState)}`);
+          assert.fail(`automation failed: ${JSON.stringify(lastState)}`);
         }
       } catch {
-        // The workflow engine may still be writing its checkpoint.
+        // The automation engine may still be writing its checkpoint.
       }
     }
     await delay(150);
   }
 
-  assert.fail(`Timed out waiting for completed workflow: ${JSON.stringify(lastState)}`);
+  assert.fail(`Timed out waiting for completed automation: ${JSON.stringify(lastState)}`);
 }
 
 test("native app-created agent is readable through the CLI", { timeout: 180000 }, async (t) => {
@@ -772,7 +772,7 @@ test("native CLI structured ask runs an off agent headlessly and records its rep
   }, "750");
 });
 
-test("native workflows run off agents headlessly for resumed and fresh conversations", { timeout: 180000 }, async (t) => {
+test("native automations run off agents headlessly for resumed and fresh conversations", { timeout: 180000 }, async (t) => {
   await withMockScenario("headless_delayed", async () => {
     const harness = await createNativeHarness();
     assert.ok(harness.appPath);
@@ -790,16 +790,16 @@ test("native workflows run off agents headlessly for resumed and fresh conversat
 
     const cliPath = buildCli(harness);
     const workspacePath = path.join(harness.repoRoot, "e2e-native");
-    const workflowId = `native-offline-workflow-${RUN_ID}`;
-    const workflowsDir = path.join(harness.isolatedHome, "library", "workflows");
-    const workflowPath = path.join(workflowsDir, `${workflowId}.md`);
-    mkdirSync(workflowsDir, { recursive: true });
+    const automationId = `native-offline-automation-${RUN_ID}`;
+    const automationsDir = path.join(harness.isolatedHome, "library", "automations");
+    const automationPath = path.join(automationsDir, `${automationId}.md`);
+    mkdirSync(automationsDir, { recursive: true });
     writeFileSync(
-      workflowPath,
+      automationPath,
       `---
 schema: 2
-id: ${workflowId}
-name: Native Offline Agent Workflow
+id: ${automationId}
+name: Native Offline Agent Automation
 nodes:
   - id: trigger
     type: manual_trigger
@@ -807,13 +807,13 @@ nodes:
     type: task
     fields:
       agent: role:worker
-      prompt: Complete the offline workflow task.
+      prompt: Complete the offline automation task.
 edges:
   - from: trigger
     to: worker-turn
 ---
 
-# Native Offline Agent Workflow
+# Native Offline Agent Automation
 `,
       "utf8",
     );
@@ -835,13 +835,13 @@ edges:
     for (const mode of ["resumed", "fresh"]) {
       const agent = await createMockAgent(session.driver, workspacePath, {
         sessionId: mode === "resumed" ? `provider-${mode}-${RUN_ID}` : null,
-        sessionName: `E2E-CLI-HEADLESS-WORKFLOW-${mode}-${RUN_ID}`,
+        sessionName: `E2E-CLI-HEADLESS-AUTOMATION-${mode}-${RUN_ID}`,
         isOff: true,
       });
       await waitForCliField(cliPath, harness, agent.session_name, "status", "off");
 
-      const run = await invokeWorkflowRun(session.driver, {
-        path: workflowPath,
+      const run = await invokeAutomationRun(session.driver, {
+        path: automationPath,
         provider: "mock",
         workspace: workspacePath,
         input: {},
@@ -862,11 +862,11 @@ edges:
       );
       assert.equal(headlessTelemetry.current_status, "Headless");
 
-      const workflowState = await waitForCompletedWorkflow(run.run_dir);
-      assert.equal(workflowState.status, "completed");
-      assert.equal(workflowState.nodes?.["worker-turn"], "completed");
+      const automationState = await waitForCompletedAutomation(run.run_dir);
+      assert.equal(automationState.status, "completed");
+      assert.equal(automationState.nodes?.["worker-turn"], "completed");
       assert.match(
-        workflowState.registry?.nodes?.["worker-turn"]?.output?.text || "",
+        automationState.registry?.nodes?.["worker-turn"]?.output?.text || "",
         /Mock headless execution completed successfully/,
       );
 

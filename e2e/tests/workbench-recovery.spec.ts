@@ -320,15 +320,15 @@ test.describe("Workbench recovery", () => {
 
   test("Reset Workbench evaluates dirty-surface guards before issuing reset_workbench_state", async ({ page }) => {
     const dashboard = makeWorkbenchSurface("reset-dashboard", "dashboard");
-    const workflows = makeWorkbenchSurface("reset-workflows", "workflows");
+    const automations = makeWorkbenchSurface("reset-automations", "automations");
     const restored = makeWorkbenchDocument({
       revision: 4,
-      surfaces: [dashboard, workflows],
+      surfaces: [dashboard, automations],
       groups: {
         "group-1": {
           group_id: "group-1",
-          surface_ids: [dashboard.surface_id, workflows.surface_id],
-          active_surface_id: workflows.surface_id,
+          surface_ids: [dashboard.surface_id, automations.surface_id],
+          active_surface_id: automations.surface_id,
         },
       },
     });
@@ -344,26 +344,26 @@ test.describe("Workbench recovery", () => {
     });
 
     await page.goto("/");
-    const workflowName = page.getByRole("textbox", { name: "Workflow name" });
-    await workflowName.fill("Edited workflow");
+    const automationName = page.getByRole("textbox", { name: "Automation name" });
+    await automationName.fill("Edited automation");
     await executeWorkbenchCommand(page, "Reset Workbench");
 
-    const prompt = page.getByRole("dialog", { name: "Unsaved Workflows changes" });
+    const prompt = page.getByRole("dialog", { name: "Unsaved Automations changes" });
     await expect(prompt).toBeVisible();
     await prompt.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(await ipc.calls("reset_workbench_state")).toHaveLength(0);
     await expect(surfaceTab(page, "dashboard")).toHaveCount(1);
-    await expect(surfaceTab(page, "workflows")).toHaveCount(1);
+    await expect(surfaceTab(page, "automations")).toHaveCount(1);
 
     await executeWorkbenchCommand(page, "Reset Workbench");
-    await page.getByRole("dialog", { name: "Unsaved Workflows changes" })
+    await page.getByRole("dialog", { name: "Unsaved Automations changes" })
       .getByRole("button", { name: "Discard", exact: true })
       .click();
 
     const workbench = page.getByTestId("workbench-host");
     await expect(workbench).toHaveAttribute("data-reset-pending", "true");
     await expect(workbench).toHaveAttribute("inert", "");
-    expect(await workflowName.evaluate((element) => {
+    expect(await automationName.evaluate((element) => {
       element.focus();
       return document.activeElement === element;
     })).toBe(false);
@@ -404,7 +404,7 @@ test.describe("Workbench recovery", () => {
     await expect(content).toHaveAttribute("inert", "");
     await expect(page.getByRole("button", { name: "Hide Left Sidebar" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Hide Agent List" })).toBeDisabled();
-    await expect(page.getByTestId("sidebar-tab-workflows").click({
+    await expect(page.getByTestId("sidebar-tab-automations").click({
       trial: true,
       timeout: 200,
     })).rejects.toThrow();
@@ -418,6 +418,6 @@ test.describe("Workbench recovery", () => {
     const widthAfter = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
     expect(Math.round(widthAfter)).toBe(Math.round(widthBefore));
     await expect(surfaceTab(page, "dashboard")).toHaveCount(1);
-    await expect(surfaceTab(page, "workflows")).toHaveCount(0);
+    await expect(surfaceTab(page, "automations")).toHaveCount(0);
   });
 });
