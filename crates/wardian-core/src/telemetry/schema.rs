@@ -28,6 +28,7 @@ const NORMALIZED_SCHEMA_VERSION_KEY: &str = "normalized_schema_version";
 const COPY_BATCH_SIZE: i64 = 2_000;
 const TURN_PROGRESS_KEY: &str = "normalization_turn_last_id";
 const EDIT_PROGRESS_KEY: &str = "normalization_edit_last_id";
+const LEGACY_WRITER_FENCE_KEY: &str = "normalization_legacy_writer_fence";
 const TELEMETRY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const TELEMETRY_LOCK_POLL: Duration = Duration::from_millis(50);
 
@@ -58,7 +59,7 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
     // SQLite releases a transaction lock after every copy batch so progress is
     // durable and restartable. A transaction alone therefore cannot serialize
     // two processes: both could observe v4 and copy the same batch. This OS
-    // lock is the short-lived migration lease for current app/CLI processes;
+    // lock is the short-lived migration lease for current processes;
     // the legacy-writer fence is installed only once a v4 schema is observed.
     let _telemetry_lock = acquire_telemetry_lock(conn)?;
     conn.execute(
@@ -582,6 +583,11 @@ fn migrate_legacy_schema_unlocked(
     conn: &Connection,
     batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
+    // The adjacent lease only coordinates current binaries. Older v4 clients
+    // do not know about it and can still issue direct writes to the legacy
+    // tables. Persist a database-level fence before the first copy batch so
+    // those clients fail closed even if they already have a WAL connection.
+    install_legacy_writer_fence(conn)?;
     create_normalized_schema(conn)?;
     // Install the dedupe indexes before the first resumable batch. This makes
     // recovery safe even if an older process ignored the OS lease, and keeps a
@@ -609,6 +615,7 @@ fn migrate_legacy_schema_unlocked(
     // the migration can only be admitted before this point; a mismatch keeps
     // the old tables intact for a later retry.
     verify_migrated_counts(&tx)?;
+    clear_legacy_writer_fence(&tx)?;
     tx.execute("DROP TABLE telemetry_turns", [])?;
     tx.execute("DROP TABLE telemetry_edits", [])?;
     ensure_compatibility_views(&tx)?;
@@ -627,6 +634,45 @@ fn migrate_legacy_schema_unlocked(
         params![NORMALIZED_SCHEMA_VERSION_KEY, TELEMETRY_SCHEMA_VERSION],
     )?;
     tx.commit()
+}
+
+fn install_legacy_writer_fence(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![LEGACY_WRITER_FENCE_KEY],
+    )?;
+    for (table, suffix) in [("telemetry_turns", "turns"), ("telemetry_edits", "edits")] {
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            tx.execute_batch(&format!(
+                "CREATE TRIGGER IF NOT EXISTS telemetry_{suffix}_normalization_fence_{operation}
+                 BEFORE {operation} ON {table}
+                 WHEN EXISTS (
+                     SELECT 1 FROM telemetry_meta WHERE key = '{LEGACY_WRITER_FENCE_KEY}'
+                 )
+                 BEGIN
+                     SELECT RAISE(ABORT, 'legacy telemetry writes are blocked during normalization');
+                 END;"
+            ))?;
+        }
+    }
+    tx.commit()
+}
+
+fn clear_legacy_writer_fence(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    for suffix in ["turns", "edits"] {
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            tx.execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS telemetry_{suffix}_normalization_fence_{operation};"
+            ))?;
+        }
+    }
+    tx.execute(
+        "DELETE FROM telemetry_meta WHERE key = ?1",
+        params![LEGACY_WRITER_FENCE_KEY],
+    )?;
+    Ok(())
 }
 
 fn repair_forward_compatibility(
@@ -1674,6 +1720,54 @@ mod tests {
             .unwrap(),
             COPY_BATCH_SIZE * 2 + 1
         );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_meta WHERE key = ?1",
+                params![LEGACY_WRITER_FENCE_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'trigger' AND name LIKE '%normalization_fence%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn persisted_legacy_writer_fence_rejects_wal_client_dml() {
+        use rusqlite::OpenFlags;
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let setup = Connection::open(&database).unwrap();
+        create_legacy_fixture(&setup, 1);
+        setup.pragma_update(None, "journal_mode", "WAL").unwrap();
+
+        install_legacy_writer_fence(&setup).unwrap();
+
+        let writer =
+            Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+        for statement in [
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('legacy-insert', 'session-a', 'codex',
+                     '2026-08-30T00:00:00.000Z', 'source-a', 'session.log')",
+            "UPDATE telemetry_turns SET provider = 'other' WHERE event_key = 'event-0'",
+            "DELETE FROM telemetry_turns WHERE event_key = 'event-0'",
+        ] {
+            let error = writer.execute(statement, []).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("legacy telemetry writes are blocked during normalization"));
+        }
     }
 
     #[test]
