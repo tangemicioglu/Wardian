@@ -5905,7 +5905,7 @@ async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
         }
     }
 
-    snapshots
+    wardian_core::identity::append_missing_persisted_agents(snapshots, &seen)
 }
 
 fn collect_agent_snapshot_sources(

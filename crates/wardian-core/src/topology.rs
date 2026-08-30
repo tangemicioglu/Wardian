@@ -89,6 +89,33 @@ pub fn load_reconciled_topology(
     known_agents: &BTreeSet<String>,
 ) -> io::Result<(Topology, bool)> {
     let mut topology = load_topology(home);
+    let stale_ids = topology
+        .edges
+        .iter()
+        .flat_map(|edge| [&edge.a, &edge.b])
+        .chain(
+            topology
+                .ignored_pairs
+                .iter()
+                .flat_map(|pair| [&pair.a, &pair.b]),
+        )
+        .chain(
+            topology
+                .suppressed_seed_pairs
+                .iter()
+                .flat_map(|pair| [&pair.a, &pair.b]),
+        )
+        .filter(|session_id| !known_agents.contains(*session_id))
+        .map(|session_id| session_id.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for session_id in stale_ids {
+        crate::registry_reconciliation::record_quarantine(
+            home,
+            &session_id,
+            None,
+            "topology reconciliation removed a reference to an unknown agent",
+        )?;
+    }
     let changed = topology.retain_agents(known_agents);
     if changed {
         save_topology(home, &topology)?;

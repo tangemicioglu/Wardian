@@ -69,13 +69,13 @@ pub fn resolve_by_name_or_uuid(
     }
 
     if let Some(row) = get_agent_by_session_id_with_conn(conn, trimmed)? {
-        return Ok(row_to_identity(row));
+        return Ok(agent_identity_from_row(row));
     }
 
     get_all_agents_with_conn(conn)?
         .into_iter()
         .find(|row| row.session_name == trimmed)
-        .map(row_to_identity)
+        .map(agent_identity_from_row)
         .ok_or_else(|| IdentityError::NotFound(trimmed.to_string()))
 }
 
@@ -86,7 +86,7 @@ pub fn list_agents(
     Ok(filter_agents(
         get_all_agents_with_conn(conn)?
             .into_iter()
-            .map(row_to_identity),
+            .map(agent_identity_from_row),
         filters,
     ))
 }
@@ -136,7 +136,7 @@ pub fn normalize_status(value: &str) -> String {
     }
 }
 
-fn row_to_identity(row: AgentRow) -> AgentIdentity {
+pub fn agent_identity_from_row(row: AgentRow) -> AgentIdentity {
     let status = row
         .last_status
         .as_deref()
@@ -167,6 +167,25 @@ fn row_to_identity(row: AgentRow) -> AgentIdentity {
         status_source: StatusSource::Persisted,
         visibility: None,
     }
+}
+
+pub fn missing_persisted_agents(
+    live_ids: &std::collections::HashSet<String>,
+) -> Vec<AgentIdentity> {
+    crate::db::get_all_agents()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|agent| !live_ids.contains(&agent.session_id))
+        .map(agent_identity_from_row)
+        .collect()
+}
+
+pub fn append_missing_persisted_agents(
+    mut snapshots: Vec<AgentIdentity>,
+    live_ids: &std::collections::HashSet<String>,
+) -> Vec<AgentIdentity> {
+    snapshots.extend(missing_persisted_agents(live_ids));
+    snapshots
 }
 
 fn active_conversation_lease_status(agent_id: &str) -> Option<String> {

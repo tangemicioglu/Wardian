@@ -453,10 +453,27 @@ pub fn run() {
                                 if let Err(error) =
                                     commands::agent::prepare_restored_config_for_spawn(&mut config)
                                 {
+                                    let _ = wardian_core::registry_reconciliation::record_quarantine(
+                                        &app_dir,
+                                        &config.session_id,
+                                        Some(&config.session_name),
+                                        &format!("agent restoration was skipped: {error}"),
+                                    );
                                     eprintln!(
                                         "Failed to prepare restored agent {}: {}",
                                         config.session_id, error
                                     );
+                                    let agent = restored_agent_without_process(
+                                        config.clone(),
+                                        "Error",
+                                        format!(
+                                            "Wardian could not restore this agent because its configuration could not be prepared.\r\n{}\r\n",
+                                            error
+                                        ),
+                                        None,
+                                        None,
+                                    );
+                                    insert_restored_agent(config.session_id.clone(), agent).await;
                                     continue;
                                 }
                                 let (last_status, last_pid, last_born) = db_status_map
