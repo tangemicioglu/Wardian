@@ -169,6 +169,25 @@ pub fn agent_identity_from_row(row: AgentRow) -> AgentIdentity {
     }
 }
 
+pub fn missing_persisted_agents(
+    live_ids: &std::collections::HashSet<String>,
+) -> Vec<AgentIdentity> {
+    crate::db::get_all_agents()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|agent| !live_ids.contains(&agent.session_id))
+        .map(agent_identity_from_row)
+        .collect()
+}
+
+pub fn append_missing_persisted_agents(
+    mut snapshots: Vec<AgentIdentity>,
+    live_ids: &std::collections::HashSet<String>,
+) -> Vec<AgentIdentity> {
+    snapshots.extend(missing_persisted_agents(live_ids));
+    snapshots
+}
+
 fn active_conversation_lease_status(agent_id: &str) -> Option<String> {
     let leases = crate::conversation_lease::load_leases();
     let now = chrono::Utc::now().to_rfc3339();

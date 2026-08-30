@@ -5905,19 +5905,7 @@ async fn live_agent_snapshots(app: &AppHandle) -> Vec<AgentIdentity> {
         }
     }
 
-    // The SQLite roster is durable evidence even when a prior startup write
-    // omitted an agent from the live state snapshot. Keep that agent visible
-    // as persisted so `agent list` exposes the inconsistency instead of
-    // presenting an incomplete healthy roster.
-    if let Ok(persisted_agents) = wardian_core::db::get_all_agents() {
-        for agent in persisted_agents {
-            if seen.insert(agent.session_id.clone()) {
-                snapshots.push(wardian_core::identity::agent_identity_from_row(agent));
-            }
-        }
-    }
-
-    snapshots
+    wardian_core::identity::append_missing_persisted_agents(snapshots, &seen)
 }
 
 fn collect_agent_snapshot_sources(
