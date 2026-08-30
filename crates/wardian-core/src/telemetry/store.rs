@@ -10,6 +10,10 @@ use crate::telemetry::models::{
     ActivityMethod, Cursor, CursorKind, EditFact, IntervalFact, LimitObservation, ParsedFacts,
     SourceCarry, SourceKind, TurnFact,
 };
+use crate::telemetry::schema::{
+    ensure_source_ref, ensure_string_id, STRING_EFFORT, STRING_MODEL, STRING_PROVIDER,
+    STRING_SESSION,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Bookkeeping for one source's ingest position.
@@ -154,13 +158,14 @@ pub(crate) fn write_facts(
     state: &SourceState,
 ) -> rusqlite::Result<DirtyBuckets> {
     let mut dirty = DirtyBuckets::new();
+    let source_ref = ensure_source_ref(conn, &state.source_key, &state.source_path)?;
 
     for turn in &facts.turns {
-        insert_turn(conn, state, turn)?;
+        insert_turn(conn, source_ref, turn)?;
         mark_dirty(&mut dirty, &turn.session_id, &turn.ended_at);
     }
     for edit in &facts.edits {
-        insert_edit(conn, state, edit)?;
+        insert_edit(conn, source_ref, edit)?;
         mark_dirty(&mut dirty, &edit.session_id, &edit.occurred_at);
     }
     for interval in intervals {
@@ -232,7 +237,19 @@ pub(crate) fn purge_source_facts(
             mark_dirty_span(&mut dirty, &session_id, &start, &end);
         }
         conn.execute(
-            &format!("DELETE FROM {table} WHERE source_key = ?1"),
+            match table {
+                "telemetry_turns" => {
+                    "DELETE FROM telemetry_turn_facts
+                    WHERE source_ref = (SELECT string_id FROM telemetry_strings
+                                        WHERE kind = 'source_key' AND value = ?1)"
+                }
+                "telemetry_edits" => {
+                    "DELETE FROM telemetry_edit_facts
+                    WHERE source_ref = (SELECT string_id FROM telemetry_strings
+                                        WHERE kind = 'source_key' AND value = ?1)"
+                }
+                _ => "DELETE FROM telemetry_activity WHERE source_key = ?1",
+            },
             params![source_key],
         )?;
     }
@@ -242,22 +259,35 @@ pub(crate) fn purge_source_facts(
 
 fn insert_turn(
     conn: &rusqlite::Connection,
-    state: &SourceState,
+    source_ref: i64,
     turn: &TurnFact,
 ) -> rusqlite::Result<()> {
+    let session_ref = ensure_string_id(conn, STRING_SESSION, &turn.session_id)?;
+    let provider_ref = ensure_string_id(conn, STRING_PROVIDER, &turn.provider)?;
+    let model_ref = turn
+        .model
+        .as_deref()
+        .map(|value| ensure_string_id(conn, STRING_MODEL, value))
+        .transpose()?;
+    let effort_ref = turn
+        .effort
+        .as_deref()
+        .map(|value| ensure_string_id(conn, STRING_EFFORT, value))
+        .transpose()?;
     conn.execute(
-        "INSERT OR IGNORE INTO telemetry_turns (
-             event_key, session_id, provider, turn_id, model, effort, started_at, ended_at,
+        "INSERT OR IGNORE INTO telemetry_turn_facts (
+             event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+             started_at, ended_at,
              input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-             reasoning_tokens, context_window, cost_usd, source_key, source_path
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+             reasoning_tokens, context_window, cost_usd, source_ref
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             turn.event_key,
-            turn.session_id,
-            turn.provider,
+            session_ref,
+            provider_ref,
             turn.turn_id,
-            turn.model,
-            turn.effort,
+            model_ref,
+            effort_ref,
             turn.started_at,
             turn.ended_at,
             turn.input_tokens,
@@ -267,8 +297,7 @@ fn insert_turn(
             turn.reasoning_tokens,
             turn.context_window,
             turn.cost_usd,
-            state.source_key,
-            state.source_path,
+            source_ref,
         ],
     )?;
     Ok(())
@@ -276,18 +305,20 @@ fn insert_turn(
 
 fn insert_edit(
     conn: &rusqlite::Connection,
-    state: &SourceState,
+    source_ref: i64,
     edit: &EditFact,
 ) -> rusqlite::Result<()> {
+    let session_ref = ensure_string_id(conn, STRING_SESSION, &edit.session_id)?;
+    let provider_ref = ensure_string_id(conn, STRING_PROVIDER, &edit.provider)?;
     conn.execute(
-        "INSERT OR IGNORE INTO telemetry_edits (
-             event_key, session_id, provider, turn_id, occurred_at, workspace, path, op,
-             lines_added, lines_removed, source_key, source_path
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        "INSERT OR IGNORE INTO telemetry_edit_facts (
+             event_key, session_ref, provider_ref, turn_id, occurred_at, workspace, path, op,
+             lines_added, lines_removed, source_ref
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![
             edit.event_key,
-            edit.session_id,
-            edit.provider,
+            session_ref,
+            provider_ref,
             edit.turn_id,
             edit.occurred_at,
             edit.workspace,
@@ -295,8 +326,7 @@ fn insert_edit(
             edit.op.as_str(),
             edit.lines_added,
             edit.lines_removed,
-            state.source_key,
-            state.source_path,
+            source_ref,
         ],
     )?;
     Ok(())

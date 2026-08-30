@@ -1607,7 +1607,10 @@ mod tests {
         add_turn(&conn, "antigravity", "uuid-1", "t1", DURING);
         add_turn(&conn, "codex", "uuid-2", "t2", DURING);
         conn.execute(
-            "UPDATE telemetry_turns SET input_tokens = 40 WHERE provider = 'codex'",
+            "UPDATE telemetry_turn_facts
+             SET input_tokens = 40
+             WHERE provider_ref = (SELECT string_id FROM telemetry_strings
+                                   WHERE kind = 'provider' AND value = 'codex')",
             [],
         )
         .unwrap();
