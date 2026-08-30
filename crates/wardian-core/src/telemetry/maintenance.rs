@@ -146,7 +146,7 @@ fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<Dir
         let mut statement = conn.prepare(&format!(
             "SELECT session_id, {timestamp_column}
              FROM {table}
-             WHERE unixepoch({timestamp_column}) < unixepoch(?1)"
+             WHERE julianday({timestamp_column}) < julianday(?1)"
         ))?;
         let rows = statement.query_map(params![cutoff], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -160,7 +160,7 @@ fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<Dir
     let mut statement = conn.prepare(
         "SELECT session_id, started_at, ended_at
          FROM telemetry_activity
-         WHERE unixepoch(ended_at) <= unixepoch(?1)",
+         WHERE julianday(ended_at) <= julianday(?1)",
     )?;
     let rows = statement.query_map(params![cutoff], |row| {
         Ok((
@@ -269,7 +269,7 @@ fn delete_turns_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, ended_at
                  FROM telemetry_turns
-                 WHERE unixepoch(ended_at) < unixepoch(?1)
+                 WHERE julianday(ended_at) < julianday(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -312,7 +312,7 @@ fn delete_edits_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, occurred_at
                  FROM telemetry_edits
-                 WHERE unixepoch(occurred_at) < unixepoch(?1)
+                 WHERE julianday(occurred_at) < julianday(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -355,7 +355,7 @@ fn delete_activity_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, started_at, ended_at
                  FROM telemetry_activity
-                 WHERE unixepoch(ended_at) <= unixepoch(?1)
+                 WHERE julianday(ended_at) <= julianday(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -507,6 +507,8 @@ mod tests {
             ("before-with-offset", "2026-08-29T13:30:00+02:00"),
             ("after-with-offset", "2026-08-29T13:30:00+01:00"),
             ("exact-boundary", "2026-08-29T12:00:00+00:00"),
+            ("before-with-fraction", "2026-08-29T11:59:59.999Z"),
+            ("after-with-fraction", "2026-08-29T12:00:00.001Z"),
         ] {
             conn.execute(
                 "INSERT INTO telemetry_turns
@@ -518,28 +520,72 @@ mod tests {
             )
             .unwrap();
         }
+        for (event_key, occurred_at) in [
+            ("edit-before-with-fraction", "2026-08-29T11:59:59.999Z"),
+            ("edit-after-with-fraction", "2026-08-29T12:00:00.001Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO telemetry_edits
+                    (event_key, session_id, provider, turn_id, occurred_at, path, op,
+                     lines_added, lines_removed, source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', ?2, ?3, 'src/lib.rs', 'modify',
+                         1, 1, 'source-a', 'log')",
+                params![event_key, event_key, occurred_at],
+            )
+            .unwrap();
+        }
+        for (interval_id, ended_at) in [
+            ("activity-before-with-fraction", "2026-08-29T11:59:59.999Z"),
+            ("activity-after-with-fraction", "2026-08-29T12:00:00.500Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO telemetry_activity
+                    (session_id, provider, started_at, ended_at, last_event_at,
+                     event_count, method, source_key)
+                 VALUES ('session-a', 'codex', ?1, ?2, ?2, 1, ?3, 'source-a')",
+                params![ended_at, ended_at, interval_id],
+            )
+            .unwrap();
+        }
 
         let now = DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
             .unwrap()
             .with_timezone(&Utc);
         let report = maintain_at(&conn, 1, &backup, false, now).unwrap();
-        assert_eq!(report.turns_deleted, 1);
+        assert_eq!(report.turns_deleted, 2);
+        assert_eq!(report.edits_deleted, 1);
+        assert_eq!(report.activity_deleted, 1);
         assert_eq!(
             conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
                 row.get(0)
             })
             .unwrap(),
-            2
+            3
         );
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM telemetry_turns
-                 WHERE event_key IN ('after-with-offset', 'exact-boundary')",
+                 WHERE event_key IN ('after-with-offset', 'exact-boundary',
+                                     'after-with-fraction')",
                 [],
                 |row| row.get(0),
             )
             .unwrap(),
-            2
+            3
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
         );
     }
 

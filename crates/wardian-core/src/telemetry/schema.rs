@@ -88,6 +88,7 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
         create_normalized_schema(conn)?;
         ensure_normalized_indexes(conn)?;
         ensure_compatibility_views(conn)?;
+        install_forward_compatibility_marker(conn)?;
         return Ok(());
     }
 
@@ -630,6 +631,21 @@ fn migrate_legacy_schema_unlocked(
     tx.commit()
 }
 
+fn install_forward_compatibility_marker(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES ('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [LEGACY_TELEMETRY_SCHEMA_VERSION],
+    )?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![NORMALIZED_SCHEMA_VERSION_KEY, TELEMETRY_SCHEMA_VERSION],
+    )?;
+    tx.commit()
+}
+
 struct ExclusiveTelemetryLock<'conn> {
     conn: &'conn Connection,
     previous_journal_mode: Option<String>,
@@ -1122,6 +1138,60 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("views may not be indexed"));
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'protected'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn completed_v5_marker_is_repaired_for_legacy_clients() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('protected', 'session-a', 'codex', '2026-08-30T00:00:00Z',
+                     'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE telemetry_meta SET value = 5 WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_meta WHERE key = ?1",
+            params![NORMALIZED_SCHEMA_VERSION_KEY],
+        )
+        .unwrap();
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            LEGACY_TELEMETRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![NORMALIZED_SCHEMA_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            TELEMETRY_SCHEMA_VERSION
+        );
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'protected'",
