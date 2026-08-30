@@ -1,12 +1,12 @@
-//! Explicit, operator-driven telemetry retention and compaction.
+//! Core-owned telemetry retention and compaction.
 //!
 //! Raw turns, edits, and completed activity intervals are safe to remove only
 //! after their hourly buckets have been recomputed. Rate-limit observations do
 //! not have an equivalent rollup, so this path deliberately retains them.
 //!
-//! The caller supplies the retention window and a new backup destination. No
-//! age policy is silently chosen, and compaction is opt-in because `VACUUM`
-//! rewrites the whole database.
+//! The application maintenance service supplies the retention window and a new
+//! backup destination. No age policy is silently chosen, and compaction is
+//! opt-in because `VACUUM` rewrites the whole database.
 
 use crate::telemetry::rollup::recompute_buckets;
 use crate::telemetry::schema::{acquire_telemetry_lock, sqlite_io_error};
@@ -41,10 +41,10 @@ pub struct MaintenanceReport {
 /// Retain the requested number of days of raw telemetry and optionally compact
 /// the database after creating and verifying a backup.
 ///
-/// This is intentionally an explicit maintenance operation. The caller must
-/// stop the desktop app and agents before invoking it; the backup is verified
-/// before any source row is deleted, and `vacuum` must be opted into because
-/// it rewrites the whole database.
+/// The application maintenance service calls this only at a quiescent
+/// lifecycle boundary. The backup is verified before any source row is
+/// deleted, and `vacuum` must be opted into because it rewrites the whole
+/// database.
 pub fn maintain(
     conn: &Connection,
     retain_days: u32,

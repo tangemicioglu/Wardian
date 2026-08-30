@@ -1,6 +1,4 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
-use wardian_core::telemetry::maintenance::MAX_RETENTION_DAYS;
 
 #[derive(Debug, Parser)]
 #[command(name = "wardian", version, about = "Wardian command-line interface")]
@@ -635,7 +633,7 @@ pub enum WatchlistCommand {
 // wardian telemetry
 // ---------------------------------------------------------------------------
 
-/// Read the habitat telemetry store, or run explicit offline maintenance.
+/// Read the habitat telemetry store.
 #[derive(Debug, Args)]
 pub struct TelemetryArgs {
     #[command(subcommand)]
@@ -652,24 +650,6 @@ pub enum TelemetryCommand {
         /// provider, agent, or model.
         #[arg(long, default_value = "provider")]
         dimension: String,
-    },
-    /// Retain raw facts newer than the requested window after verifying a backup.
-    Maintain {
-        /// Number of days of raw turns, edits, and completed activity to retain.
-        #[arg(
-            long,
-            value_parser = clap::value_parser!(u32).range(1..=MAX_RETENTION_DAYS as i64)
-        )]
-        retain_days: u32,
-        /// New destination for the verified pre-maintenance backup.
-        #[arg(long, value_name = "PATH")]
-        backup: PathBuf,
-        /// Rewrite the database after pruning to reclaim free pages.
-        #[arg(long)]
-        vacuum: bool,
-        /// Confirm that the desktop app and all agents are stopped.
-        #[arg(long)]
-        quiesced: bool,
     },
 }
 
@@ -1443,6 +1423,20 @@ mod tests {
     fn parses_agent_target_shorthand() {
         let cli = Cli::try_parse_from(["wardian", "agent", "coder-a1"]).unwrap();
         assert!(matches!(cli.command, Command::Agent(_)));
+    }
+
+    #[test]
+    fn telemetry_maintenance_is_not_a_cli_command() {
+        assert!(Cli::try_parse_from([
+            "wardian",
+            "telemetry",
+            "maintain",
+            "--retain-days",
+            "90",
+            "--backup",
+            "<backup-path>",
+        ])
+        .is_err());
     }
 
     #[test]

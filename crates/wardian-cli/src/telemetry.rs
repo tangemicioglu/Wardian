@@ -1,15 +1,14 @@
 //! `wardian telemetry` — read the habitat telemetry store from a shell.
 //!
 //! Ingest belongs to the running app, which owns the cursors; a CLI that
-//! advanced them too would let two writers race for the same source. Summary
-//! is read-only, while maintenance is an explicitly confirmed offline write
-//! path with a verified backup.
+//! advanced them too would let two writers race for the same source. The CLI
+//! remains read-only; destructive telemetry maintenance is owned by the core
+//! application service.
 
 use crate::args::{TelemetryArgs, TelemetryCommand};
 use crate::errors::CliError;
 use crate::open_db;
 use wardian_core::telemetry::horizon::{resolve_horizon, Horizon, HorizonWindow};
-use wardian_core::telemetry::maintenance::maintain;
 use wardian_core::telemetry::models::{ActiveTime, BreakdownRow, TokenCounts};
 use wardian_core::telemetry::query::{breakdown, latest_limits, summary, Dimension};
 
@@ -43,31 +42,6 @@ pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
                 "dimension": dimension.as_str(),
                 "rows": rows.iter().map(row_json).collect::<Vec<_>>(),
                 "limits": limits,
-            }))
-        }
-        TelemetryCommand::Maintain {
-            retain_days,
-            backup,
-            vacuum,
-            quiesced,
-        } => {
-            if !quiesced {
-                return Err(CliError::generic(
-                    "telemetry maintenance requires --quiesced after stopping the desktop app and all agents",
-                ));
-            }
-            let conn = open_db()?;
-            let report = maintain(&conn, retain_days, &backup, vacuum).map_err(db_error)?;
-            render_json(serde_json::json!({
-                "schema": 1,
-                "cutoff": report.cutoff,
-                "turns_deleted": report.turns_deleted,
-                "edits_deleted": report.edits_deleted,
-                "activity_deleted": report.activity_deleted,
-                "limits_retained": report.limits_retained,
-                "wal_log_frames": report.wal_log_frames,
-                "wal_checkpointed_frames": report.wal_checkpointed_frames,
-                "vacuumed": report.vacuumed,
             }))
         }
     }

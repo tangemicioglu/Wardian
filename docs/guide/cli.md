@@ -26,7 +26,7 @@ building repeatable automation around Wardian.
 4. Run `wardian agent list` to confirm the CLI sees your neighbors, or `wardian agent list --scope all` to see all agents.
 5. Use live-control commands only while the desktop app is running for that same home.
 
-## Telemetry Read and Maintenance Paths
+## Telemetry Read Path
 
 Read telemetry without changing the app-owned source cursors:
 
@@ -34,39 +34,13 @@ Read telemetry without changing the app-owned source cursors:
 wardian telemetry summary --horizon week --dimension provider
 ```
 
-Raw telemetry retention is an explicit offline write path. Stop the desktop app
-and all agents first, choose the retention window, and provide a new backup
-destination. The issue investigation proposes 90 days as a candidate; the CLI
-requires the choice instead of silently adopting it:
-
-```bash
-wardian telemetry maintain --retain-days 90 \
-  --backup "<backup-path>/state.db.before-telemetry-maintenance" \
-  --quiesced --vacuum
-```
-
-PowerShell:
-
-```powershell
-wardian telemetry maintain --retain-days 90 `
-  --backup "<backup-path>/state.db.before-telemetry-maintenance" `
-  --quiesced --vacuum
-```
-
-The command verifies the new backup before deleting old turns, edits, and
-completed activity intervals. It recomputes their hourly rollups first and
-records a durable prepared phase before deleting raw rows in bounded batches;
-an interrupted retry resumes that phase without rebuilding rollups from rows
-that were already pruned. The persisted cutoff is canonical while that phase is
-in progress, so a retry after the clock crosses an hour still resumes the same
-boundary; use the same `--retain-days` value or the command rejects the retry.
-It checkpoints the WAL, then clears the phase marker, and runs `VACUUM` only
-when `--vacuum` is supplied. Rate-limit observations
-remain because the current rollup cannot reproduce their history. The adjacent
-maintenance lock serializes this operation with schema migration; current
-telemetry ingestion takes the same lock, and `--quiesced` is still required
-because older app binaries and other offline writes cannot participate in that
-lock.
+Telemetry retention and compaction are application-owned core operations, not
+CLI commands. Application code supplies an explicit retention policy and
+backup destination to the core function. It verifies the backup,
+recomputes affected hourly rollups, deletes only reproducible raw facts in
+bounded batches, checkpoints the WAL, and optionally vacuums while holding the
+same maintenance lease used by migration and ingestion. No retention window is
+silently selected by the software.
 
 On startup, a v4-to-v5 schema migration first switches a file-backed database
 from WAL to SQLite's rollback journal and then holds exclusive locking mode
