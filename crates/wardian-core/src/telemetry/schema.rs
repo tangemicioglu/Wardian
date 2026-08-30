@@ -85,10 +85,8 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
         .ok();
 
     if stored == Some(TELEMETRY_SCHEMA_VERSION) {
-        create_normalized_schema(conn)?;
-        ensure_normalized_indexes(conn)?;
-        ensure_compatibility_views(conn)?;
-        install_forward_compatibility_marker(conn)?;
+        let mut no_hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = None;
+        repair_forward_compatibility(conn, &mut no_hook)?;
         return Ok(());
     }
 
@@ -631,8 +629,22 @@ fn migrate_legacy_schema_unlocked(
     tx.commit()
 }
 
-fn install_forward_compatibility_marker(conn: &Connection) -> rusqlite::Result<()> {
+fn repair_forward_compatibility(
+    conn: &Connection,
+    before_marker: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    create_normalized_schema(&tx)?;
+    ensure_normalized_indexes(&tx)?;
+    ensure_compatibility_views(&tx)?;
+    if let Some(hook) = before_marker.as_deref_mut() {
+        hook()?;
+    }
+    install_forward_compatibility_marker(&tx)?;
+    tx.commit()
+}
+
+fn install_forward_compatibility_marker(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO telemetry_meta (key, value) VALUES ('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -643,7 +655,7 @@ fn install_forward_compatibility_marker(conn: &Connection) -> rusqlite::Result<(
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![NORMALIZED_SCHEMA_VERSION_KEY, TELEMETRY_SCHEMA_VERSION],
     )?;
-    tx.commit()
+    Ok(())
 }
 
 struct ExclusiveTelemetryLock<'conn> {
@@ -1138,6 +1150,80 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("views may not be indexed"));
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'protected'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn interrupted_forward_marker_repair_rolls_back_before_legacy_reset() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('protected', 'session-a', 'codex', '2026-08-30T00:00:00Z',
+                     'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE telemetry_meta SET value = 5 WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_meta WHERE key = ?1",
+            params![NORMALIZED_SCHEMA_VERSION_KEY],
+        )
+        .unwrap();
+
+        let mut interrupt = || {
+            Err(sqlite_io_error(io::Error::other(
+                "simulated interruption before marker commit",
+            )))
+        };
+        let mut hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = Some(&mut interrupt);
+        let error = repair_forward_compatibility(&conn, &mut hook).unwrap_err();
+        assert!(error.to_string().contains("simulated interruption"));
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            TELEMETRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_meta WHERE key = ?1",
+                params![NORMALIZED_SCHEMA_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+
+        // The compatibility view remains intact, so an older v4 client fails
+        // closed at its first index operation instead of entering its reset
+        // path and deleting normalized telemetry.
+        let legacy_error = conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_telemetry_turns_session_end
+                 ON telemetry_turns(session_id, ended_at)",
+                [],
+            )
+            .unwrap_err();
+        assert!(legacy_error
+            .to_string()
+            .contains("views may not be indexed"));
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'protected'",
