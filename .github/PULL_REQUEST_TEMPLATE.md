@@ -1,6 +1,9 @@
 ## Description
 Briefly describe the changes introduced by this PR.
 
+## Outcome Check
+<!-- How does someone confirm the linked issue's condition changed, without reading this diff? "Tests pass" is not an outcome. If you added something that has to run on its own, name its call site. -->
+
 ## Related Issues
 Fixes # (issue)
 
@@ -27,4 +30,5 @@ Please describe the tests that you ran to verify your changes.
 - [ ] My changes generate no new warnings
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
+- [ ] The Outcome Check names something observable outside this diff
 - [ ] (Frontend changes) Feature-specific screenshot evidence is embedded above, or not applicable
