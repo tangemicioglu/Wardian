@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::state::{AgentWatchState, AppState};
+use crate::state::{AgentWatchState, AppState, TerminalSessionBroker};
 use crate::utils::delivery_transaction::TerminalDeliveryError;
 use crate::utils::strip_ansi_controls;
 
@@ -9,6 +9,7 @@ const PAYLOAD_APPLY_TIMEOUT_MS: u64 = 15_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservationScope {
     TransactionDelta,
+    ActiveTerminalSnapshot,
     ActivePromptFallback,
 }
 
@@ -93,11 +94,19 @@ pub async fn wait_for_payload_applied_before_submit(
             .watch_state
             .clone()
     };
-    wait_for_watch_payload_applied(watch_state, session_id, since_cursor, prompt).await
+    wait_for_watch_payload_applied(
+        watch_state,
+        state.terminal_sessions.clone(),
+        session_id,
+        since_cursor,
+        prompt,
+    )
+    .await
 }
 
 async fn wait_for_watch_payload_applied(
     watch_state: Arc<Mutex<AgentWatchState>>,
+    terminal_sessions: Arc<TerminalSessionBroker>,
     session_id: &str,
     since_cursor: &str,
     prompt: &str,
@@ -147,7 +156,34 @@ async fn wait_for_watch_payload_applied(
         };
         let observation = observe_payload_application(&output, prompt, scope);
         if observation.confirms_payload() {
-            return Ok(());
+            if let Ok(snapshot) = terminal_sessions.snapshot(session_id).await {
+                let active_observation = observe_payload_application(
+                    &snapshot.visible_grid,
+                    prompt,
+                    ObservationScope::ActiveTerminalSnapshot,
+                );
+                let confirms_current_composer = match scope {
+                    ObservationScope::TransactionDelta => {
+                        transaction_evidence_matches_active_composer(
+                            &observation,
+                            &active_observation,
+                        )
+                    }
+                    ObservationScope::ActivePromptFallback
+                    | ObservationScope::ActiveTerminalSnapshot => {
+                        active_observation.confirms_payload()
+                    }
+                };
+                if confirms_current_composer {
+                    return Ok(());
+                }
+                if active_observation.literal_match_bytes > best_observation.literal_match_bytes
+                    || (best_observation.marker_format == "absent"
+                        && active_observation.marker_format != "absent")
+                {
+                    best_observation = active_observation;
+                }
+            }
         }
         if observation.literal_match_bytes > best_observation.literal_match_bytes
             || (best_observation.marker_format == "absent" && observation.marker_format != "absent")
@@ -214,10 +250,13 @@ fn observe_payload_application(
 ) -> ComposerObservation {
     let cleaned = strip_ansi_controls(output).replace('\r', "\n");
     let observed = match scope {
-        // The cursor is captured immediately before Wardian writes the payload,
-        // so a marker in this delta belongs to this delivery even when Codex
-        // repaints only composer cells and does not re-emit the prompt glyph.
+        // A transaction delta can nominate evidence, but the caller must
+        // cross-check it against the broker's canonical active screen before
+        // treating it as current-composer proof.
         ObservationScope::TransactionDelta => cleaned.as_str(),
+        ObservationScope::ActiveTerminalSnapshot => {
+            cleaned.rsplit_once('›').map_or("", |(_, tail)| tail)
+        }
         ObservationScope::ActivePromptFallback => cleaned
             .rsplit_once('›')
             .map_or(cleaned.as_str(), |(_, tail)| tail),
@@ -239,8 +278,23 @@ fn observe_payload_application(
         codex_version: codex_version(output),
         source: match scope {
             ObservationScope::TransactionDelta => "transaction_delta",
+            ObservationScope::ActiveTerminalSnapshot => "active_terminal_snapshot",
             ObservationScope::ActivePromptFallback => "active_prompt_fallback",
         },
+    }
+}
+
+fn transaction_evidence_matches_active_composer(
+    transaction: &ComposerObservation,
+    active_composer: &ComposerObservation,
+) -> bool {
+    match transaction.marker_chars {
+        Some(marker_chars) => active_composer.marker_chars == Some(marker_chars),
+        None => {
+            transaction.normalized_payload_bytes > 0
+                && transaction.literal_match_bytes == transaction.normalized_payload_bytes
+                && active_composer.literal_match_bytes == active_composer.normalized_payload_bytes
+        }
     }
 }
 
@@ -363,7 +417,7 @@ mod tests {
         assert!(observe_payload_application(
             output,
             &"x".repeat(7_000),
-            ObservationScope::TransactionDelta
+            ObservationScope::ActivePromptFallback
         )
         .confirms_payload());
     }
@@ -397,16 +451,62 @@ mod tests {
     }
 
     #[test]
-    fn transaction_delta_accepts_cell_only_marker_repaint() {
-        let observation = observe_payload_application(
+    fn transaction_delta_accepts_cell_only_marker_only_on_active_composer() {
+        let transaction = observe_payload_application(
             "\x1b[22;3H[Pasted Content 6323 chars]\x1b[K",
             &"x".repeat(7_000),
             ObservationScope::TransactionDelta,
         );
+        let active_composer = observe_payload_application(
+            "\r\n› [Pasted Content 6323 chars]",
+            &"x".repeat(7_000),
+            ObservationScope::ActiveTerminalSnapshot,
+        );
 
-        assert!(observation.confirms_payload());
-        assert_eq!(observation.marker_chars, Some(6323));
-        assert_eq!(observation.source, "transaction_delta");
+        assert!(transaction.confirms_payload());
+        assert!(transaction_evidence_matches_active_composer(
+            &transaction,
+            &active_composer
+        ));
+        assert_eq!(active_composer.source, "active_terminal_snapshot");
+    }
+
+    #[test]
+    fn transaction_delta_rejects_unrelated_or_stale_marker() {
+        let transaction = observe_payload_application(
+            "MCP output: [Pasted Content 6323 chars]",
+            &"x".repeat(7_000),
+            ObservationScope::TransactionDelta,
+        );
+        let unrelated_active_screen = observe_payload_application(
+            "\r\nlog replay [Pasted Content 6323 chars]\r\n› Ask Codex to do anything",
+            &"x".repeat(7_000),
+            ObservationScope::ActiveTerminalSnapshot,
+        );
+        let different_active_marker = observe_payload_application(
+            "\r\n› [Pasted Content 4021 chars]",
+            &"x".repeat(7_000),
+            ObservationScope::ActiveTerminalSnapshot,
+        );
+
+        assert!(transaction.confirms_payload());
+        assert!(!transaction_evidence_matches_active_composer(
+            &transaction,
+            &unrelated_active_screen
+        ));
+        assert!(!transaction_evidence_matches_active_composer(
+            &transaction,
+            &different_active_marker
+        ));
+        let no_active_prompt = observe_payload_application(
+            "\r\nlog replay [Pasted Content 6323 chars]",
+            &"x".repeat(7_000),
+            ObservationScope::ActiveTerminalSnapshot,
+        );
+        assert!(!transaction_evidence_matches_active_composer(
+            &transaction,
+            &no_active_prompt
+        ));
     }
 
     #[test]
@@ -445,6 +545,16 @@ mod tests {
             16,
             262_144,
         )));
+        let terminal_sessions = Arc::new(TerminalSessionBroker::default());
+        let (input_tx, _input_rx) = tokio::sync::mpsc::channel(1);
+        let generation = terminal_sessions
+            .start_or_replace_runtime(
+                "agent-1",
+                crate::state::terminal_session::TerminalRuntimeHandles::new(input_tx, |_| Ok(())),
+                wardian_core::models::TerminalGeometry { cols: 80, rows: 24 },
+            )
+            .await
+            .expect("test terminal runtime");
         let cursor = watch_state.lock().unwrap().latest_cursor();
         {
             let mut state = watch_state.lock().unwrap();
@@ -453,10 +563,27 @@ mod tests {
             }
             state.push_output(b"\r\n\xe2\x80\xba [Pasted Content 5890 chars]\r\n");
         }
+        let output_broker = terminal_sessions.clone();
+        tokio::task::spawn_blocking(move || {
+            output_broker.process_output_blocking(
+                "agent-1",
+                generation,
+                b"\r\n\xe2\x80\xba [Pasted Content 5890 chars]\r\n".to_vec(),
+            )
+        })
+        .await
+        .expect("terminal output task")
+        .expect("canonical terminal repaint");
 
-        wait_for_watch_payload_applied(watch_state, "agent-1", &cursor, &"x".repeat(7_000))
-            .await
-            .expect("active composer evidence should survive cursor expiry");
+        wait_for_watch_payload_applied(
+            watch_state,
+            terminal_sessions,
+            "agent-1",
+            &cursor,
+            &"x".repeat(7_000),
+        )
+        .await
+        .expect("active composer evidence should survive cursor expiry");
     }
 
     #[test]

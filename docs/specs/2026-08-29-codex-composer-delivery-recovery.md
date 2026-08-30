@@ -118,9 +118,12 @@ fast-read threshold.
 Unit and integration coverage must prove:
 
 - a complete literal payload and a transaction-scoped collapsed-paste
-  observation release Return;
+  observation release Return only when the terminal broker's canonical active
+  screen confirms the same current-composer evidence;
 - a transaction-scoped cell-only marker repaint releases Return without a
-  repeated prompt glyph;
+  repeated prompt glyph only when that marker is present in the active composer;
+- a stale redraw, scrollback replay, or unrelated marker-like transaction
+  output remains fail-closed when it is absent from the active composer;
 - a painted literal prefix alone does not release Return;
 - unknown marker-like output reports provider compatibility diagnostics and
   remains fail-closed;

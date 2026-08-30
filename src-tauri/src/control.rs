@@ -6569,6 +6569,17 @@ mod tests {
                 .unwrap()
                 .push_output(b"\r\n\xe2\x80\xba hello");
         }
+        let terminal_sessions = state.terminal_sessions.clone();
+        tokio::task::spawn_blocking(move || {
+            terminal_sessions.process_output_blocking(
+                "agent-1",
+                1,
+                b"\r\n\xe2\x80\xba hello".to_vec(),
+            )
+        })
+        .await
+        .expect("terminal output task")
+        .expect("canonical terminal repaint");
 
         let submit = tokio::select! {
             request = rx.recv() => request.expect("submit write request"),
