@@ -546,10 +546,12 @@ fn migrate_legacy_schema_with_hook(
     conn: &Connection,
     batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
-    // A pre-fix v4 process does not know about the adjacent lease. Keep an
-    // SQLite exclusive locking-mode fence across the committed copy batches
-    // so that such a writer cannot mutate the legacy tables between batches.
-    // The batch transactions still commit their progress, so an interruption
+    // A pre-fix v4 process does not know about the adjacent lease. The
+    // quiescence guard therefore switches file-backed databases out of WAL
+    // before taking SQLite's rollback-journal exclusive lock. `locking_mode =
+    // EXCLUSIVE` by itself does not fence writers while WAL is active.
+    // Operators must stop older binaries for this transition to succeed; the
+    // batch transactions still commit their progress, so an interruption
     // releases the fence and the next process resumes from the last marker.
     let quiescence = ExclusiveTelemetryLock::acquire(conn)?;
     let result = migrate_legacy_schema_unlocked(conn, batch_hook);
@@ -605,18 +607,61 @@ fn migrate_legacy_schema_unlocked(
 
 struct ExclusiveTelemetryLock<'conn> {
     conn: &'conn Connection,
+    previous_journal_mode: Option<String>,
     active: bool,
 }
 
 impl<'conn> ExclusiveTelemetryLock<'conn> {
     fn acquire(conn: &'conn Connection) -> rusqlite::Result<Self> {
         conn.busy_timeout(TELEMETRY_LOCK_TIMEOUT)?;
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        if journal_mode.eq_ignore_ascii_case("memory") {
+            // An in-memory database has no other process that can hold a v4
+            // writer, and SQLite cannot switch its journal mode to DELETE.
+            return Ok(Self {
+                conn,
+                previous_journal_mode: None,
+                active: false,
+            });
+        }
+        let switched_mode: String =
+            conn.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
+        if !switched_mode.eq_ignore_ascii_case("delete") {
+            return Err(sqlite_io_error(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "telemetry migration requires older writers to be stopped; journal mode remained {switched_mode}"
+                ),
+            )));
+        }
         conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
-        Ok(Self { conn, active: true })
+        Ok(Self {
+            conn,
+            previous_journal_mode: Some(journal_mode),
+            active: true,
+        })
     }
 
     fn release(mut self) -> rusqlite::Result<()> {
-        let result = self.conn.pragma_update(None, "locking_mode", "NORMAL");
+        self.restore()
+    }
+
+    fn restore(&mut self) -> rusqlite::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let mut result = self.conn.pragma_update(None, "locking_mode", "NORMAL");
+        if result.is_ok()
+            && self
+                .previous_journal_mode
+                .as_deref()
+                .is_some_and(|mode| mode.eq_ignore_ascii_case("wal"))
+        {
+            result = self
+                .conn
+                .query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))
+                .map(|_| ());
+        }
         if result.is_ok() {
             self.active = false;
         }
@@ -626,9 +671,7 @@ impl<'conn> ExclusiveTelemetryLock<'conn> {
 
 impl Drop for ExclusiveTelemetryLock<'_> {
     fn drop(&mut self) {
-        if self.active {
-            let _ = self.conn.pragma_update(None, "locking_mode", "NORMAL");
-        }
+        let _ = self.restore();
     }
 }
 
@@ -1289,14 +1332,14 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("state.db");
-        create_legacy_fixture(
-            &Connection::open(&database).unwrap(),
-            COPY_BATCH_SIZE as usize * 2 + 1,
-        );
+        let setup = Connection::open(&database).unwrap();
+        create_legacy_fixture(&setup, COPY_BATCH_SIZE as usize * 2 + 1);
+        setup.pragma_update(None, "journal_mode", "WAL").unwrap();
+        drop(setup);
 
-        let writer_was_blocked = Arc::new(Mutex::new(false));
+        let writer_attempts = Arc::new(Mutex::new((false, false)));
         let database_for_hook = database.clone();
-        let writer_was_blocked_for_hook = Arc::clone(&writer_was_blocked);
+        let writer_attempts_for_hook = Arc::clone(&writer_attempts);
         let mut attempted = false;
         let mut legacy_writer = move || {
             if attempted {
@@ -1306,21 +1349,34 @@ mod tests {
             let writer =
                 Connection::open_with_flags(&database_for_hook, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
             writer.busy_timeout(Duration::from_millis(50))?;
-            let result = writer.execute(
-                "INSERT INTO telemetry_turns
+            let insert_blocked = writer
+                .execute(
+                    "INSERT INTO telemetry_turns
                     (event_key, session_id, provider, ended_at, source_key, source_path)
                  VALUES ('legacy-race', 'session-a', 'codex',
                          '2026-08-30T00:00:00.000Z', 'source-a', 'session.log')",
-                [],
-            );
-            *writer_was_blocked_for_hook.lock().unwrap() = result.is_err();
+                    [],
+                )
+                .is_err();
+            let replacement_blocked = writer
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     DELETE FROM telemetry_turns WHERE event_key = 'event-0';
+                     INSERT INTO telemetry_turns
+                         (event_key, session_id, provider, ended_at, source_key, source_path)
+                     VALUES ('event-0', 'session-a', 'codex',
+                             '2026-08-30T00:00:00.000Z', 'source-a', 'session.log');
+                     COMMIT;",
+                )
+                .is_err();
+            *writer_attempts_for_hook.lock().unwrap() = (insert_blocked, replacement_blocked);
             Ok(())
         };
         let mut hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = Some(&mut legacy_writer);
         let conn = Connection::open(&database).unwrap();
         migrate_legacy_schema_with_hook(&conn, &mut hook).unwrap();
 
-        assert!(*writer_was_blocked.lock().unwrap());
+        assert_eq!(*writer_attempts.lock().unwrap(), (true, true));
         assert_eq!(
             conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
                 row.get(0)

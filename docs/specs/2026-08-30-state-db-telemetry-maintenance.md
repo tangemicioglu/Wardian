@@ -9,11 +9,13 @@ write lock is held. Compatibility views preserve the existing read-facing
 columns and the insert triggers preserve older test and integration writers.
 
 The migration and explicit maintenance command share an adjacent inter-process
-lock. During the v4-to-v5 copy, the migration also holds SQLite's exclusive
-locking mode across its batch transactions. That fence blocks older binaries
-that do not know about the adjacent lock, while each batch still commits its
-progress marker for restart after interruption. The connection returns to
-normal locking mode before the migration call completes.
+lock. During the v4-to-v5 copy, a file-backed database first leaves WAL for
+SQLite's rollback journal, then the migration holds exclusive locking mode
+across its batch transactions. Older binaries and offline writers must be
+stopped before this transition: exclusive locking mode alone does not fence
+writers while WAL is active. Each batch still commits its progress marker for
+restart after interruption, and the connection restores its prior journal and
+locking modes before the migration call completes.
 
 ## Retention and compaction
 
@@ -27,9 +29,12 @@ wardian telemetry maintain --retain-days <days> \
 ```
 
 The operator must stop the desktop app and all agents first. The command creates
-and integrity-checks the backup before mutating the source. It recomputes every
-hourly bucket touched by old turns, edits, and completed activity intervals,
-then deletes those raw rows in bounded batches and checkpoints the WAL. The
+and integrity-checks the backup before mutating the source. It rebuilds every
+hourly bucket touched by the old turns, edits, and completed activity intervals
+and records a durable prepared phase before deleting raw rows in bounded
+batches. An interrupted retry resumes that phase without rebuilding rollups
+from rows already pruned, so their historical contributions remain intact. It
+then checkpoints the WAL and clears the phase marker. The
 current rollup does not reproduce rate-limit history, so `telemetry_limits` is
 retained. `VACUUM` is opt-in and runs only in this explicit offline path.
 
