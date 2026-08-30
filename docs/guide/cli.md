@@ -58,8 +58,15 @@ completed activity intervals. It recomputes their hourly rollups first,
 checkpoints the WAL, and runs `VACUUM` only when `--vacuum` is supplied. Rate
 limit observations remain because the current rollup cannot reproduce their
 history. The adjacent maintenance lock serializes this operation with schema
-migration; `--quiesced` is still required because normal app writes do not use
-that offline maintenance lock.
+migration; current telemetry ingestion takes the same lock, and
+`--quiesced` is still required because older app binaries and other offline
+writes cannot participate in that lock.
+
+On startup, a v4-to-v5 schema migration holds SQLite's exclusive locking mode
+across its resumable copy batches. This fences older binaries that do not know
+about the adjacent lock; once the migration completes or is interrupted, the
+connection returns to normal locking mode and the next run resumes from its
+last committed marker.
 
 ## Inbox Read and Write Paths
 

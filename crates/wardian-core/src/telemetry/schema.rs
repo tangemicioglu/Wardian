@@ -51,11 +51,11 @@ const TELEMETRY_TABLES: [&str; 6] = [
 
 pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
     conn.busy_timeout(TELEMETRY_LOCK_TIMEOUT)?;
-    // SQLite releases a transaction lock after every copy batch so the control
-    // plane is not stalled for the duration of a multi-gigabyte migration. A
-    // transaction alone therefore cannot serialize two processes: both could
-    // observe v4 and copy the same batch. This OS lock is the short-lived
-    // migration lease; it is released automatically if the owner exits.
+    // SQLite releases a transaction lock after every copy batch so progress is
+    // durable and restartable. A transaction alone therefore cannot serialize
+    // two processes: both could observe v4 and copy the same batch. This OS
+    // lock is the short-lived migration lease for current app/CLI processes;
+    // the legacy-writer fence is installed only once a v4 schema is observed.
     let _telemetry_lock = acquire_telemetry_lock(conn)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS telemetry_meta (
@@ -264,7 +264,11 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(statement, [])?;
     }
 
-    migrate_legacy_schema(conn)
+    // The bootstrap path creates empty legacy-shaped tables in the same
+    // connection, so there is no older writer to fence here. Reserve the
+    // exclusive locking-mode fence for the actual v4-to-v5 upgrade above.
+    let mut no_hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = None;
+    migrate_legacy_schema_unlocked(conn, &mut no_hook)
 }
 
 fn create_normalized_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -542,6 +546,21 @@ fn migrate_legacy_schema_with_hook(
     conn: &Connection,
     batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
+    // A pre-fix v4 process does not know about the adjacent lease. Keep an
+    // SQLite exclusive locking-mode fence across the committed copy batches
+    // so that such a writer cannot mutate the legacy tables between batches.
+    // The batch transactions still commit their progress, so an interruption
+    // releases the fence and the next process resumes from the last marker.
+    let quiescence = ExclusiveTelemetryLock::acquire(conn)?;
+    let result = migrate_legacy_schema_unlocked(conn, batch_hook);
+    let release_result = quiescence.release();
+    result.and(release_result)
+}
+
+fn migrate_legacy_schema_unlocked(
+    conn: &Connection,
+    batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<()> {
     create_normalized_schema(conn)?;
     // Install the dedupe indexes before the first resumable batch. This makes
     // recovery safe even if an older process ignored the OS lease, and keeps a
@@ -582,6 +601,35 @@ fn migrate_legacy_schema_with_hook(
         [TELEMETRY_SCHEMA_VERSION],
     )?;
     tx.commit()
+}
+
+struct ExclusiveTelemetryLock<'conn> {
+    conn: &'conn Connection,
+    active: bool,
+}
+
+impl<'conn> ExclusiveTelemetryLock<'conn> {
+    fn acquire(conn: &'conn Connection) -> rusqlite::Result<Self> {
+        conn.busy_timeout(TELEMETRY_LOCK_TIMEOUT)?;
+        conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+        Ok(Self { conn, active: true })
+    }
+
+    fn release(mut self) -> rusqlite::Result<()> {
+        let result = self.conn.pragma_update(None, "locking_mode", "NORMAL");
+        if result.is_ok() {
+            self.active = false;
+        }
+        result
+    }
+}
+
+impl Drop for ExclusiveTelemetryLock<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.conn.pragma_update(None, "locking_mode", "NORMAL");
+        }
+    }
 }
 
 fn seed_source_lookups(conn: &Connection) -> rusqlite::Result<()> {
@@ -1231,6 +1279,54 @@ mod tests {
             })
             .unwrap(),
             32
+        );
+    }
+
+    #[test]
+    fn legacy_writer_is_fenced_between_committed_migration_batches() {
+        use rusqlite::OpenFlags;
+        use std::sync::{Arc, Mutex};
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        create_legacy_fixture(
+            &Connection::open(&database).unwrap(),
+            COPY_BATCH_SIZE as usize * 2 + 1,
+        );
+
+        let writer_was_blocked = Arc::new(Mutex::new(false));
+        let database_for_hook = database.clone();
+        let writer_was_blocked_for_hook = Arc::clone(&writer_was_blocked);
+        let mut attempted = false;
+        let mut legacy_writer = move || {
+            if attempted {
+                return Ok(());
+            }
+            attempted = true;
+            let writer =
+                Connection::open_with_flags(&database_for_hook, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+            writer.busy_timeout(Duration::from_millis(50))?;
+            let result = writer.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, ended_at, source_key, source_path)
+                 VALUES ('legacy-race', 'session-a', 'codex',
+                         '2026-08-30T00:00:00.000Z', 'source-a', 'session.log')",
+                [],
+            );
+            *writer_was_blocked_for_hook.lock().unwrap() = result.is_err();
+            Ok(())
+        };
+        let mut hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = Some(&mut legacy_writer);
+        let conn = Connection::open(&database).unwrap();
+        migrate_legacy_schema_with_hook(&conn, &mut hook).unwrap();
+
+        assert!(*writer_was_blocked.lock().unwrap());
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            COPY_BATCH_SIZE * 2 + 1
         );
     }
 
