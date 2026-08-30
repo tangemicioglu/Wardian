@@ -1136,19 +1136,52 @@ fn send_message_and_watch_condition_with_output_echo_guard(
     }
     let condition = effective_send_watch_condition(request.condition, &sent.delivery);
     let delivery_message_ids = live_delivery_message_ids(&sent.delivery);
-    let condition_since =
-        if !delivery_message_ids.is_empty() && condition_requires_delivery_submission(&condition) {
-            wait_for_delivery_submission(
-                request.target,
-                &initial.cursor,
-                &delivery_message_ids,
-                request.tail_bytes,
-                remaining_watch_timeout(request.timeout, started_at, request.target, &condition)?,
-            )?
-        } else {
-            initial.cursor.clone()
-        };
-    let watch = agent_watch_with_output_echo_guard(AgentWatchRequest {
+    let condition_since = if !delivery_message_ids.is_empty()
+        && condition_requires_delivery_submission(&condition)
+    {
+        match wait_for_delivery_submission(
+            request.target,
+            &initial.cursor,
+            &delivery_message_ids,
+            request.tail_bytes,
+            remaining_watch_timeout(request.timeout, started_at, request.target, &condition)?,
+        )? {
+            DeliverySubmissionObservation::Submitted { cursor, delivery } => {
+                merge_delivery_updates(&mut sent.delivery, delivery);
+                cursor
+            }
+            DeliverySubmissionObservation::Terminal { watch, delivery } => {
+                let watch_error = terminal_delivery_watch_error(&delivery);
+                merge_delivery_updates(&mut sent.delivery, delivery);
+                return Ok(AskAgentResponse {
+                    request_id: None,
+                    reply: None,
+                    delivery: sent.delivery,
+                    watch_error: Some(watch_error),
+                    watch,
+                });
+            }
+            DeliverySubmissionObservation::TimedOut { watch, delivery } => {
+                merge_delivery_updates(&mut sent.delivery, delivery);
+                return Ok(AskAgentResponse {
+                        request_id: None,
+                        reply: None,
+                        delivery: sent.delivery,
+                        watch_error: Some(WatchEvidenceError {
+                            code: "delivery_submission_timeout".to_string(),
+                            message: format!(
+                                "timed out before delivery {} produced submit-start evidence; provider submission is not confirmed",
+                                delivery_message_ids.join(",")
+                            ),
+                        }),
+                        watch,
+                    });
+            }
+        }
+    } else {
+        initial.cursor.clone()
+    };
+    let watch_request = AgentWatchRequest {
         target: request.target,
         since: Some(&condition_since),
         until: Some(&condition),
@@ -1162,13 +1195,55 @@ fn send_message_and_watch_condition_with_output_echo_guard(
         follow: false,
         timeout: remaining_watch_timeout(request.timeout, started_at, request.target, &condition)?,
         output_echo_guard: request.output_echo_guard,
-    })?;
+    };
+    let watch = match agent_watch_with_output_echo_guard(watch_request) {
+        Ok(watch) => watch,
+        Err(error) if is_watch_timeout(&error) => {
+            let watch = agent_watch(
+                request.target,
+                Some(&condition_since),
+                None,
+                vec![
+                    "status".to_string(),
+                    "transcript".to_string(),
+                    "output".to_string(),
+                    "delivery".to_string(),
+                    "events".to_string(),
+                ],
+                request.tail_bytes,
+                false,
+                Duration::from_secs(5),
+            )?;
+            let delivery = matching_delivery_details(&watch, &delivery_message_ids);
+            merge_delivery_updates(&mut sent.delivery, delivery);
+            return Ok(AskAgentResponse {
+                request_id: None,
+                reply: None,
+                delivery: sent.delivery,
+                watch_error: Some(WatchEvidenceError {
+                    code: "watch_timeout".to_string(),
+                    message: error.to_string(),
+                }),
+                watch,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     Ok(AskAgentResponse {
         request_id: None,
         reply: None,
         delivery: sent.delivery,
         watch_error: None,
         watch,
+    })
+}
+
+fn is_watch_timeout(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| {
+        inner.downcast_ref::<WatchTimeoutError>().is_some()
+            || inner
+                .downcast_ref::<ControlEndpointError>()
+                .is_some_and(|error| error.code() == "watch_timeout")
     })
 }
 
@@ -1603,21 +1678,37 @@ fn is_completed_headless_delivery(detail: &DeliveryDetail) -> bool {
     detail.runtime_state == "headless_process" && detail.delivery_state == "provider_applied"
 }
 
+enum DeliverySubmissionObservation {
+    Submitted {
+        cursor: String,
+        delivery: Vec<DeliveryDetail>,
+    },
+    Terminal {
+        watch: AgentWatchResponse,
+        delivery: Vec<DeliveryDetail>,
+    },
+    TimedOut {
+        watch: AgentWatchResponse,
+        delivery: Vec<DeliveryDetail>,
+    },
+}
+
 fn wait_for_delivery_submission(
     target: &str,
     since: &str,
     message_ids: &[String],
     tail_bytes: Option<usize>,
     timeout: Duration,
-) -> io::Result<String> {
+) -> io::Result<DeliverySubmissionObservation> {
     let started_at = Instant::now();
     let mut since_cursor = since.to_string();
+    let mut observed_delivery = Vec::new();
 
     loop {
-        let watch = agent_watch_with_output_echo_guard(AgentWatchRequest {
+        let request = AgentWatchRequest {
             target,
             since: Some(&since_cursor),
-            until: Some("delivery:submit_started"),
+            until: Some("event:delivery"),
             include: vec![
                 "status".to_string(),
                 "transcript".to_string(),
@@ -1634,21 +1725,129 @@ fn wait_for_delivery_submission(
                 "delivery:submit_started",
             )?,
             output_echo_guard: None,
-        })?;
-
-        if let Some(cursor) = matching_delivery_event_cursor(&watch.events, message_ids) {
-            return Ok(cursor);
+        };
+        let (watch, timed_out) = match agent_watch_with_output_echo_guard(request) {
+            Ok(watch) => (watch, false),
+            Err(error) if is_watch_timeout(&error) => (
+                agent_watch(
+                    target,
+                    Some(&since_cursor),
+                    None,
+                    vec![
+                        "status".to_string(),
+                        "transcript".to_string(),
+                        "output".to_string(),
+                        "delivery".to_string(),
+                        "events".to_string(),
+                    ],
+                    tail_bytes,
+                    false,
+                    Duration::from_secs(5),
+                )?,
+                true,
+            ),
+            Err(error) => return Err(error),
+        };
+        let updates = matching_delivery_details(&watch, message_ids);
+        merge_delivery_updates(&mut observed_delivery, updates);
+        if observed_delivery.iter().any(delivery_is_terminal) {
+            return Ok(DeliverySubmissionObservation::Terminal {
+                watch,
+                delivery: observed_delivery,
+            });
         }
-        if watch
-            .delivery
-            .delivery
+        if let Some(cursor) = matching_delivery_event_cursor(&watch.events, message_ids) {
+            return Ok(DeliverySubmissionObservation::Submitted {
+                cursor,
+                delivery: observed_delivery,
+            });
+        }
+        if observed_delivery
             .iter()
-            .any(|detail| delivery_matches_submit(detail, message_ids))
+            .any(|detail| delivery_crossed_submission(detail, message_ids))
         {
-            return Ok(watch.cursor);
+            return Ok(DeliverySubmissionObservation::Submitted {
+                cursor: watch.cursor,
+                delivery: observed_delivery,
+            });
+        }
+        if timed_out || started_at.elapsed() >= timeout {
+            return Ok(DeliverySubmissionObservation::TimedOut {
+                watch,
+                delivery: observed_delivery,
+            });
         }
         since_cursor = watch.cursor;
     }
+}
+
+fn matching_delivery_details(
+    watch: &AgentWatchResponse,
+    message_ids: &[String],
+) -> Vec<DeliveryDetail> {
+    let event_details = watch.events.iter().filter_map(|event| {
+        (event.kind == "delivery")
+            .then(|| serde_json::from_value::<DeliveryDetail>(event.payload.clone()).ok())
+            .flatten()
+    });
+    event_details
+        .chain(watch.delivery.delivery.iter().cloned())
+        .filter(|detail| {
+            detail
+                .message_id
+                .as_ref()
+                .is_some_and(|id| message_ids.iter().any(|message_id| message_id == id))
+        })
+        .collect()
+}
+
+fn merge_delivery_updates(current: &mut Vec<DeliveryDetail>, updates: Vec<DeliveryDetail>) {
+    for update in updates {
+        if let Some(existing) = current
+            .iter_mut()
+            .find(|detail| detail.message_id.is_some() && detail.message_id == update.message_id)
+        {
+            *existing = update;
+        } else {
+            current.push(update);
+        }
+    }
+}
+
+fn delivery_is_terminal(detail: &DeliveryDetail) -> bool {
+    detail.error.is_some()
+        || matches!(
+            detail.delivery_state.as_str(),
+            "failed" | "cancelled" | "expired" | "withdrawn" | "superseded"
+        )
+}
+
+fn delivery_crossed_submission(detail: &DeliveryDetail, message_ids: &[String]) -> bool {
+    detail
+        .message_id
+        .as_ref()
+        .is_some_and(|id| message_ids.iter().any(|message_id| message_id == id))
+        && matches!(
+            detail.delivery_state.as_str(),
+            "submit_started" | "submit_sent_unconfirmed" | "provider_accepted" | "provider_applied"
+        )
+}
+
+fn terminal_delivery_watch_error(delivery: &[DeliveryDetail]) -> WatchEvidenceError {
+    delivery
+        .iter()
+        .rev()
+        .find_map(|detail| detail.error.as_ref())
+        .map_or_else(
+            || WatchEvidenceError {
+                code: "delivery_terminal".to_string(),
+                message: "delivery reached a terminal state before provider submission".to_string(),
+            },
+            |error| WatchEvidenceError {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            },
+        )
 }
 
 fn matching_delivery_event_cursor(events: &[WatchEvent], message_ids: &[String]) -> Option<String> {
@@ -2044,6 +2243,81 @@ mod tests {
             matching_delivery_event_cursor(&events, &["msg_1".to_string()]).as_deref(),
             Some("agent-1:2")
         );
+    }
+
+    #[test]
+    fn matching_delivery_details_keeps_exact_failed_delivery_classification() {
+        let failed = DeliveryDetail {
+            delivery_state: "failed".to_string(),
+            delivery_phase: Some("payload_apply_unconfirmed".to_string()),
+            error: Some(wardian_core::control::DeliveryErrorDetail {
+                code: "payload_apply_unconfirmed".to_string(),
+                message: "Return was not sent".to_string(),
+            }),
+            ..delivery_detail("queued", Some("msg_1"))
+        };
+        let watch = AgentWatchResponse {
+            schema: 1,
+            agent: wardian_core::control::WatchAgentSnapshot {
+                uuid: "agent-1".to_string(),
+                name: "agent-1".to_string(),
+                provider: "codex".to_string(),
+                status: "idle".to_string(),
+                last_status_at: None,
+            },
+            cursor: "agent-1:2".to_string(),
+            events: vec![WatchEvent {
+                cursor: "agent-1:2".to_string(),
+                kind: "delivery".to_string(),
+                payload: serde_json::to_value(&failed).unwrap(),
+            }],
+            output: wardian_core::control::WatchOutput {
+                cursor: "agent-1:2".to_string(),
+                text: String::new(),
+                truncated: false,
+                omitted_bytes: 0,
+            },
+            transcript: None,
+            raw_output: None,
+            delivery: wardian_core::control::WatchDeliverySnapshot {
+                delivery: Vec::new(),
+            },
+        };
+
+        let details = matching_delivery_details(&watch, &["msg_1".to_string()]);
+        assert_eq!(details, vec![failed]);
+        assert!(details.iter().any(delivery_is_terminal));
+        assert_eq!(
+            terminal_delivery_watch_error(&details).code,
+            "payload_apply_unconfirmed"
+        );
+    }
+
+    #[test]
+    fn delivery_update_replaces_queued_state_with_terminal_evidence() {
+        let mut current = vec![delivery_detail("queued", Some("msg_1"))];
+        let failed = DeliveryDetail {
+            delivery_state: "failed".to_string(),
+            error: Some(wardian_core::control::DeliveryErrorDetail {
+                code: "payload_apply_unconfirmed".to_string(),
+                message: "Return was not sent".to_string(),
+            }),
+            ..delivery_detail("queued", Some("msg_1"))
+        };
+
+        merge_delivery_updates(&mut current, vec![failed.clone()]);
+
+        assert_eq!(current, vec![failed]);
+    }
+
+    #[test]
+    fn backend_watch_timeout_is_recognized_for_structured_fallback() {
+        let error = io::Error::other(ControlEndpointError::new(
+            "watch_timeout",
+            "watch condition timed out",
+        ));
+
+        assert!(is_watch_timeout(&error));
     }
 
     #[test]

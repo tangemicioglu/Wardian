@@ -87,6 +87,8 @@ pub struct TerminalDeliveryError {
     pub phase: &'static str,
     pub message: String,
     pub retry_safe: bool,
+    pub observed_state: Option<String>,
+    pub reason: Option<String>,
 }
 
 impl TerminalDeliveryError {
@@ -95,7 +97,19 @@ impl TerminalDeliveryError {
             phase,
             message,
             retry_safe: false,
+            observed_state: None,
+            reason: None,
         }
+    }
+
+    pub(crate) fn with_observation(
+        mut self,
+        observed_state: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        self.observed_state = Some(observed_state.into());
+        self.reason = Some(reason.into());
+        self
     }
 }
 
