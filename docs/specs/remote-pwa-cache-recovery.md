@@ -6,6 +6,11 @@ caches, so a client holding the legacy `wardian-remote-app-shell-v1` cache
 automatically moves to the current shell on its next load.
 This requires no manual site-data deletion from the user.
 
+Remote-shell startup begins service-worker discovery before the window `load`
+event and explicitly checks the registration for an update. This matters for
+clients controlled by the legacy worker: a stalled navigation or subresource
+must not prevent the replacement worker from being fetched and activated.
+
 Navigation requests are bounded by a five-second timeout and fall back to the
 cached `/remote` shell. Shell precaching is best effort per URL, so one missing
 optional asset cannot prevent the service worker from activating. Runtime asset
