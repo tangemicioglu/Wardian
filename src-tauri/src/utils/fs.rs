@@ -1,5 +1,10 @@
+use std::io::BufRead;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
+use std::sync::{Mutex, OnceLock};
+
+use crate::utils::logging::log_debug;
+use fs2::FileExt;
 
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -593,6 +598,29 @@ pub(crate) fn sync_codex_agent_home(
     std::fs::create_dir_all(projected_home).map_err(|e| e.to_string())?;
     remove_legacy_codex_global_hardlinks(real_codex_home, projected_home)?;
 
+    if let Err(error) = ensure_codex_sessions_projection(real_codex_home, projected_home) {
+        // A visibility projection is optional. A provider must still be able
+        // to start with its existing local session tree when the host cannot
+        // create a junction or when migration finds an unresolved conflict.
+        log_debug(&format!(
+            "[Wardian] Codex session projection unavailable for {}: {}",
+            projected_home.display(),
+            error
+        ));
+        let local_sessions = projected_home.join("sessions");
+        if !local_sessions.exists() && local_sessions.symlink_metadata().is_err() {
+            let _ = std::fs::create_dir_all(local_sessions);
+        }
+    }
+
+    if let Err(error) = sync_codex_home_indexes_from(real_codex_home, projected_home) {
+        log_debug(&format!(
+            "[Wardian] Codex central index sync unavailable for {}: {}",
+            projected_home.display(),
+            error
+        ));
+    }
+
     for shared_name in CODEX_SHARED_HOME_FILES {
         let source = real_codex_home.join(shared_name);
         let target = projected_home.join(shared_name);
@@ -632,6 +660,394 @@ pub(crate) fn sync_codex_agent_home(
 }
 
 const CODEX_SHARED_HOME_FILES: &[&str] = &["auth.json", "cap_sid"];
+
+const CODEX_INDEX_FILES: &[&str] = &["session_index.jsonl", "history.jsonl"];
+const CODEX_INDEX_LOCK_FILE: &str = ".wardian-codex-index.lock";
+
+static CODEX_INDEX_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn ensure_codex_sessions_projection(
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
+) -> Result<(), String> {
+    ensure_codex_sessions_projection_with_linker(
+        real_codex_home,
+        projected_home,
+        create_directory_link,
+    )
+}
+
+fn ensure_codex_sessions_projection_with_linker<F>(
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
+    linker: F,
+) -> Result<(), String>
+where
+    F: Fn(&std::path::Path, &std::path::Path) -> Result<(), String>,
+{
+    let central_sessions = real_codex_home.join("sessions");
+    std::fs::create_dir_all(&central_sessions).map_err(|error| {
+        format!(
+            "could not create central sessions directory {}: {error}",
+            central_sessions.display()
+        )
+    })?;
+
+    let projected_sessions = projected_home.join("sessions");
+    if projected_link_matches_target(&projected_sessions, &central_sessions) {
+        return Ok(());
+    }
+
+    let migration_backup = projected_home.join(".sessions.wardian-migration");
+    if !projected_sessions.exists() && projected_sessions.symlink_metadata().is_err() {
+        if migration_backup.exists() || migration_backup.symlink_metadata().is_ok() {
+            std::fs::rename(&migration_backup, &projected_sessions).map_err(|error| {
+                format!(
+                    "could not recover local sessions from {}: {error}",
+                    migration_backup.display()
+                )
+            })?;
+        } else {
+            std::fs::create_dir_all(&projected_sessions).map_err(|error| {
+                format!(
+                    "could not create local sessions directory {}: {error}",
+                    projected_sessions.display()
+                )
+            })?;
+        }
+    }
+
+    let projected_metadata = projected_sessions.symlink_metadata().map_err(|error| {
+        format!(
+            "could not inspect {}: {error}",
+            projected_sessions.display()
+        )
+    })?;
+    if is_directory_link(&projected_metadata) {
+        return Err(format!(
+            "{} is an existing directory link to an unexpected target",
+            projected_sessions.display()
+        ));
+    }
+    if !projected_metadata.is_dir() {
+        return Err(format!(
+            "{} is not a directory",
+            projected_sessions.display()
+        ));
+    }
+    if migration_backup.exists() || migration_backup.symlink_metadata().is_ok() {
+        return Err(format!(
+            "stale migration backup already exists at {}",
+            migration_backup.display()
+        ));
+    }
+
+    // Copy first and retain the local tree until the link succeeds. This
+    // makes a failed junction attempt degrade to the original local-only
+    // behavior without stranding an established habitat's sessions.
+    copy_codex_session_tree(&projected_sessions, &central_sessions)?;
+    std::fs::rename(&projected_sessions, &migration_backup)
+        .map_err(|error| format!("could not stage local sessions for projection: {error}"))?;
+
+    match linker(&central_sessions, &projected_sessions) {
+        Ok(()) => {
+            if let Err(error) = std::fs::remove_dir_all(&migration_backup) {
+                log_debug(&format!(
+                    "[Wardian] Codex session migration backup cleanup deferred for {}: {}",
+                    migration_backup.display(),
+                    error
+                ));
+            }
+            Ok(())
+        }
+        Err(link_error) => {
+            let _ = remove_directory_link(&projected_sessions);
+            if let Err(restore_error) = std::fs::rename(&migration_backup, &projected_sessions) {
+                return Err(format!(
+                    "directory link failed ({link_error}); local session restore failed ({restore_error})"
+                ));
+            }
+            Err(format!("directory link failed: {link_error}"))
+        }
+    }
+}
+
+pub(crate) fn is_directory_link(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn remove_directory_link(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !is_directory_link(&metadata) {
+        return Err(format!("{} is not a directory link", path.display()));
+    }
+
+    std::fs::remove_dir(path)
+        .or_else(|_| std::fs::remove_file(path))
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn copy_codex_session_tree(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata =
+            std::fs::symlink_metadata(&source_path).map_err(|error| error.to_string())?;
+
+        if is_directory_link(&metadata) {
+            return Err(format!(
+                "session tree contains an unsupported directory link at {}",
+                source_path.display()
+            ));
+        }
+
+        if metadata.is_dir() {
+            if target_path.exists() || target_path.symlink_metadata().is_ok() {
+                let target_metadata = target_path
+                    .symlink_metadata()
+                    .map_err(|error| error.to_string())?;
+                if is_directory_link(&target_metadata) || !target_metadata.is_dir() {
+                    return Err(format!(
+                        "session tree migration conflict at {}",
+                        target_path.display()
+                    ));
+                }
+            }
+            copy_codex_session_tree(&source_path, &target_path)?;
+            continue;
+        }
+
+        if !metadata.is_file() {
+            return Err(format!(
+                "session tree contains unsupported entry at {}",
+                source_path.display()
+            ));
+        }
+
+        if target_path.exists() || target_path.symlink_metadata().is_ok() {
+            if same_file_contents(&source_path, &target_path) {
+                continue;
+            }
+            return Err(format!(
+                "session rollout name conflict at {}",
+                target_path.display()
+            ));
+        }
+
+        copy_codex_session_file(&source_path, &target_path)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_codex_session_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session");
+    let temporary_path = target.with_file_name(format!(
+        ".{file_name}.wardian-copy-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    if let Err(error) = std::fs::copy(source, &temporary_path)
+        .and_then(|_| std::fs::rename(&temporary_path, target))
+    {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(format!(
+            "could not migrate {} to {}: {error}",
+            source.display(),
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Copy complete JSONL records from an agent-local Codex home into the real
+/// Codex home. The provider remains the writer of the local source; Wardian
+/// serializes all outbound writes and never copies credentials outward.
+pub(crate) fn sync_codex_home_indexes(projected_home: &std::path::Path) -> Result<(), String> {
+    let real_codex_home = dirs::home_dir()
+        .ok_or("Could not find user home directory")?
+        .join(".codex");
+    sync_codex_home_indexes_from(&real_codex_home, projected_home)
+}
+
+pub(crate) fn observe_codex_indexes() {
+    let Some(wardian_home) = get_wardian_home() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(wardian_home.join("agents")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let session_id = entry.file_name().to_string_lossy().into_owned();
+        let projected_home = entry.path().join("habitat").join(".codex");
+        if !projected_home.is_dir() {
+            continue;
+        }
+        if let Err(error) = sync_codex_home_indexes(&projected_home) {
+            log_debug(&format!(
+                "[Wardian] Failed to observe Codex indexes for {session_id}: {error}"
+            ));
+        }
+    }
+}
+
+fn sync_codex_home_indexes_from(
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
+) -> Result<(), String> {
+    if real_codex_home == projected_home {
+        return Ok(());
+    }
+    if !CODEX_INDEX_FILES
+        .iter()
+        .any(|file_name| projected_home.join(file_name).is_file())
+    {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(real_codex_home).map_err(|error| error.to_string())?;
+    let process_lock = CODEX_INDEX_PROCESS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_path = real_codex_home.join(CODEX_INDEX_LOCK_FILE);
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("could not open {}: {error}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|error| format!("could not lock {}: {error}", lock_path.display()))?;
+
+    let result = (|| {
+        for file_name in CODEX_INDEX_FILES {
+            append_missing_codex_jsonl_records(
+                &projected_home.join(file_name),
+                &real_codex_home.join(file_name),
+            )?;
+        }
+        Ok(())
+    })();
+    let _ = lock_file.unlock();
+    drop(process_lock);
+    result
+}
+
+fn append_missing_codex_jsonl_records(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    let (source_records, _) = read_codex_jsonl_records(source, false)?;
+    let (target_records, target_needs_repair) = read_codex_jsonl_records(target, true)?;
+    let mut records = Vec::with_capacity(target_records.len() + source_records.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut needs_rewrite = target_needs_repair;
+
+    for record in target_records {
+        let key = record.to_string();
+        if seen.insert(key) {
+            records.push(record);
+        } else {
+            needs_rewrite = true;
+        }
+    }
+    for record in source_records {
+        let key = record.to_string();
+        if seen.insert(key) {
+            records.push(record);
+            needs_rewrite = true;
+        }
+    }
+
+    if !needs_rewrite {
+        return Ok(());
+    }
+
+    wardian_core::conversations::write_jsonl_atomic(target, &records)
+        .map_err(|error| format!("could not atomically publish {}: {error}", target.display()))
+}
+
+fn read_codex_jsonl_records(
+    path: &std::path::Path,
+    repair_invalid_records: bool,
+) -> Result<(Vec<serde_json::Value>, bool), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), false));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if is_directory_link(&metadata) {
+        return Err(format!(
+            "refusing to read linked Codex JSONL path {}",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Codex JSONL path is not a file: {}",
+            path.display()
+        ));
+    }
+
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    let mut records = Vec::new();
+    let mut needs_repair = false;
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            break;
+        }
+        if !line.ends_with('\n') {
+            needs_repair |= repair_invalid_records;
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            needs_repair |= repair_invalid_records;
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(_) => {
+                needs_repair |= repair_invalid_records;
+                continue;
+            }
+        };
+        records.push(value);
+    }
+    Ok((records, needs_repair))
+}
 
 /// Compose the shared Codex configuration into an agent-local overlay without
 /// replacing agent-owned keys such as projects and local overrides.
@@ -1300,11 +1716,12 @@ mod tests {
     use super::{
         append_habitat_memory_instructions, build_habitat_skill_projection,
         build_opencode_runtime_config, codex_trusted_project_key, create_directory_link,
-        ensure_claude_permission_hook, habitat_root_for_session, prepare_provider_habitat,
-        project_antigravity_include_directories, projected_link_matches_target,
-        provider_uses_projected_workspace, resolve_opencode_runtime_roots,
-        resolve_system_include_directories, sync_codex_agent_home, sync_opencode_config_dir,
-        write_habitat_instruction_files,
+        ensure_claude_permission_hook, ensure_codex_sessions_projection,
+        ensure_codex_sessions_projection_with_linker, habitat_root_for_session,
+        prepare_provider_habitat, project_antigravity_include_directories,
+        projected_link_matches_target, provider_uses_projected_workspace,
+        resolve_opencode_runtime_roots, resolve_system_include_directories, sync_codex_agent_home,
+        sync_codex_home_indexes_from, sync_opencode_config_dir, write_habitat_instruction_files,
     };
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1465,9 +1882,221 @@ mod tests {
         assert!(!projected_home.join("logs_2.sqlite").exists());
         assert!(!projected_home.join("logs_2.sqlite-wal").exists());
         assert!(!projected_home.join("sandbox.log").exists());
-        assert!(!projected_home.join("sessions").exists());
+        assert!(projected_link_matches_target(
+            &projected_home.join("sessions"),
+            &real_home.join("sessions")
+        ));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_sessions_projection_migrates_without_renaming_and_is_idempotent() {
+        let root = unique_temp_dir("codex-sessions-projection");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        let rollout = projected_home
+            .join("sessions")
+            .join("2026")
+            .join("08")
+            .join("29")
+            .join("rollout-2026-08-29T12-00-00-session.jsonl");
+
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent")).expect("create local");
+        std::fs::write(&rollout, "session").expect("write local rollout");
+
+        ensure_codex_sessions_projection(&real_home, &projected_home)
+            .expect("create sessions projection");
+
+        let central_rollout = real_home
+            .join("sessions")
+            .join("2026")
+            .join("08")
+            .join("29")
+            .join("rollout-2026-08-29T12-00-00-session.jsonl");
+        assert_eq!(
+            std::fs::read_to_string(&central_rollout).expect("read central rollout"),
+            "session"
+        );
+        assert!(projected_link_matches_target(
+            &projected_home.join("sessions"),
+            &real_home.join("sessions")
+        ));
+
+        ensure_codex_sessions_projection(&real_home, &projected_home)
+            .expect("repeat sessions projection");
+        assert_eq!(
+            std::fs::read_dir(
+                real_home
+                    .join("sessions")
+                    .join("2026")
+                    .join("08")
+                    .join("29")
+            )
+            .expect("read central day")
+            .count(),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_sessions_projection_restores_local_tree_when_link_creation_fails() {
+        let root = unique_temp_dir("codex-sessions-projection-failure");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        let rollout = projected_home.join("sessions").join("local.jsonl");
+
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent")).expect("create local");
+        std::fs::write(&rollout, "local session").expect("write local rollout");
+
+        let result = ensure_codex_sessions_projection_with_linker(
+            &real_home,
+            &projected_home,
+            |_target, _link| Err("link denied".to_string()),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&rollout).expect("local rollout must be restored"),
+            "local session"
+        );
+        assert!(!projected_link_matches_target(
+            &projected_home.join("sessions"),
+            &real_home.join("sessions")
+        ));
+        assert_eq!(
+            std::fs::read_to_string(real_home.join("sessions").join("local.jsonl"))
+                .expect("migration copy remains safe"),
+            "local session"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_home_index_sync_deduplicates_complete_records_and_stays_inward_only() {
+        let root = unique_temp_dir("codex-home-index-sync");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        std::fs::create_dir_all(&real_home).expect("create real home");
+        std::fs::create_dir_all(&projected_home).expect("create projected home");
+
+        std::fs::write(
+            real_home.join("session_index.jsonl"),
+            "{\"id\":\"existing\",\"thread_name\":\"Existing\"}\n",
+        )
+        .expect("write central index");
+        std::fs::write(
+            projected_home.join("session_index.jsonl"),
+            "{\"id\":\"existing\",\"thread_name\":\"Existing\"}\n{\"id\":\"new\",\"thread_name\":\"New\"}\nnot-json\n{\"id\":\"partial\"}",
+        )
+        .expect("write agent index");
+        std::fs::write(
+            projected_home.join("history.jsonl"),
+            "{\"session_id\":\"new\",\"text\":\"hello\"}\n",
+        )
+        .expect("write agent history");
+        std::fs::write(projected_home.join("auth.json"), "must stay inward").expect("write auth");
+
+        sync_codex_home_indexes_from(&real_home, &projected_home).expect("sync indexes");
+        sync_codex_home_indexes_from(&real_home, &projected_home).expect("repeat index sync");
+
+        let central_index = std::fs::read_to_string(real_home.join("session_index.jsonl"))
+            .expect("read central index");
+        assert_eq!(central_index.matches("\"id\":\"new\"").count(), 1);
+        assert!(!central_index.contains("partial"));
+        assert!(!central_index.contains("not-json"));
+        assert_eq!(
+            std::fs::read_to_string(real_home.join("history.jsonl"))
+                .expect("read central history")
+                .matches("\"session_id\":\"new\"")
+                .count(),
+            1
+        );
+        assert!(!real_home.join("auth.json").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_home_index_sync_repairs_invalid_target_tail_atomically() {
+        let root = unique_temp_dir("codex-home-index-repair");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        std::fs::create_dir_all(&real_home).expect("create real home");
+        std::fs::create_dir_all(&projected_home).expect("create projected home");
+
+        std::fs::write(
+            real_home.join("history.jsonl"),
+            "{\"id\":\"existing\"}\n{\"id\":\"torn\"",
+        )
+        .expect("write interrupted central history");
+        std::fs::write(projected_home.join("history.jsonl"), "{\"id\":\"new\"}\n")
+            .expect("write agent history");
+
+        sync_codex_home_indexes_from(&real_home, &projected_home)
+            .expect("repair and publish central history");
+
+        let central = std::fs::read_to_string(real_home.join("history.jsonl"))
+            .expect("read repaired central history");
+        assert_eq!(central.matches("\"id\":\"existing\"").count(), 1);
+        assert_eq!(central.matches("\"id\":\"new\"").count(), 1);
+        assert!(!central.contains("torn"));
+        assert!(central.ends_with('\n'));
+        for line in central.lines() {
+            serde_json::from_str::<serde_json::Value>(line).expect("every central line is JSON");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_home_index_sync_rejects_linked_source_and_target_files() {
+        use std::os::unix::fs::symlink;
+
+        let source_root = unique_temp_dir("codex-home-index-source-link");
+        let source_real_home = source_root.join("real-codex-home");
+        let source_projected_home = source_root.join("projected-home");
+        let source_outside = source_root.join("outside.jsonl");
+        std::fs::create_dir_all(&source_real_home).expect("create real source home");
+        std::fs::create_dir_all(&source_projected_home).expect("create projected source home");
+        std::fs::write(&source_outside, "{\"id\":\"outside\"}\n").expect("write source");
+        symlink(&source_outside, source_projected_home.join("history.jsonl"))
+            .expect("link source history");
+
+        let source_error = sync_codex_home_indexes_from(&source_real_home, &source_projected_home)
+            .expect_err("linked source must be rejected");
+        assert!(source_error.contains("linked Codex JSONL path"));
+        assert!(!source_real_home.join("history.jsonl").exists());
+
+        let target_root = unique_temp_dir("codex-home-index-target-link");
+        let target_real_home = target_root.join("real-codex-home");
+        let target_projected_home = target_root.join("projected-home");
+        let target_outside = target_root.join("outside.jsonl");
+        std::fs::create_dir_all(&target_real_home).expect("create real target home");
+        std::fs::create_dir_all(&target_projected_home).expect("create projected target home");
+        std::fs::write(&target_outside, "do not modify\n").expect("write target");
+        std::fs::write(
+            target_projected_home.join("history.jsonl"),
+            "{\"id\":\"agent\"}\n",
+        )
+        .expect("write target source history");
+        symlink(&target_outside, target_real_home.join("history.jsonl"))
+            .expect("link target history");
+
+        let target_error = sync_codex_home_indexes_from(&target_real_home, &target_projected_home)
+            .expect_err("linked target must be rejected");
+        assert!(target_error.contains("linked Codex JSONL path"));
+        assert_eq!(
+            std::fs::read_to_string(&target_outside).expect("read outside target"),
+            "do not modify\n"
+        );
+
+        let _ = std::fs::remove_dir_all(source_root);
+        let _ = std::fs::remove_dir_all(target_root);
     }
 
     #[test]

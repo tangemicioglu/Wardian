@@ -137,13 +137,21 @@ Current model:
 - the user's `config.toml` is a managed base, not a shared home. Wardian
   reconciles missing base policy values into the agent's own `config.toml` and
   preserves agent model choices, project trust, and local overrides.
-- Codex session and history files such as `history.jsonl`,
-  `session_index.jsonl`, and `sessions/**` remain per-agent so Wardian can
-  resume and read logs from the agent habitat without merging independent
-  provider threads.
+- Codex projects `sessions/**` from the native Codex home into each agent home
+  through a directory link (a Windows junction on Windows). Existing local
+  rollouts are copied first without changing their filenames. If link creation
+  fails, the local sessions tree is restored and the provider continues in
+  local-only mode.
+- The provider writes agent-local `history.jsonl` and `session_index.jsonl`.
+  Wardian is the sole writer to the central copies: it publishes complete,
+  validated records under a cross-process lock, atomically republishes the
+  complete central file, repairs invalid central tails, and de-duplicates repeat
+  observations.
 - Codex SQLite databases such as `state_5.sqlite*` and `logs_2.sqlite*` remain
-  per-agent because SQLite journal/WAL files are path-sensitive and are not safe
-  to hardlink across independent `CODEX_HOME` directories.
+  per-agent because SQLite journal/WAL files are path-sensitive and are never
+  shared or hardlinked. Runtime logs, caches, and temporary files remain local.
+- `auth.json` and `cap_sid` flow only from the native Codex home into an agent
+  home; they are never copied back outward.
 - Codex runtime directories such as `log`, cache, temp, and
   generated database files remain per-agent.
 - On Windows, Codex elevated sandbox support is treated separately from session

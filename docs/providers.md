@@ -101,9 +101,20 @@ Codex executes against the real target workspace while Wardian keeps mutable pro
 
 Codex reads `AGENTS.md`. Wardian passes the real project root with `--cd <absolute-workspace-path>` and projects assigned skills into the agent-specific `CODEX_HOME/skills` tree. This keeps skill scope per agent while preserving Codex trust and command execution against the actual repository path.
 
-Each agent keeps its own Codex home. Wardian reconciles shared configuration defaults into
-that home without copying another agent's sessions, history, databases, workspace
-trust, or local overrides.
+Each agent keeps its own mutable Codex home. Wardian links that home's
+`sessions/` directory to the native Codex `sessions/` directory, using a
+Windows junction where supported and the platform equivalent elsewhere. Local
+rollouts are migrated without changing their filenames; if linking fails, the
+local sessions tree is restored and the provider continues in local-only mode.
+
+The provider writes its local `history.jsonl` and `session_index.jsonl` files,
+while Wardian alone atomically republishes complete, validated,
+de-duplicated records to the native central copies under a cross-process lock.
+Invalid central tails are repaired during that publication. Codex SQLite databases,
+including WAL/SHM sidecars, remain isolated per agent. `auth.json` and
+`cap_sid` are copied inward only and never projected back outward. This layout
+was verified against Codex CLI `0.150.1` and should be rechecked when the
+provider changes its on-disk contract.
 
 ### Plugin Pass-Through
 

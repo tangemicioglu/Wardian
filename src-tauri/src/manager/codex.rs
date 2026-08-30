@@ -1,4 +1,4 @@
-use crate::utils::fs::sync_codex_windows_sandbox_support;
+use crate::utils::fs::{sync_codex_home_indexes, sync_codex_windows_sandbox_support};
 pub(crate) fn codex_bootstrap_workspace_key(workspace_cwd: &std::path::Path) -> String {
     let normalized = workspace_cwd.to_string_lossy().to_ascii_lowercase();
     let mut hash = 0xcbf29ce484222325u64;
@@ -136,6 +136,12 @@ pub(crate) fn migrate_codex_bootstrap_home(
 
     std::fs::create_dir_all(final_home).map_err(|e| e.to_string())?;
     sync_codex_windows_sandbox_support(bootstrap_home, final_home)?;
+    if let Err(error) = sync_codex_home_indexes(bootstrap_home) {
+        crate::utils::logging::log_debug(&format!(
+            "[Wardian] Failed to sync Codex bootstrap indexes from {}: {error}",
+            bootstrap_home.display()
+        ));
+    }
 
     let entries = std::fs::read_dir(bootstrap_home).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
@@ -149,6 +155,8 @@ pub(crate) fn migrate_codex_bootstrap_home(
             "auth.json"
                 | "config.toml"
                 | "cap_sid"
+                | "history.jsonl"
+                | "session_index.jsonl"
                 | "state_5.sqlite"
                 | "state_5.sqlite-shm"
                 | "state_5.sqlite-wal"
@@ -178,6 +186,9 @@ pub(crate) fn migrate_codex_bootstrap_home(
         }
 
         if name_str == "sessions" {
+            if paths_resolve_to_same_directory(&source, &target) {
+                continue;
+            }
             merge_missing_codex_session_entries(&source, &target)?;
             continue;
         }
@@ -194,36 +205,105 @@ pub(crate) fn migrate_codex_bootstrap_home(
     Ok(())
 }
 
+fn paths_resolve_to_same_directory(left: &std::path::Path, right: &std::path::Path) -> bool {
+    left.is_dir()
+        && right.is_dir()
+        && left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
 /// Merge fresh bootstrap rollouts into an existing agent-local Codex session tree.
 ///
 /// Established agents already have a `sessions` directory, so treating it as an
 /// all-or-nothing top-level entry leaves every newly bootstrapped rollout behind.
 /// Session rollouts have unique thread IDs; retain any existing file on collision
-/// and move only missing entries into the agent's projected `CODEX_HOME`.
+/// and move only missing entries into the agent's projected `CODEX_HOME`. A
+/// linked bootstrap source is copied rather than moved so the native Codex
+/// sessions tree remains intact if the final home is still local-only.
 fn merge_missing_codex_session_entries(
     source_dir: &std::path::Path,
     target_dir: &std::path::Path,
 ) -> Result<(), String> {
+    let preserve_source = std::fs::symlink_metadata(source_dir)
+        .map(|metadata| crate::utils::fs::is_directory_link(&metadata))
+        .unwrap_or(false);
+    merge_missing_codex_session_entries_inner(source_dir, target_dir, preserve_source)
+}
+
+fn merge_missing_codex_session_entries_inner(
+    source_dir: &std::path::Path,
+    target_dir: &std::path::Path,
+    preserve_source: bool,
+) -> Result<(), String> {
+    if target_dir.exists() || target_dir.symlink_metadata().is_ok() {
+        let target_metadata = target_dir
+            .symlink_metadata()
+            .map_err(|error| error.to_string())?;
+        if crate::utils::fs::is_directory_link(&target_metadata) || !target_metadata.is_dir() {
+            return Err(format!(
+                "session migration target is not a local directory: {}",
+                target_dir.display()
+            ));
+        }
+    }
     std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
 
     let entries = std::fs::read_dir(source_dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let source = entry.path();
         let target = target_dir.join(entry.file_name());
+        let source_metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
 
-        if source.is_dir() {
+        if crate::utils::fs::is_directory_link(&source_metadata) {
+            return Err(format!(
+                "session migration source contains an unsupported link: {}",
+                source.display()
+            ));
+        }
+
+        if source_metadata.is_dir() {
             if target.exists() || target.symlink_metadata().is_ok() {
-                if target.is_dir() {
-                    merge_missing_codex_session_entries(&source, &target)?;
+                let target_metadata = target
+                    .symlink_metadata()
+                    .map_err(|error| error.to_string())?;
+                if crate::utils::fs::is_directory_link(&target_metadata)
+                    || !target_metadata.is_dir()
+                {
+                    return Err(format!(
+                        "session migration target conflict at {}",
+                        target.display()
+                    ));
+                }
+                merge_missing_codex_session_entries_inner(&source, &target, preserve_source)?;
+                if !preserve_source {
                     let _ = std::fs::remove_dir(&source);
                 }
                 continue;
             }
+            if preserve_source {
+                crate::utils::fs::copy_codex_session_tree(&source, &target)?;
+            } else {
+                std::fs::rename(&source, &target).map_err(|e| e.to_string())?;
+            }
+            continue;
         } else if target.exists() || target.symlink_metadata().is_ok() {
             continue;
         }
 
-        std::fs::rename(&source, &target).map_err(|e| e.to_string())?;
+        if !source_metadata.is_file() {
+            return Err(format!(
+                "session migration source contains unsupported entry: {}",
+                source.display()
+            ));
+        }
+        if preserve_source {
+            crate::utils::fs::copy_codex_session_file(&source, &target)?;
+        } else {
+            std::fs::rename(&source, &target).map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(())
@@ -336,6 +416,87 @@ mod tests {
         assert!(
             !fresh_rollout.exists(),
             "the bootstrap rollout must leave the reusable bootstrap home"
+        );
+    }
+
+    #[test]
+    fn migrate_codex_bootstrap_home_does_not_recurse_through_shared_sessions_link() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let shared_sessions = temp.path().join("real-sessions");
+        let bootstrap_home = temp.path().join("bootstrap").join(".codex");
+        let final_home = temp.path().join("final").join(".codex");
+        std::fs::create_dir_all(&shared_sessions).expect("create shared sessions");
+        std::fs::write(shared_sessions.join("rollout.jsonl"), "shared session")
+            .expect("write shared rollout");
+        std::fs::create_dir_all(&bootstrap_home).expect("create bootstrap home");
+        std::fs::create_dir_all(&final_home).expect("create final home");
+        crate::utils::fs::create_directory_link(&shared_sessions, &bootstrap_home.join("sessions"))
+            .expect("link bootstrap sessions");
+        crate::utils::fs::create_directory_link(&shared_sessions, &final_home.join("sessions"))
+            .expect("link final sessions");
+
+        migrate_codex_bootstrap_home(&bootstrap_home, &final_home)
+            .expect("migrate linked bootstrap home");
+
+        assert_eq!(
+            bootstrap_home
+                .join("sessions")
+                .canonicalize()
+                .expect("resolve bootstrap sessions"),
+            shared_sessions
+                .canonicalize()
+                .expect("resolve shared sessions")
+        );
+        assert_eq!(
+            final_home
+                .join("sessions")
+                .canonicalize()
+                .expect("resolve final sessions"),
+            shared_sessions
+                .canonicalize()
+                .expect("resolve shared sessions")
+        );
+        assert!(shared_sessions.join("rollout.jsonl").exists());
+    }
+
+    #[test]
+    fn migrate_codex_bootstrap_home_copies_from_linked_source_without_moving_native_sessions() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let shared_sessions = temp.path().join("real-sessions");
+        let bootstrap_home = temp.path().join("bootstrap").join(".codex");
+        let final_home = temp.path().join("final").join(".codex");
+        let rollout = shared_sessions
+            .join("2026")
+            .join("08")
+            .join("29")
+            .join("linked-rollout.jsonl");
+
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent"))
+            .expect("create shared sessions");
+        std::fs::write(&rollout, "native session").expect("write native rollout");
+        std::fs::create_dir_all(&bootstrap_home).expect("create bootstrap home");
+        std::fs::create_dir_all(final_home.join("sessions")).expect("create local final sessions");
+        crate::utils::fs::create_directory_link(&shared_sessions, &bootstrap_home.join("sessions"))
+            .expect("link bootstrap sessions");
+
+        migrate_codex_bootstrap_home(&bootstrap_home, &final_home)
+            .expect("migrate linked bootstrap home into local final home");
+
+        assert_eq!(
+            std::fs::read_to_string(&rollout).expect("native rollout remains"),
+            "native session"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                final_home
+                    .join("sessions")
+                    .join("2026")
+                    .join("08")
+                    .join("29")
+                    .join("linked-rollout.jsonl")
+            )
+            .expect("local final rollout is copied"),
+            "native session"
         );
     }
 
