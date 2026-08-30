@@ -1692,8 +1692,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
             "target": args.to,
             "input_mode": input_mode,
             "status": watch.agent.status,
-            "delivery": response.delivery,
-            "watch_error": response.watch_error,
+            "delivery": response.delivery, "watch_error": response.watch_error,
             "cursor": watch.cursor,
         })
     } else {
