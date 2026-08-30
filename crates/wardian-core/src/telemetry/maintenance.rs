@@ -145,7 +145,8 @@ fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<Dir
     ] {
         let mut statement = conn.prepare(&format!(
             "SELECT session_id, {timestamp_column}
-             FROM {table} WHERE {timestamp_column} < ?1"
+             FROM {table}
+             WHERE unixepoch({timestamp_column}) < unixepoch(?1)"
         ))?;
         let rows = statement.query_map(params![cutoff], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -158,7 +159,8 @@ fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<Dir
 
     let mut statement = conn.prepare(
         "SELECT session_id, started_at, ended_at
-         FROM telemetry_activity WHERE ended_at <= ?1",
+         FROM telemetry_activity
+         WHERE unixepoch(ended_at) <= unixepoch(?1)",
     )?;
     let rows = statement.query_map(params![cutoff], |row| {
         Ok((
@@ -267,7 +269,7 @@ fn delete_turns_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, ended_at
                  FROM telemetry_turns
-                 WHERE ended_at < ?1
+                 WHERE unixepoch(ended_at) < unixepoch(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -310,7 +312,7 @@ fn delete_edits_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, occurred_at
                  FROM telemetry_edits
-                 WHERE occurred_at < ?1
+                 WHERE unixepoch(occurred_at) < unixepoch(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -353,7 +355,7 @@ fn delete_activity_before(
             let mut statement = tx.prepare(
                 "SELECT id, session_id, started_at, ended_at
                  FROM telemetry_activity
-                 WHERE ended_at <= ?1
+                 WHERE unixepoch(ended_at) <= unixepoch(?1)
                  ORDER BY id
                  LIMIT ?2",
             )?;
@@ -492,6 +494,53 @@ mod tests {
             1
         );
         assert!(backup.exists());
+    }
+
+    #[test]
+    fn maintenance_compares_rfc3339_timestamps_chronologically() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup = directory.path().join("state.db.backup");
+        let conn = Connection::open(&database).unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        for (event_key, ended_at) in [
+            ("before-with-offset", "2026-08-29T13:30:00+02:00"),
+            ("after-with-offset", "2026-08-29T13:30:00+01:00"),
+            ("exact-boundary", "2026-08-29T12:00:00+00:00"),
+        ] {
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, model, ended_at,
+                     input_tokens, output_tokens, source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', ?2, 'model-a', ?3,
+                         1, 1, 'source-a', 'log')",
+                params![event_key, event_key, ended_at],
+            )
+            .unwrap();
+        }
+
+        let now = DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let report = maintain_at(&conn, 1, &backup, false, now).unwrap();
+        assert_eq!(report.turns_deleted, 1);
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turns
+                 WHERE event_key IN ('after-with-offset', 'exact-boundary')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

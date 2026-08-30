@@ -74,7 +74,12 @@ across its resumable copy batches. This is why all older app/CLI binaries and
 offline writers must be stopped before the first upgraded startup: exclusive
 locking mode alone does not fence writers in WAL mode. Once the migration
 completes or is interrupted, the connection restores its prior journal and
-locking modes, and the next run resumes from its last committed marker.
+locking modes, and the next run resumes from its last committed marker. The
+database keeps `schema_version=4` as the legacy write-ABI marker and records
+`normalized_schema_version=5` separately. This forward-only marker prevents an
+older v4 client from entering its destructive reset path; its legacy index
+setup fails closed against the compatibility views, so upgrade older clients
+before using this database again.
 
 ## Inbox Read and Write Paths
 
