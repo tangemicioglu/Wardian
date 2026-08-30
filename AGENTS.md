@@ -182,4 +182,32 @@ All agents must follow these standards to ensure a clean, high-governance reposi
 - **Atomic Commits**: Group related changes into small, semantic commits. Use [Conventional Commits](https://www.conventionalcommits.org/) (e.g., `feat:`, `fix:`, `docs:`, `chore:`).
 - **Issue Linking**: Every PR must link to an existing GitHub issue. If no issue exists, create one before starting the implementation.
 - **PR Descriptions**: Always use the provided PR template. Explain the "Why" behind the change and include evidence of successful verification (logs or test results).
+### GitHub CLI Body Formatting
+- **Never pass a multi-line body as an inline string.** `gh issue comment --body "## Why\nFixes #123"` posts the characters `\n` literally, because neither `bash` double quotes nor PowerShell expand `\n`. The result is an unreadable wall of text in the PR description or issue comment a human then has to read.
+- **Always write the body to a file and use `--body-file`.** Applies to `gh pr create`, `gh pr edit`, `gh pr comment`, `gh issue create`, and `gh issue comment`.
+
+POSIX `bash`/`sh`:
+
+```bash
+cat > /tmp/body.md <<'EOF'
+## Why
+Fixes #123.
+EOF
+gh pr create --body-file /tmp/body.md
+```
+
+PowerShell:
+
+```powershell
+@'
+## Why
+Fixes #123.
+'@ | Set-Content -Path $env:TEMP\body.md -Encoding utf8
+gh pr create --body-file $env:TEMP\body.md
+```
+
+- Use a **quoted** heredoc delimiter (`<<'EOF'`) or a single-quoted here-string (`@'...'@`) so backticks, `$`, and backslashes in the body are not expanded by the shell.
+- After creating or editing a body, **verify it rendered**: `gh pr view <n> --json body --jq '.body' | head`. If literal `\n` appears, rewrite it with `--body-file`.
+- Single-line bodies may use `--body` inline.
+
 - **CI Readiness**: Before opening a PR, run the full verification suite (`npm run typecheck/lint/test`, the `check:` gates listed above, and `cargo clippy/fmt/test`) to ensure green status on GitHub Actions. A PR is "ready" only when three separately checkable facts hold, not when a status update says so: every required check is green, merge conflicts are resolved, and a review verdict is on record with zero blocking findings. Verify each one directly before reporting a PR as ready.
