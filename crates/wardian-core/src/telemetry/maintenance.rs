@@ -19,6 +19,9 @@ use std::io;
 use std::path::Path;
 
 const DELETE_BATCH_SIZE: i64 = 2_000;
+/// Upper bound accepted by retention so subtracting the window stays within
+/// chrono's representable `DateTime<Utc>` range for every current timestamp.
+pub const MAX_RETENTION_DAYS: u32 = 90_000_000;
 const RETENTION_PREPARED_KEY: &str = "telemetry_maintenance_prepared_cutoff";
 const RETENTION_WINDOW_KEY: &str = "telemetry_maintenance_prepared_retain_days";
 
@@ -73,11 +76,11 @@ fn maintain_at_with_hook(
     if retain_days == 0 {
         return Err(invalid_request("retention must be at least one day"));
     }
+    let requested_cutoff = retention_cutoff(now, retain_days)?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     let _telemetry_lock = acquire_telemetry_lock(conn)?;
     create_verified_backup(conn, backup_path)?;
 
-    let requested_cutoff = retention_cutoff(now, retain_days);
     let cutoff = prepare_retention_rollups(conn, &requested_cutoff, retain_days)?;
     let turns_deleted = delete_turns_before(conn, &cutoff, after_batch)?;
     let edits_deleted = delete_edits_before(conn, &cutoff, after_batch)?;
@@ -107,14 +110,21 @@ fn maintain_at_with_hook(
 
 /// Round the requested retention boundary down to an hour so only complete
 /// rollup buckets are retired.
-pub fn retention_cutoff(now: DateTime<Utc>, retain_days: u32) -> String {
-    let raw = now - Duration::days(i64::from(retain_days));
+pub fn retention_cutoff(now: DateTime<Utc>, retain_days: u32) -> rusqlite::Result<String> {
+    if retain_days == 0 || retain_days > MAX_RETENTION_DAYS {
+        return Err(invalid_request(
+            "retention window is outside the supported date range",
+        ));
+    }
+    let raw = now
+        .checked_sub_signed(Duration::days(i64::from(retain_days)))
+        .ok_or_else(|| invalid_request("retention window is outside the supported date range"))?;
     let floored = raw
         .with_minute(0)
         .and_then(|value| value.with_second(0))
         .and_then(|value| value.with_nanosecond(0))
         .unwrap_or(raw);
-    floored.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    Ok(floored.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn create_verified_backup(conn: &Connection, backup_path: &Path) -> rusqlite::Result<()> {
@@ -421,7 +431,27 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-08-30T12:37:45.123Z")
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(retention_cutoff(now, 90), "2026-06-01T12:00:00.000Z");
+        assert_eq!(
+            retention_cutoff(now, 90).unwrap(),
+            "2026-06-01T12:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn retention_rejects_windows_outside_the_supported_date_range_before_backup() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup = directory.path().join("state.db.backup");
+        let conn = Connection::open(&database).unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-08-30T12:37:45.123Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let error = maintain_at(&conn, u32::MAX, &backup, false, now).unwrap_err();
+
+        assert!(error.to_string().contains("supported date range"));
+        assert!(!backup.exists());
     }
 
     #[test]
@@ -534,16 +564,24 @@ mod tests {
             )
             .unwrap();
         }
-        for (interval_id, ended_at) in [
-            ("activity-before-with-fraction", "2026-08-29T11:59:59.999Z"),
-            ("activity-after-with-fraction", "2026-08-29T12:00:00.500Z"),
+        for (method, started_at, ended_at) in [
+            (
+                "measured",
+                "2026-08-29T11:59:00.000Z",
+                "2026-08-29T11:59:59.999Z",
+            ),
+            (
+                "measured",
+                "2026-08-29T12:00:00.000Z",
+                "2026-08-29T12:00:00.500Z",
+            ),
         ] {
             conn.execute(
                 "INSERT INTO telemetry_activity
                     (session_id, provider, started_at, ended_at, last_event_at,
                      event_count, method, source_key)
                  VALUES ('session-a', 'codex', ?1, ?2, ?2, 1, ?3, 'source-a')",
-                params![ended_at, ended_at, interval_id],
+                params![started_at, ended_at, method],
             )
             .unwrap();
         }
@@ -586,6 +624,26 @@ mod tests {
             })
             .unwrap(),
             1
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64, i64, i64, i64), _, _>(
+                "SELECT turns, input_tokens, measured_active_ms, files_touched,
+                        lines_added
+                 FROM telemetry_rollup_hourly
+                 WHERE bucket_start = '2026-08-29T11:00:00.000Z'
+                   AND session_id = 'session-a'
+                   AND model = 'model-a'",
+                [],
+                |row| Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?
+                )),
+            )
+            .unwrap(),
+            (2, 2, 59_999, 1, 1)
         );
     }
 

@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use wardian_core::telemetry::maintenance::MAX_RETENTION_DAYS;
 
 #[derive(Debug, Parser)]
 #[command(name = "wardian", version, about = "Wardian command-line interface")]
@@ -655,7 +656,10 @@ pub enum TelemetryCommand {
     /// Retain raw facts newer than the requested window after verifying a backup.
     Maintain {
         /// Number of days of raw turns, edits, and completed activity to retain.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u32).range(1..=MAX_RETENTION_DAYS as i64)
+        )]
         retain_days: u32,
         /// New destination for the verified pre-maintenance backup.
         #[arg(long, value_name = "PATH")]
