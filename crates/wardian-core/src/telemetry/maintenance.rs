@@ -12,11 +12,14 @@ use crate::telemetry::rollup::recompute_buckets;
 use crate::telemetry::schema::{acquire_telemetry_lock, sqlite_io_error};
 use crate::telemetry::store::{mark_dirty, mark_dirty_span, DirtyBuckets};
 use chrono::{DateTime, Duration, Timelike, Utc};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use std::io;
 use std::path::Path;
 
 const DELETE_BATCH_SIZE: i64 = 2_000;
+const RETENTION_PREPARED_KEY: &str = "telemetry_maintenance_prepared_cutoff";
 
 /// The durable effects of one explicit telemetry maintenance run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +57,18 @@ fn maintain_at(
     vacuum: bool,
     now: DateTime<Utc>,
 ) -> rusqlite::Result<MaintenanceReport> {
+    let mut no_hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = None;
+    maintain_at_with_hook(conn, retain_days, backup_path, vacuum, now, &mut no_hook)
+}
+
+fn maintain_at_with_hook(
+    conn: &Connection,
+    retain_days: u32,
+    backup_path: &Path,
+    vacuum: bool,
+    now: DateTime<Utc>,
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<MaintenanceReport> {
     if retain_days == 0 {
         return Err(invalid_request("retention must be at least one day"));
     }
@@ -62,15 +77,10 @@ fn maintain_at(
     create_verified_backup(conn, backup_path)?;
 
     let cutoff = retention_cutoff(now, retain_days);
-    let dirty = dirty_buckets_before(conn, &cutoff)?;
-    recompute_buckets(conn, &dirty)?;
-
-    let turns_deleted =
-        delete_facts_before(conn, "telemetry_turn_facts", "ended_at", &cutoff, "<")?;
-    let edits_deleted =
-        delete_facts_before(conn, "telemetry_edit_facts", "occurred_at", &cutoff, "<")?;
-    let activity_deleted =
-        delete_facts_before(conn, "telemetry_activity", "ended_at", &cutoff, "<=")?;
+    prepare_retention_rollups(conn, &cutoff)?;
+    let turns_deleted = delete_turns_before(conn, &cutoff, after_batch)?;
+    let edits_deleted = delete_edits_before(conn, &cutoff, after_batch)?;
+    let activity_deleted = delete_activity_before(conn, &cutoff, after_batch)?;
     let limits_retained = conn.query_row("SELECT count(*) FROM telemetry_limits", [], |row| {
         row.get(0)
     })?;
@@ -80,6 +90,7 @@ fn maintain_at(
         conn.execute_batch("VACUUM")?;
         checkpoint = checkpoint_wal(conn)?;
     }
+    clear_retention_marker(conn, &cutoff)?;
 
     Ok(MaintenanceReport {
         cutoff,
@@ -162,31 +173,188 @@ fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<Dir
     Ok(dirty)
 }
 
-fn delete_facts_before(
+fn cutoff_epoch(cutoff: &str) -> rusqlite::Result<i64> {
+    DateTime::parse_from_rfc3339(cutoff)
+        .map(|value| value.timestamp())
+        .map_err(|error| invalid_request(format!("invalid retention cutoff: {error}")))
+}
+
+fn prepare_retention_rollups(conn: &Connection, cutoff: &str) -> rusqlite::Result<()> {
+    let cutoff_epoch = cutoff_epoch(cutoff)?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let prepared = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![RETENTION_PREPARED_KEY],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    match prepared {
+        Some(previous) if previous != cutoff_epoch => {
+            return Err(invalid_request(
+                "an interrupted retention run exists; resume it with the same retention window",
+            ));
+        }
+        Some(_) => {
+            tx.rollback()?;
+            return Ok(());
+        }
+        None => {}
+    }
+
+    let dirty = dirty_buckets_before(&tx, cutoff)?;
+    recompute_buckets(&tx, &dirty)?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
+        params![RETENTION_PREPARED_KEY, cutoff_epoch],
+    )?;
+    tx.commit()
+}
+
+fn clear_retention_marker(conn: &Connection, cutoff: &str) -> rusqlite::Result<()> {
+    let cutoff_epoch = cutoff_epoch(cutoff)?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "DELETE FROM telemetry_meta WHERE key = ?1 AND value = ?2",
+        params![RETENTION_PREPARED_KEY, cutoff_epoch],
+    )?;
+    tx.commit()
+}
+
+fn delete_turns_before(
     conn: &Connection,
-    table: &str,
-    timestamp_column: &str,
     cutoff: &str,
-    operator: &str,
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<i64> {
     let mut total = 0;
     loop {
-        let deleted = conn.execute(
-            &format!(
-                "DELETE FROM {table}
-                 WHERE id IN (
-                     SELECT id FROM {table}
-                     WHERE {timestamp_column} {operator} ?1
-                     LIMIT ?2
-                 )"
-            ),
-            params![cutoff, DELETE_BATCH_SIZE],
-        )?;
-        total += i64::try_from(deleted).unwrap_or(i64::MAX);
-        if deleted == 0 {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let rows = {
+            let mut statement = tx.prepare(
+                "SELECT id, session_id, ended_at
+                 FROM telemetry_turns
+                 WHERE ended_at < ?1
+                 ORDER BY id
+                 LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(params![cutoff, DELETE_BATCH_SIZE], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            tx.rollback()?;
             return Ok(total);
         }
+        for (id, _session_id, _ended_at) in &rows {
+            tx.execute(
+                "DELETE FROM telemetry_turn_facts WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        total += i64::try_from(rows.len()).unwrap_or(i64::MAX);
+        run_batch_hook(after_batch)?;
     }
+}
+
+fn delete_edits_before(
+    conn: &Connection,
+    cutoff: &str,
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<i64> {
+    let mut total = 0;
+    loop {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let rows = {
+            let mut statement = tx.prepare(
+                "SELECT id, session_id, occurred_at
+                 FROM telemetry_edits
+                 WHERE occurred_at < ?1
+                 ORDER BY id
+                 LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(params![cutoff, DELETE_BATCH_SIZE], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            tx.rollback()?;
+            return Ok(total);
+        }
+        for (id, _session_id, _occurred_at) in &rows {
+            tx.execute(
+                "DELETE FROM telemetry_edit_facts WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        total += i64::try_from(rows.len()).unwrap_or(i64::MAX);
+        run_batch_hook(after_batch)?;
+    }
+}
+
+fn delete_activity_before(
+    conn: &Connection,
+    cutoff: &str,
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<i64> {
+    let mut total = 0;
+    loop {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let rows = {
+            let mut statement = tx.prepare(
+                "SELECT id, session_id, started_at, ended_at
+                 FROM telemetry_activity
+                 WHERE ended_at <= ?1
+                 ORDER BY id
+                 LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(params![cutoff, DELETE_BATCH_SIZE], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            tx.rollback()?;
+            return Ok(total);
+        }
+        for (id, _session_id, _started_at, _ended_at) in &rows {
+            tx.execute("DELETE FROM telemetry_activity WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        total += i64::try_from(rows.len()).unwrap_or(i64::MAX);
+        run_batch_hook(after_batch)?;
+    }
+}
+
+fn run_batch_hook(
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<()> {
+    if let Some(hook) = after_batch.as_deref_mut() {
+        hook()?;
+    }
+    Ok(())
 }
 
 fn checkpoint_wal(conn: &Connection) -> rusqlite::Result<(i64, i64, i64)> {
@@ -290,5 +458,102 @@ mod tests {
             1
         );
         assert!(backup.exists());
+    }
+
+    #[test]
+    fn interrupted_retention_rebuilds_each_committed_batch_on_retry() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let first_backup = directory.path().join("state.db.first.backup");
+        let retry_backup = directory.path().join("state.db.retry.backup");
+        let conn = Connection::open(&database).unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+
+        let tx = conn.unchecked_transaction().unwrap();
+        for index in 0..(DELETE_BATCH_SIZE + 1) {
+            tx.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, model, ended_at,
+                     input_tokens, output_tokens, source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', ?2, 'model-a',
+                         '2026-01-01T00:15:00.000Z', 1, 1, 'source-a', 'log')",
+                params![format!("old-event-{index}"), format!("old-turn-{index}")],
+            )
+            .unwrap();
+        }
+        tx.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, turn_id, model, ended_at,
+                 input_tokens, output_tokens, source_key, source_path)
+            VALUES ('new-event', 'session-a', 'codex', 'new-turn', 'model-a',
+                     '2026-08-30T00:15:00.000Z', 99, 9, 'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let mut dirty = DirtyBuckets::new();
+        mark_dirty(&mut dirty, "session-a", "2026-01-01T00:15:00.000Z");
+        mark_dirty(&mut dirty, "session-a", "2026-08-30T00:15:00.000Z");
+        recompute_buckets(&conn, &dirty).unwrap();
+
+        let mut batches = 0;
+        let mut interrupt_after_first_batch = || {
+            batches += 1;
+            if batches == 1 {
+                Err(sqlite_io_error(std::io::Error::other(
+                    "injected retention interruption after committed batch",
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        let mut hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> =
+            Some(&mut interrupt_after_first_batch);
+        let now = DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(maintain_at_with_hook(&conn, 1, &first_backup, false, now, &mut hook,).is_err());
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turns WHERE ended_at < '2026-08-29T12:00:00.000Z'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        maintain_at(&conn, 1, &retry_backup, false, now).unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turns WHERE ended_at < '2026-08-29T12:00:00.000Z'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64), _, _>(
+                "SELECT turns, input_tokens FROM telemetry_rollup_hourly
+                 WHERE bucket_start = '2026-08-30T00:00:00.000Z'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap(),
+            (1, 99)
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64), _, _>(
+                "SELECT turns, input_tokens FROM telemetry_rollup_hourly
+                 WHERE bucket_start = '2026-01-01T00:00:00.000Z'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap(),
+            (DELETE_BATCH_SIZE + 1, DELETE_BATCH_SIZE + 1)
+        );
     }
 }

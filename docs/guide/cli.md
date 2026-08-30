@@ -54,19 +54,24 @@ wardian telemetry maintain --retain-days 90 `
 ```
 
 The command verifies the new backup before deleting old turns, edits, and
-completed activity intervals. It recomputes their hourly rollups first,
-checkpoints the WAL, and runs `VACUUM` only when `--vacuum` is supplied. Rate
-limit observations remain because the current rollup cannot reproduce their
-history. The adjacent maintenance lock serializes this operation with schema
-migration; current telemetry ingestion takes the same lock, and
-`--quiesced` is still required because older app binaries and other offline
-writes cannot participate in that lock.
+completed activity intervals. It recomputes their hourly rollups first and
+records a durable prepared phase before deleting raw rows in bounded batches;
+an interrupted retry resumes that phase without rebuilding rollups from rows
+that were already pruned. It checkpoints the WAL, then clears the phase marker,
+and runs `VACUUM` only when `--vacuum` is supplied. Rate-limit observations
+remain because the current rollup cannot reproduce their history. The adjacent
+maintenance lock serializes this operation with schema migration; current
+telemetry ingestion takes the same lock, and `--quiesced` is still required
+because older app binaries and other offline writes cannot participate in that
+lock.
 
-On startup, a v4-to-v5 schema migration holds SQLite's exclusive locking mode
-across its resumable copy batches. This fences older binaries that do not know
-about the adjacent lock; once the migration completes or is interrupted, the
-connection returns to normal locking mode and the next run resumes from its
-last committed marker.
+On startup, a v4-to-v5 schema migration first switches a file-backed database
+from WAL to SQLite's rollback journal and then holds exclusive locking mode
+across its resumable copy batches. This is why all older app/CLI binaries and
+offline writers must be stopped before the first upgraded startup: exclusive
+locking mode alone does not fence writers in WAL mode. Once the migration
+completes or is interrupted, the connection restores its prior journal and
+locking modes, and the next run resumes from its last committed marker.
 
 ## Inbox Read and Write Paths
 
