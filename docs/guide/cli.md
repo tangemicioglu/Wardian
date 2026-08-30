@@ -26,6 +26,41 @@ building repeatable automation around Wardian.
 4. Run `wardian agent list` to confirm the CLI sees your neighbors, or `wardian agent list --scope all` to see all agents.
 5. Use live-control commands only while the desktop app is running for that same home.
 
+## Telemetry Read and Maintenance Paths
+
+Read telemetry without changing the app-owned source cursors:
+
+```bash
+wardian telemetry summary --horizon week --dimension provider
+```
+
+Raw telemetry retention is an explicit offline write path. Stop the desktop app
+and all agents first, choose the retention window, and provide a new backup
+destination. The issue investigation proposes 90 days as a candidate; the CLI
+requires the choice instead of silently adopting it:
+
+```bash
+wardian telemetry maintain --retain-days 90 \
+  --backup "<backup-path>/state.db.before-telemetry-maintenance" \
+  --quiesced --vacuum
+```
+
+PowerShell:
+
+```powershell
+wardian telemetry maintain --retain-days 90 `
+  --backup "<backup-path>/state.db.before-telemetry-maintenance" `
+  --quiesced --vacuum
+```
+
+The command verifies the new backup before deleting old turns, edits, and
+completed activity intervals. It recomputes their hourly rollups first,
+checkpoints the WAL, and runs `VACUUM` only when `--vacuum` is supplied. Rate
+limit observations remain because the current rollup cannot reproduce their
+history. The adjacent maintenance lock serializes this operation with schema
+migration; `--quiesced` is still required because normal app writes do not use
+that offline maintenance lock.
+
 ## Inbox Read and Write Paths
 
 Agents can read the same Inbox projection that the desktop and remote surfaces

@@ -5,7 +5,13 @@
 //! rotation, a parser version bump, or a crash between fact write and cursor
 //! advance.
 
+use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::PathBuf;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// The normalized telemetry schema version.
 ///
@@ -18,6 +24,8 @@ const LEGACY_TELEMETRY_SCHEMA_VERSION: i64 = 4;
 const COPY_BATCH_SIZE: i64 = 2_000;
 const TURN_PROGRESS_KEY: &str = "normalization_turn_last_id";
 const EDIT_PROGRESS_KEY: &str = "normalization_edit_last_id";
+const TELEMETRY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const TELEMETRY_LOCK_POLL: Duration = Duration::from_millis(50);
 
 const NORMALIZED_TABLES: [&str; 4] = [
     "telemetry_source_paths",
@@ -42,6 +50,13 @@ const TELEMETRY_TABLES: [&str; 6] = [
 ];
 
 pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(TELEMETRY_LOCK_TIMEOUT)?;
+    // SQLite releases a transaction lock after every copy batch so the control
+    // plane is not stalled for the duration of a multi-gigabyte migration. A
+    // transaction alone therefore cannot serialize two processes: both could
+    // observe v4 and copy the same batch. This OS lock is the short-lived
+    // migration lease; it is released automatically if the owner exits.
+    let _telemetry_lock = acquire_telemetry_lock(conn)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS telemetry_meta (
             key   TEXT PRIMARY KEY,
@@ -469,8 +484,69 @@ pub(crate) fn ensure_source_ref(
     Ok(source_ref)
 }
 
+/// Acquire the inter-process lease shared by schema migration and maintenance.
+///
+/// SQLite has no advisory lock that survives the short transactions used by
+/// the resumable copy. The adjacent lock file supplies that missing lease and
+/// is safe across processes on the supported filesystems. A bounded wait keeps
+/// a stale or inaccessible database from hanging startup forever.
+pub(crate) fn acquire_telemetry_lock(conn: &Connection) -> rusqlite::Result<Option<File>> {
+    let database_path =
+        conn.query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))?;
+    if database_path.is_empty() || database_path == ":memory:" {
+        return Ok(None);
+    }
+
+    let lock_path = PathBuf::from(format!("{database_path}.telemetry-maintenance.lock"));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(sqlite_io_error)?;
+    let deadline = Instant::now() + TELEMETRY_LOCK_TIMEOUT;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(Some(file)),
+            Err(error) if lock_is_contended(&error) && Instant::now() < deadline => {
+                thread::sleep(TELEMETRY_LOCK_POLL);
+            }
+            Err(_error) if lock_is_contended(&_error) => {
+                return Err(sqlite_io_error(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("timed out acquiring telemetry maintenance lock {lock_path:?}"),
+                )));
+            }
+            Err(error) => return Err(sqlite_io_error(error)),
+        }
+    }
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        // Windows reports these sharing/lock violations as generic I/O errors.
+        || matches!(error.raw_os_error(), Some(11 | 32 | 33))
+}
+
+pub(crate) fn sqlite_io_error(error: io::Error) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
 fn migrate_legacy_schema(conn: &Connection) -> rusqlite::Result<()> {
+    let mut no_hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> = None;
+    migrate_legacy_schema_with_hook(conn, &mut no_hook)
+}
+
+fn migrate_legacy_schema_with_hook(
+    conn: &Connection,
+    batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<()> {
     create_normalized_schema(conn)?;
+    // Install the dedupe indexes before the first resumable batch. This makes
+    // recovery safe even if an older process ignored the OS lease, and keeps a
+    // repeated batch from ever creating duplicate facts.
+    ensure_normalized_indexes(conn)?;
     seed_source_lookups(conn)?;
     copy_fact_table(
         conn,
@@ -478,6 +554,7 @@ fn migrate_legacy_schema(conn: &Connection) -> rusqlite::Result<()> {
         "telemetry_turn_facts",
         TURN_PROGRESS_KEY,
         true,
+        batch_hook,
     )?;
     copy_fact_table(
         conn,
@@ -485,11 +562,13 @@ fn migrate_legacy_schema(conn: &Connection) -> rusqlite::Result<()> {
         "telemetry_edit_facts",
         EDIT_PROGRESS_KEY,
         false,
+        batch_hook,
     )?;
-    verify_migrated_counts(conn)?;
-    ensure_normalized_indexes(conn)?;
-
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // Recheck while holding the final write lock. A legacy writer that raced
+    // the migration can only be admitted before this point; a mismatch keeps
+    // the old tables intact for a later retry.
+    verify_migrated_counts(&tx)?;
     tx.execute("DROP TABLE telemetry_turns", [])?;
     tx.execute("DROP TABLE telemetry_edits", [])?;
     ensure_compatibility_views(&tx)?;
@@ -539,6 +618,7 @@ fn copy_fact_table(
     normalized_table: &str,
     progress_key: &str,
     turns: bool,
+    batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
     let mut last_id = progress_value(conn, progress_key)?;
     while let Some(end_id) = next_batch_end(conn, legacy_table, last_id)? {
@@ -661,6 +741,9 @@ fn copy_fact_table(
             params![progress_key, end_id],
         )?;
         tx.commit()?;
+        if let Some(hook) = batch_hook.as_deref_mut() {
+            hook()?;
+        }
         last_id = end_id;
     }
     Ok(())
@@ -763,6 +846,93 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         rows
+    }
+
+    fn create_legacy_fixture(conn: &Connection, rows: usize) {
+        conn.execute_batch(
+            "CREATE TABLE telemetry_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             INSERT INTO telemetry_meta(key, value) VALUES ('schema_version', 4);
+             CREATE TABLE telemetry_sources (
+                 source_key TEXT PRIMARY KEY,
+                 source_path TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 provider TEXT NOT NULL
+             );
+             CREATE TABLE telemetry_turns (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 event_key TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 turn_id TEXT,
+                 model TEXT,
+                 effort TEXT,
+                 started_at TEXT,
+                 ended_at TEXT NOT NULL,
+                 input_tokens INTEGER,
+                 cached_input_tokens INTEGER,
+                 cache_write_tokens INTEGER,
+                 output_tokens INTEGER,
+                 reasoning_tokens INTEGER,
+                 context_window INTEGER,
+                 cost_usd REAL,
+                 source_key TEXT NOT NULL,
+                 source_path TEXT NOT NULL
+             );
+             CREATE TABLE telemetry_edits (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 event_key TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 turn_id TEXT,
+                 occurred_at TEXT NOT NULL,
+                 workspace TEXT,
+                 path TEXT NOT NULL,
+                 op TEXT NOT NULL,
+                 lines_added INTEGER,
+                 lines_removed INTEGER,
+                 source_key TEXT NOT NULL,
+                 source_path TEXT NOT NULL
+             );
+             INSERT INTO telemetry_sources(source_key, source_path, session_id, provider)
+                 VALUES ('source-a', 'session.log', 'session-a', 'codex');",
+        )
+        .unwrap();
+
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).unwrap();
+        for index in 0..rows {
+            let timestamp = format!("2026-08-30T{:02}:00:00.000Z", index % 24);
+            tx.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, model, effort,
+                     started_at, ended_at, input_tokens, output_tokens, cost_usd,
+                     source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', ?2, 'model-a', 'high',
+                         ?3, ?3, ?4, ?5, 0.25, 'source-a', 'session.log')",
+                params![
+                    format!("event-{index}"),
+                    format!("turn-{index}"),
+                    timestamp,
+                    index as i64,
+                    (index * 2) as i64,
+                ],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO telemetry_edits
+                    (event_key, session_id, provider, turn_id, occurred_at, workspace,
+                     path, op, lines_added, lines_removed, source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', ?2, ?3, 'workspace-a',
+                         ?4, 'modify', 4, 1, 'source-a', 'session.log')",
+                params![
+                    format!("edit-{index}"),
+                    format!("turn-{index}"),
+                    timestamp,
+                    format!("src/{index}.rs"),
+                ],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
     }
 
     #[test]
@@ -939,6 +1109,128 @@ mod tests {
             )
             .unwrap(),
             TELEMETRY_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn legacy_normalization_reopens_after_a_committed_batch_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        {
+            let conn = Connection::open(&database).unwrap();
+            create_legacy_fixture(&conn, COPY_BATCH_SIZE as usize * 2 + 1);
+
+            let mut batches = 0;
+            let mut fail_after_first = || {
+                batches += 1;
+                if batches == 1 {
+                    Err(sqlite_io_error(io::Error::other(
+                        "injected interruption after committed batch",
+                    )))
+                } else {
+                    Ok(())
+                }
+            };
+            let mut hook: Option<&mut dyn FnMut() -> rusqlite::Result<()>> =
+                Some(&mut fail_after_first);
+            assert!(migrate_legacy_schema_with_hook(&conn, &mut hook).is_err());
+            assert_eq!(
+                conn.query_row::<i64, _, _>(
+                    "SELECT value FROM telemetry_meta WHERE key = ?1",
+                    params![TURN_PROGRESS_KEY],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+                COPY_BATCH_SIZE
+            );
+            assert_eq!(
+                conn.query_row::<i64, _, _>(
+                    "SELECT count(*) FROM telemetry_turn_facts",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+                COPY_BATCH_SIZE
+            );
+        }
+
+        let conn = Connection::open(&database).unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        let expected = COPY_BATCH_SIZE * 2 + 1;
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            expected
+        );
+        assert_eq!(
+            conn.query_row::<String, _, _>(
+                "SELECT model FROM telemetry_turns WHERE event_key = 'event-4000'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            "model-a"
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_meta
+                 WHERE key IN ('normalization_turn_last_id', 'normalization_edit_last_id')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn concurrent_file_migrations_share_one_lease() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        create_legacy_fixture(&Connection::open(&database).unwrap(), 32);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let database = database.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let conn = Connection::open(database)?;
+                    barrier.wait();
+                    run_telemetry_migrations(&conn)
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let conn = Connection::open(&database).unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            32
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            32
         );
     }
 
