@@ -6559,27 +6559,12 @@ mod tests {
 
         // The PTY receipt alone must not release Return. Codex's repaint is the
         // provider-owned proof that its composer consumed the paste.
-        {
-            let agents = state.agents.lock().await;
-            agents
-                .get("agent-1")
-                .unwrap()
-                .watch_state
-                .lock()
-                .unwrap()
-                .push_output(b"\r\n\xe2\x80\xba hello");
-        }
-        let terminal_sessions = state.terminal_sessions.clone();
-        tokio::task::spawn_blocking(move || {
-            terminal_sessions.process_output_blocking(
-                "agent-1",
-                1,
-                b"\r\n\xe2\x80\xba hello".to_vec(),
-            )
-        })
-        .await
-        .expect("terminal output task")
-        .expect("canonical terminal repaint");
+        crate::delivery::codex_composer::record_test_active_composer_repaint(
+            &state,
+            "agent-1",
+            b"\r\n\xe2\x80\xba hello",
+        )
+        .await;
 
         let submit = tokio::select! {
             request = rx.recv() => request.expect("submit write request"),
