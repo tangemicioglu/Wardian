@@ -142,6 +142,17 @@ Official release builds opt into signed updater artifacts with the release-only 
 | `WARDIAN_E2E_REAL_ANTIGRAVITY` | Enable real Antigravity provider in native E2E | unset |
 | `WARDIAN_E2E_REAL_OPENCODE` | Enable real OpenCode provider in native E2E | unset |
 
+## Running Unit Tests
+
+```bash
+npm run test                     # frontend
+cd src-tauri && cargo test       # backend
+```
+
+Rust tests that read or write environment variables must run with
+`--test-threads=1`; the process environment is shared, so parallel tests race
+each other and fail nondeterministically.
+
 ## Running Coverage Reports
 
 ### Frontend
