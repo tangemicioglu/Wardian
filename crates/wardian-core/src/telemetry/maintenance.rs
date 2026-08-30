@@ -200,34 +200,31 @@ fn prepare_retention_rollups(
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
-    match prepared {
-        Some(previous) => {
-            let previous_retain_days = tx
-                .query_row(
-                    "SELECT value FROM telemetry_meta WHERE key = ?1",
-                    params![RETENTION_WINDOW_KEY],
-                    |row| row.get::<_, u32>(0),
-                )
-                .optional()?;
-            if let Some(previous_retain_days) = previous_retain_days {
-                if previous_retain_days != retain_days {
-                    return Err(invalid_request(
-                        "an interrupted retention run exists; resume it with the same retention window",
-                    ));
-                }
-            } else {
-                // Older prepared markers did not persist the requested window.
-                // Adopt the current request only as metadata; the already
-                // prepared cutoff remains the canonical recovery boundary.
-                tx.execute(
-                    "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
-                    params![RETENTION_WINDOW_KEY, retain_days],
-                )?;
-                tx.commit()?;
+    if let Some(previous) = prepared {
+        let previous_retain_days = tx
+            .query_row(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![RETENTION_WINDOW_KEY],
+                |row| row.get::<_, u32>(0),
+            )
+            .optional()?;
+        if let Some(previous_retain_days) = previous_retain_days {
+            if previous_retain_days != retain_days {
+                return Err(invalid_request(
+                    "an interrupted retention run exists; resume it with the same retention window",
+                ));
             }
-            return cutoff_from_epoch(previous);
+        } else {
+            // Older prepared markers did not persist the requested window.
+            // Adopt the current request only as metadata; the already
+            // prepared cutoff remains the canonical recovery boundary.
+            tx.execute(
+                "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
+                params![RETENTION_WINDOW_KEY, retain_days],
+            )?;
+            tx.commit()?;
         }
-        None => {}
+        return cutoff_from_epoch(previous);
     }
 
     let dirty = dirty_buckets_before(&tx, requested_cutoff)?;
