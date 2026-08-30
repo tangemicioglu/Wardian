@@ -17,6 +17,12 @@ writers while WAL is active. Each batch still commits its progress marker for
 restart after interruption, and the connection restores its prior journal and
 locking modes before the migration call completes.
 
+The database keeps `schema_version=4` as the legacy write-ABI marker and records
+`normalized_schema_version=5` separately. An older v4 client therefore does not
+enter its destructive unknown-version reset path; its legacy index setup fails
+closed against the compatibility views. Older clients must be upgraded before
+using this database again.
+
 ## Retention and compaction
 
 Retention is not automatic. An operator must provide the number of days and a

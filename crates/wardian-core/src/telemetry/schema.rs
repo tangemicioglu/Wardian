@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 pub const TELEMETRY_SCHEMA_VERSION: i64 = 5;
 
 const LEGACY_TELEMETRY_SCHEMA_VERSION: i64 = 4;
+// Keep the legacy ABI marker at v4 so an installed v4 client does not enter
+// its destructive "unknown version" reset path. The normalized storage marker
+// below is the forward-only protocol understood by current clients.
+const NORMALIZED_SCHEMA_VERSION_KEY: &str = "normalized_schema_version";
 const COPY_BATCH_SIZE: i64 = 2_000;
 const TURN_PROGRESS_KEY: &str = "normalization_turn_last_id";
 const EDIT_PROGRESS_KEY: &str = "normalization_edit_last_id";
@@ -72,8 +76,24 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
             |row| row.get(0),
         )
         .ok();
+    let normalized_stored: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![NORMALIZED_SCHEMA_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .ok();
 
     if stored == Some(TELEMETRY_SCHEMA_VERSION) {
+        create_normalized_schema(conn)?;
+        ensure_normalized_indexes(conn)?;
+        ensure_compatibility_views(conn)?;
+        return Ok(());
+    }
+
+    if stored == Some(LEGACY_TELEMETRY_SCHEMA_VERSION)
+        && normalized_stored == Some(TELEMETRY_SCHEMA_VERSION)
+    {
         create_normalized_schema(conn)?;
         ensure_normalized_indexes(conn)?;
         ensure_compatibility_views(conn)?;
@@ -600,7 +620,12 @@ fn migrate_legacy_schema_unlocked(
     tx.execute(
         "INSERT INTO telemetry_meta (key, value) VALUES ('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [TELEMETRY_SCHEMA_VERSION],
+        [LEGACY_TELEMETRY_SCHEMA_VERSION],
+    )?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![NORMALIZED_SCHEMA_VERSION_KEY, TELEMETRY_SCHEMA_VERSION],
     )?;
     tx.commit()
 }
@@ -1055,6 +1080,60 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v4_startup_fails_closed_without_mutating_normalized_facts() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('protected', 'session-a', 'codex', '2026-08-30T00:00:00Z',
+                     'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+
+        let legacy_version: i64 = conn
+            .query_row(
+                "SELECT value FROM telemetry_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_version, LEGACY_TELEMETRY_SCHEMA_VERSION);
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![NORMALIZED_SCHEMA_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            TELEMETRY_SCHEMA_VERSION
+        );
+
+        // This is the first mutating schema statement reached by the v4
+        // migration after its version check: its legacy index cannot be
+        // created on the compatibility view, so the old client fails closed
+        // before its reset path can run.
+        let error = conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_telemetry_turns_session_end
+                 ON telemetry_turns(session_id, ended_at)",
+                [],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("views may not be indexed"));
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'protected'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn empty_legacy_fact_tables_complete_migration() {
         let conn = Connection::open_in_memory().unwrap();
         create_legacy_fixture(&conn, 0);
@@ -1242,6 +1321,15 @@ mod tests {
             conn.query_row::<i64, _, _>(
                 "SELECT value FROM telemetry_meta WHERE key = 'schema_version'",
                 [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            LEGACY_TELEMETRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![NORMALIZED_SCHEMA_VERSION_KEY],
                 |row| row.get(0),
             )
             .unwrap(),
@@ -1463,7 +1551,16 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, TELEMETRY_SCHEMA_VERSION);
+        assert_eq!(version, LEGACY_TELEMETRY_SCHEMA_VERSION);
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![NORMALIZED_SCHEMA_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            TELEMETRY_SCHEMA_VERSION
+        );
     }
 
     #[test]
