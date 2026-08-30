@@ -108,8 +108,9 @@ rollouts are migrated without changing their filenames; if linking fails, the
 local sessions tree is restored and the provider continues in local-only mode.
 
 The provider writes its local `history.jsonl` and `session_index.jsonl` files,
-while Wardian alone appends complete, validated, de-duplicated records to the
-native central copies under a cross-process lock. Codex SQLite databases,
+while Wardian alone atomically republishes complete, validated,
+de-duplicated records to the native central copies under a cross-process lock.
+Invalid central tails are repaired during that publication. Codex SQLite databases,
 including WAL/SHM sidecars, remain isolated per agent. `auth.json` and
 `cap_sid` are copied inward only and never projected back outward. This layout
 was verified against Codex CLI `0.150.1` and should be rechecked when the

@@ -143,8 +143,9 @@ Current model:
   fails, the local sessions tree is restored and the provider continues in
   local-only mode.
 - The provider writes agent-local `history.jsonl` and `session_index.jsonl`.
-  Wardian is the sole writer to the central copies: it appends complete,
-  validated records under a cross-process lock and de-duplicates repeat
+  Wardian is the sole writer to the central copies: it publishes complete,
+  validated records under a cross-process lock, atomically republishes the
+  complete central file, repairs invalid central tails, and de-duplicates repeat
   observations.
 - Codex SQLite databases such as `state_5.sqlite*` and `logs_2.sqlite*` remain
   per-agent because SQLite journal/WAL files are path-sensitive and are never

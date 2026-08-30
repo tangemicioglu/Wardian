@@ -1,4 +1,4 @@
-use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::io::BufRead;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::sync::{Mutex, OnceLock};
@@ -772,7 +772,7 @@ where
     }
 }
 
-fn is_directory_link(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_directory_link(metadata: &std::fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }
@@ -799,7 +799,7 @@ fn remove_directory_link(path: &std::path::Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn copy_codex_session_tree(
+pub(crate) fn copy_codex_session_tree(
     source: &std::path::Path,
     target: &std::path::Path,
 ) -> Result<(), String> {
@@ -851,24 +851,32 @@ fn copy_codex_session_tree(
             ));
         }
 
-        let file_name = target_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("session");
-        let temporary_path = target_path.with_file_name(format!(
-            ".{file_name}.wardian-copy-{}",
-            uuid::Uuid::new_v4().simple()
+        copy_codex_session_file(&source_path, &target_path)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_codex_session_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session");
+    let temporary_path = target.with_file_name(format!(
+        ".{file_name}.wardian-copy-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    if let Err(error) = std::fs::copy(source, &temporary_path)
+        .and_then(|_| std::fs::rename(&temporary_path, target))
+    {
+        let _ = std::fs::remove_file(&temporary_path);
+        return Err(format!(
+            "could not migrate {} to {}: {error}",
+            source.display(),
+            target.display()
         ));
-        if let Err(error) = std::fs::copy(&source_path, &temporary_path)
-            .and_then(|_| std::fs::rename(&temporary_path, &target_path))
-        {
-            let _ = std::fs::remove_file(&temporary_path);
-            return Err(format!(
-                "could not migrate {} to {}: {error}",
-                source_path.display(),
-                target_path.display()
-            ));
-        }
     }
     Ok(())
 }
@@ -953,16 +961,65 @@ fn append_missing_codex_jsonl_records(
     source: &std::path::Path,
     target: &std::path::Path,
 ) -> Result<(), String> {
-    if !source.is_file() {
+    let (source_records, _) = read_codex_jsonl_records(source, false)?;
+    let (target_records, target_needs_repair) = read_codex_jsonl_records(target, true)?;
+    let mut records = Vec::with_capacity(target_records.len() + source_records.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut needs_rewrite = target_needs_repair;
+
+    for record in target_records {
+        let key = record.to_string();
+        if seen.insert(key) {
+            records.push(record);
+        } else {
+            needs_rewrite = true;
+        }
+    }
+    for record in source_records {
+        let key = record.to_string();
+        if seen.insert(key) {
+            records.push(record);
+            needs_rewrite = true;
+        }
+    }
+
+    if !needs_rewrite {
         return Ok(());
     }
 
-    let known = read_codex_jsonl_keys(target)?;
-    let file = std::fs::File::open(source).map_err(|error| error.to_string())?;
+    wardian_core::conversations::write_jsonl_atomic(target, &records)
+        .map_err(|error| format!("could not atomically publish {}: {error}", target.display()))
+}
+
+fn read_codex_jsonl_records(
+    path: &std::path::Path,
+    repair_invalid_records: bool,
+) -> Result<(Vec<serde_json::Value>, bool), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), false));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if is_directory_link(&metadata) {
+        return Err(format!(
+            "refusing to read linked Codex JSONL path {}",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Codex JSONL path is not a file: {}",
+            path.display()
+        ));
+    }
+
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut reader = std::io::BufReader::new(file);
     let mut line = String::new();
-    let mut missing = Vec::new();
-    let mut seen = known;
+    let mut records = Vec::new();
+    let mut needs_repair = false;
     loop {
         line.clear();
         let bytes = reader
@@ -971,84 +1028,25 @@ fn append_missing_codex_jsonl_records(
         if bytes == 0 {
             break;
         }
-        // Codex may be in the middle of an append. Retry the partial record on
-        // the next observation instead of publishing a torn JSON line.
         if !line.ends_with('\n') {
+            needs_repair |= repair_invalid_records;
             break;
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            needs_repair |= repair_invalid_records;
             continue;
         }
         let value: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(_) => {
+                needs_repair |= repair_invalid_records;
+                continue;
+            }
         };
-        let key = value.to_string();
-        if seen.insert(key) {
-            missing.push(trimmed.to_string());
-        }
+        records.push(value);
     }
-
-    if missing.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let mut output = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(true)
-        .open(target)
-        .map_err(|error| error.to_string())?;
-    ensure_codex_jsonl_line_boundary(&mut output)?;
-    for record in missing {
-        output
-            .write_all(record.as_bytes())
-            .and_then(|_| output.write_all(b"\n"))
-            .map_err(|error| error.to_string())?;
-    }
-    output.flush().map_err(|error| error.to_string())?;
-    output.sync_all().map_err(|error| error.to_string())
-}
-
-fn read_codex_jsonl_keys(
-    path: &std::path::Path,
-) -> Result<std::collections::HashSet<String>, String> {
-    if !path.is_file() {
-        return Ok(std::collections::HashSet::new());
-    }
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let reader = std::io::BufReader::new(file);
-    let mut keys = std::collections::HashSet::new();
-    for line in reader.lines() {
-        let line = line.map_err(|error| error.to_string())?;
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        keys.insert(value.to_string());
-    }
-    Ok(keys)
-}
-
-fn ensure_codex_jsonl_line_boundary(file: &mut std::fs::File) -> Result<(), String> {
-    let length = file.metadata().map_err(|error| error.to_string())?.len();
-    if length == 0 {
-        return Ok(());
-    }
-    file.seek(SeekFrom::Start(length - 1))
-        .map_err(|error| error.to_string())?;
-    let mut last = [0_u8; 1];
-    file.read_exact(&mut last)
-        .map_err(|error| error.to_string())?;
-    if last[0] != b'\n' {
-        file.write_all(b"\n").map_err(|error| error.to_string())?;
-    }
-    file.seek(SeekFrom::End(0))
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok((records, needs_repair))
 }
 
 /// Compose the shared Codex configuration into an agent-local overlay without
@@ -2020,6 +2018,85 @@ mod tests {
         assert!(!real_home.join("auth.json").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_home_index_sync_repairs_invalid_target_tail_atomically() {
+        let root = unique_temp_dir("codex-home-index-repair");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        std::fs::create_dir_all(&real_home).expect("create real home");
+        std::fs::create_dir_all(&projected_home).expect("create projected home");
+
+        std::fs::write(
+            real_home.join("history.jsonl"),
+            "{\"id\":\"existing\"}\n{\"id\":\"torn\"",
+        )
+        .expect("write interrupted central history");
+        std::fs::write(projected_home.join("history.jsonl"), "{\"id\":\"new\"}\n")
+            .expect("write agent history");
+
+        sync_codex_home_indexes_from(&real_home, &projected_home)
+            .expect("repair and publish central history");
+
+        let central = std::fs::read_to_string(real_home.join("history.jsonl"))
+            .expect("read repaired central history");
+        assert_eq!(central.matches("\"id\":\"existing\"").count(), 1);
+        assert_eq!(central.matches("\"id\":\"new\"").count(), 1);
+        assert!(!central.contains("torn"));
+        assert!(central.ends_with('\n'));
+        for line in central.lines() {
+            serde_json::from_str::<serde_json::Value>(line).expect("every central line is JSON");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_home_index_sync_rejects_linked_source_and_target_files() {
+        use std::os::unix::fs::symlink;
+
+        let source_root = unique_temp_dir("codex-home-index-source-link");
+        let source_real_home = source_root.join("real-codex-home");
+        let source_projected_home = source_root.join("projected-home");
+        let source_outside = source_root.join("outside.jsonl");
+        std::fs::create_dir_all(&source_real_home).expect("create real source home");
+        std::fs::create_dir_all(&source_projected_home).expect("create projected source home");
+        std::fs::write(&source_outside, "{\"id\":\"outside\"}\n").expect("write source");
+        symlink(&source_outside, source_projected_home.join("history.jsonl"))
+            .expect("link source history");
+
+        let source_error = sync_codex_home_indexes_from(&source_real_home, &source_projected_home)
+            .expect_err("linked source must be rejected");
+        assert!(source_error.contains("linked Codex JSONL path"));
+        assert!(!source_real_home.join("history.jsonl").exists());
+
+        let target_root = unique_temp_dir("codex-home-index-target-link");
+        let target_real_home = target_root.join("real-codex-home");
+        let target_projected_home = target_root.join("projected-home");
+        let target_outside = target_root.join("outside.jsonl");
+        std::fs::create_dir_all(&target_real_home).expect("create real target home");
+        std::fs::create_dir_all(&target_projected_home).expect("create projected target home");
+        std::fs::write(&target_outside, "do not modify\n").expect("write target");
+        std::fs::write(
+            target_projected_home.join("history.jsonl"),
+            "{\"id\":\"agent\"}\n",
+        )
+        .expect("write target source history");
+        symlink(&target_outside, target_real_home.join("history.jsonl"))
+            .expect("link target history");
+
+        let target_error = sync_codex_home_indexes_from(&target_real_home, &target_projected_home)
+            .expect_err("linked target must be rejected");
+        assert!(target_error.contains("linked Codex JSONL path"));
+        assert_eq!(
+            std::fs::read_to_string(&target_outside).expect("read outside target"),
+            "do not modify\n"
+        );
+
+        let _ = std::fs::remove_dir_all(source_root);
+        let _ = std::fs::remove_dir_all(target_root);
     }
 
     #[test]

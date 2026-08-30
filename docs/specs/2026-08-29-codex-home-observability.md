@@ -25,16 +25,18 @@ native tree before staging the local directory and installing the projection.
 Identical files are retained, while a same-name/different-content conflict
 fails closed without overwriting either copy. A failed link attempt restores
 the local directory, so session visibility is best effort and cannot prevent
-provider startup. Repeated synchronization is idempotent.
+provider startup. Bootstrap migration copies from a linked native source
+instead of renaming its files. Repeated synchronization is idempotent.
 
 ### Central JSONL indexes
 
 The provider continues writing `history.jsonl` and `session_index.jsonl` in its
 agent-local home. Wardian observes complete newline-terminated JSON records and
-appends records absent from the native central file. Malformed and partial
-records are deferred or ignored, and repeated observations do not duplicate a
-record. A process mutex plus an exclusive lock file serializes Wardian's
-central writers.
+publishes records absent from the native central file through an atomic
+replacement. Malformed or partial source records are deferred or ignored;
+malformed or partial central tails are removed during the next successful
+publication. Repeated observations do not duplicate a record. A process mutex
+plus an exclusive lock file serializes Wardian's central writers.
 
 ### Isolation and directionality
 
