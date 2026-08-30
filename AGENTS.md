@@ -210,4 +210,18 @@ gh pr create --body-file $env:TEMP\body.md
 - After creating or editing a body, **verify it rendered**: `gh pr view <n> --json body --jq '.body' | head`. If literal `\n` appears, rewrite it with `--body-file`.
 - Single-line bodies may use `--body` inline.
 
+### No Personal Data in GitHub Content
+- **The repository is public.** Anything written to an issue, a PR body, or a comment is published. This is a privacy rule, not a portability one - the placeholder requirement under Cross-Platform Documentation applies here for a second and stronger reason.
+- **Never publish** the user's username, home-directory paths, drive-letter paths, absolute Wardian home paths, or workspace paths that reveal what the user works on.
+
+| Do not publish | Publish instead |
+| --- | --- |
+| `C:\Users\alice\.wardian\state.db` | `<wardian-home>/state.db` |
+| `/home/alice/projects/thing` | `<workspace-path>` |
+| `D:\Communication\Outlook` | `<agent-workspace>` |
+
+- **Sanitize evidence before posting, not after.** This is where it actually leaks. A measurement, stack trace, file listing, schema dump, or CLI output pasted straight from the terminal carries absolute paths, and the surrounding prose is usually clean while the evidence block is not. Read the evidence block specifically before posting it.
+- Agent names, workspace names, and directory layouts describe how the user works. Include them only when the issue genuinely needs them, and prefer a generic descriptor when it does not.
+- If something is already published, edit it rather than leaving it. Patch a comment with `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id> --input <json-file>`. Note that `-F body=@<file>` reports success without applying the change.
+
 - **CI Readiness**: Before opening a PR, run the full verification suite (`npm run typecheck/lint/test`, the `check:` gates listed above, and `cargo clippy/fmt/test`) to ensure green status on GitHub Actions. A PR is "ready" only when three separately checkable facts hold, not when a status update says so: every required check is green, merge conflicts are resolved, and a review verdict is on record with zero blocking findings. Verify each one directly before reporting a PR as ready.
