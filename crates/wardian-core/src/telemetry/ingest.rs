@@ -726,7 +726,15 @@ mod tests {
 
         // Corrupt the stored fact the way a parser defect would have.
         conn.execute(
-            "UPDATE telemetry_turns SET input_tokens = 999999, model = 'wrong-model'",
+            "INSERT OR IGNORE INTO telemetry_strings(kind, value) VALUES ('model', 'wrong-model')",
+            params![],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE telemetry_turn_facts
+             SET input_tokens = 999999,
+                 model_ref = (SELECT string_id FROM telemetry_strings
+                              WHERE kind = 'model' AND value = 'wrong-model')",
             params![],
         )
         .unwrap();
