@@ -9,8 +9,11 @@ write lock is held. Compatibility views preserve the existing read-facing
 columns and the insert triggers preserve older test and integration writers.
 
 The migration and explicit maintenance command share an adjacent inter-process
-lock. SQLite transactions still stay batch-sized, so the lock serializes
-owners without holding a database write transaction for the entire copy.
+lock. During the v4-to-v5 copy, the migration also holds SQLite's exclusive
+locking mode across its batch transactions. That fence blocks older binaries
+that do not know about the adjacent lock, while each batch still commits its
+progress marker for restart after interruption. The connection returns to
+normal locking mode before the migration call completes.
 
 ## Retention and compaction
 
