@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "wardian", version, about = "Wardian command-line interface")]
@@ -633,8 +634,7 @@ pub enum WatchlistCommand {
 // wardian telemetry
 // ---------------------------------------------------------------------------
 
-/// Read the habitat telemetry store. Read-only: ingest belongs to the app,
-/// which owns the source cursors.
+/// Read the habitat telemetry store, or run explicit offline maintenance.
 #[derive(Debug, Args)]
 pub struct TelemetryArgs {
     #[command(subcommand)]
@@ -651,6 +651,21 @@ pub enum TelemetryCommand {
         /// provider, agent, or model.
         #[arg(long, default_value = "provider")]
         dimension: String,
+    },
+    /// Retain raw facts newer than the requested window after verifying a backup.
+    Maintain {
+        /// Number of days of raw turns, edits, and completed activity to retain.
+        #[arg(long)]
+        retain_days: u32,
+        /// New destination for the verified pre-maintenance backup.
+        #[arg(long, value_name = "PATH")]
+        backup: PathBuf,
+        /// Rewrite the database after pruning to reclaim free pages.
+        #[arg(long)]
+        vacuum: bool,
+        /// Confirm that the desktop app and all agents are stopped.
+        #[arg(long)]
+        quiesced: bool,
     },
 }
 

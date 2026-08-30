@@ -458,7 +458,7 @@ pub(crate) fn last_clustered_interval(
     .optional()
 }
 
-fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
+pub(crate) fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
     if let Some(bucket) = hour_bucket(timestamp) {
         dirty.insert((bucket, session_id.to_string()));
     }
@@ -467,7 +467,12 @@ fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
 /// Guards against a malformed interval producing an unbounded bucket walk.
 const MAX_SPAN_BUCKETS: usize = 24 * 40;
 
-fn mark_dirty_span(dirty: &mut DirtyBuckets, session_id: &str, started_at: &str, ended_at: &str) {
+pub(crate) fn mark_dirty_span(
+    dirty: &mut DirtyBuckets,
+    session_id: &str,
+    started_at: &str,
+    ended_at: &str,
+) {
     let (Some(start), Some(end)) = (hour_bucket(started_at), hour_bucket(ended_at)) else {
         return;
     };

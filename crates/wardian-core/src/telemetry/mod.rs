@@ -26,6 +26,7 @@ pub mod activity;
 pub mod horizon;
 pub mod identity;
 pub mod ingest;
+pub mod maintenance;
 pub mod matrix;
 pub mod models;
 pub mod query;
