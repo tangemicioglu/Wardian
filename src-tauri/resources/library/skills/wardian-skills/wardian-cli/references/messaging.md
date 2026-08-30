@@ -44,6 +44,15 @@ Normal sends retain the sender attribution when Wardian knows it. Inspect the
 returned `delivery[]`; errors contain per-target delivery details including
 runtime state, delivery state, input mode, and channel errors.
 
+When `--wait-until` is used, inspect both `delivery[]` and `watch_error`. A
+terminal delivery failure is returned with its exact delivery error and means
+the requested provider turn did not start. A `watch_timeout` accompanied by a
+submitted or accepted delivery means the later watch condition was not
+observed; it does not erase the delivery evidence. A
+`delivery_submission_timeout` means no submit-start evidence was observed and
+must not be treated as provider acceptance. None of these outcomes authorizes
+automatic replay.
+
 `--queue-policy queue-if-busy` is the default. It delivers through a live
 provider surface when one is safe; for an off or errored target, an ordinary
 message runs through that agent's headless provider transport instead. Wardian

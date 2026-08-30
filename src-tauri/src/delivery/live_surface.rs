@@ -647,6 +647,10 @@ async fn record_terminal_delivery_error(
     provider: &str,
     error: TerminalDeliveryError,
 ) -> Box<LiveSurfaceDeliveryError> {
+    let default_payload_reason = (error.phase == "payload_apply_unconfirmed").then(|| {
+        "The PTY accepted the payload bytes, but Codex did not prove that its composer applied them; Return was withheld and automatic retry is unsafe"
+            .to_string()
+    });
     record_failed_live_surface_attempt(
         state,
         request,
@@ -664,11 +668,8 @@ async fn record_terminal_delivery_error(
             },
             message: error.message,
             delivery_phase: Some(error.phase.to_string()),
-            observed_state: None,
-            reason: (error.phase == "payload_apply_unconfirmed").then(|| {
-                "The PTY accepted the payload bytes, but Codex did not prove that its composer applied them; Return was withheld and automatic retry is unsafe"
-                    .to_string()
-            }),
+            observed_state: error.observed_state,
+            reason: error.reason.or(default_payload_reason),
             retry_safe: error.retry_safe,
         },
     )

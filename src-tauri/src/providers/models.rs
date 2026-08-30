@@ -10,6 +10,7 @@ use crate::providers::ProviderFactory;
 
 const CATALOG_CACHE_TTL: Duration = Duration::from_secs(300);
 const PROVIDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(12);
+const PROVIDER_VERSION_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -174,6 +175,18 @@ async fn discover_model_catalog(provider: &str) -> ProviderModelCatalog {
         }
         _ => ProviderModelCatalog::unavailable(provider, "unsupported provider"),
     }
+}
+
+pub(crate) async fn installed_provider_version(provider: &str) -> Option<String> {
+    tokio::time::timeout(
+        PROVIDER_VERSION_DIAGNOSTIC_TIMEOUT,
+        provider_command_output(provider, &["--version"]),
+    )
+    .await
+    .ok()?
+    .ok()
+    .and_then(|output| first_nonempty_line(&output))
+    .map(|version| version.replace([';', '\r', '\n'], "_").replace(' ', "_"))
 }
 
 async fn discover_pi_catalog(provider: &str, version: Option<String>) -> ProviderModelCatalog {

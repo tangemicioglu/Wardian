@@ -16,12 +16,43 @@ cursor:
   and collapse only the remainder, so `N` is not necessarily the total prompt
   length and is not used as a payload checksum. The delivery lock and cursor
   scope the marker to the current transaction. Marker recognition tolerates
-  terminal row wrapping.
+  terminal row wrapping and cell-only repaints that do not repeat the `›`
+  prompt glyph. Only the retained-output fallback, used after cursor expiry,
+  requires the marker to be in the active prompt.
 
 If neither observation arrives within 15 seconds, Wardian withholds Return,
 records `payload_apply_unconfirmed`, and does not retry automatically. The
 existing 750 ms Codex profile delay remains a minimum settle interval, not the
 delivery proof.
+
+On refusal, `observed_state` reports bounded, content-free diagnostics: matched
+normalized literal bytes, normalized payload bytes, recognized or unknown
+marker format, marker character count when recognized, the running or installed
+Codex version, and whether evidence came from the transaction delta or active
+prompt fallback. An unknown marker remains unconfirmed and Return remains
+withheld.
+
+## Production repaint regression
+
+Issue #1068 exposed a fixture gap after the original fix: Codex 0.151.0 can
+repaint only the changed composer cells after a large paste. The transaction
+delta then contains `[Pasted Content N chars]` but no new `›`. Requiring the
+prompt glyph inside that already cursor-scoped delta rejected valid evidence.
+Fresh-home acceptance happened to repaint the complete prompt row and therefore
+did not reproduce the populated-home behavior.
+
+The transaction cursor, not a repeated glyph, establishes causality for the
+normal path. Historical-scrollback protection remains on the cursor-expiry
+fallback, where Wardian still parses only the active prompt.
+
+Queued sends also preserve their exact delivery result while a caller waits for
+a later status or output condition. If delivery fails before submission, the
+CLI returns that terminal delivery error (for example
+`payload_apply_unconfirmed`) rather than a bare `watch_timeout`. If submission
+is confirmed but the requested condition expires, the response contains both
+the known delivery state and a separate `watch_error`. If no submit-start
+evidence appears, the error is `delivery_submission_timeout`; it does not claim
+that the provider accepted the turn.
 
 ## Diagnosed failure
 
@@ -88,11 +119,17 @@ Unit and integration coverage must prove:
 
 - a complete literal payload and a transaction-scoped collapsed-paste
   observation release Return;
+- a transaction-scoped cell-only marker repaint releases Return without a
+  repeated prompt glyph;
 - a painted literal prefix alone does not release Return;
+- unknown marker-like output reports provider compatibility diagnostics and
+  remains fail-closed;
 - absent payload-application evidence fails without writing Return;
 - an active collapsed paste is not classified ready;
 - a historical marker followed by a fresh prompt is ignored;
 - confirmed provider turn start still produces `provider_accepted`; and
+- queued terminal delivery failure remains distinguishable from a post-submit
+  watch timeout in one CLI response; and
 - agent doctor uses the diagnostic timeout and reports the stalled state.
 
 Native real-provider acceptance on Windows must deliver a request larger than
