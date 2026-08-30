@@ -113,6 +113,27 @@ describe("useRemoteStore watchlists", () => {
     expect(useRemoteStore.getState().mobileCollapsedTeamIds).toEqual([]);
   });
 
+  it("shows the watchlist before optional Inbox data finishes loading", async () => {
+    const queue = deferred<QueueItem[]>();
+    vi.mocked(remoteClient.listAgents).mockResolvedValue([{
+      session_id: "agent-1",
+      session_name: "Coder",
+      agent_class: "Coder",
+      provider: "codex",
+      workspace: "<absolute-workspace-path>",
+      status: "Idle",
+      latest_text: null,
+    }]);
+    vi.mocked(remoteClient.loadQueueItems).mockReturnValue(queue.promise);
+
+    await useRemoteStore.getState().load();
+
+    expect(useRemoteStore.getState().status).toBe("ready");
+    expect(useRemoteStore.getState().agents).toHaveLength(1);
+
+    queue.resolve([]);
+  });
+
   it("keeps the newest queue response when overlapping loads resolve out of order", async () => {
     const first = deferred<QueueItem[]>();
     const second = deferred<QueueItem[]>();
