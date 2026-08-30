@@ -1,8 +1,8 @@
 # Project Guidelines: Wardian
 
 Rules that must hold before you have read anything else. Runbooks, commands, and
-architecture detail live in `docs/developer/` and are linked from here — do not
-copy them back into this file.
+architecture detail live in [`docs/developer/`](docs/developer/index.md) and are
+linked from here — do not copy them back into this file.
 
 ## 🎭 Brand Personality & Guiding Principles
 
@@ -13,7 +13,7 @@ copy them back into this file.
 ## ✅ Pre-Commit Checklist
 
 1. **Validate**: `npm run verify:ci` (narrow with `--only <frontend|backend|docs>`). It reads the authoritative steps from `.github/workflows/ci.yml`.
-2. **Document**: a new spec in `docs/specs/` for strategic decisions; update the affected guide in `docs/guide/` or `docs/developer/`; JSDoc or Rust docstrings on public APIs and complex logic.
+2. **Document**: a new spec in `docs/specs/` for strategic decisions; update the affected guide in `docs/guide/` or `docs/developer/`, checking [`docs-maintenance.md`](docs/developer/docs-maintenance.md) for release notes, public links, and screenshot refresh; JSDoc or Rust docstrings on public APIs and complex logic.
 3. **Check safety**: no API keys, credentials, or `.env` files staged; `git status` shows only intended files; semantic commit message.
 
 ### PowerShell Home Safety
@@ -33,9 +33,9 @@ Detail: [`docs/developer/architecture.md`](docs/developer/architecture.md), [`st
 
 - **Folders**: `kebab-case` for frontend and docs, `snake_case` for Rust backend modules.
 - **Documents**: `kebab-case.md`. **React components**: `PascalCase.tsx`. **Hooks**: `useCamelCase.ts`. **Utilities and types**: `camelCase.ts`.
-- **IPC/data models**: `snake_case` properties in both Rust and TypeScript, so DTOs serialize without translation.
+- **IPC/data models**: `snake_case` properties in both Rust and TypeScript, so DTOs serialize without translation. Contracts: [`ipc-events.md`](docs/developer/ipc-events.md), [`tauri-command-reference.md`](docs/developer/tauri-command-reference.md).
 
-**Backend** (`src-tauri/src/`): `commands/` Tauri handlers, `models/` DTOs, `state/` app state, `utils/` FS and OS helpers, `automation_engine/` deterministic execution. The Rust backend is the single source of truth for agent session lifecycles, PTY state, and telemetry. Respect the `portable-pty` lifecycle so ConPTY and Unix PTY behave alike. Use async-aware primitives (`tokio::sync::Mutex`) for state shared across commands, and never hold a global lock while acquiring a per-item one.
+**Backend** (`src-tauri/src/`): `commands/` Tauri handlers, `models/` DTOs, `state/` app state, `utils/` FS and OS helpers, `automation_engine/` deterministic execution. The Rust backend is the single source of truth for agent session lifecycles, PTY state, and telemetry. Respect the [`portable-pty` lifecycle](docs/developer/pty-lifecycle.md) so ConPTY and Unix PTY behave alike. Use async-aware primitives (`tokio::sync::Mutex`) for state shared across commands, and never hold a global lock while acquiring a per-item one.
 
 **Frontend** (`src/`): `layout/` persistent structure, `views/` page-level containers, `features/` domain modules, `components/` shared atoms. `App.tsx` orchestrates global state and delegates to feature stores.
 
@@ -43,7 +43,7 @@ Detail: [`docs/developer/architecture.md`](docs/developer/architecture.md), [`st
 
 - **Left sidebar (Control)**: persistent icon rail with collapsible panes. **Right sidebar (Roster)**: collapsible, searchable agent list.
 - **Status colors**: Emerald (Idle), Cyan (Processing), Amber (Action Required), Gray (Off), Red (Error).
-- **Semantic theming**: always use theme variables (`var(--color-wardian-text-muted)`) or themed classes (`.text-muted`), never hardcoded Tailwind colors.
+- **Semantic theming**: always use theme variables (`var(--color-wardian-text-muted)`) or themed classes (`.text-muted`), never hardcoded Tailwind colors. Token reference: [`theming.md`](docs/developer/theming.md).
 
 ## 🧪 Testing
 
