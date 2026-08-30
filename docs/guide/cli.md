@@ -57,8 +57,11 @@ The command verifies the new backup before deleting old turns, edits, and
 completed activity intervals. It recomputes their hourly rollups first and
 records a durable prepared phase before deleting raw rows in bounded batches;
 an interrupted retry resumes that phase without rebuilding rollups from rows
-that were already pruned. It checkpoints the WAL, then clears the phase marker,
-and runs `VACUUM` only when `--vacuum` is supplied. Rate-limit observations
+that were already pruned. The persisted cutoff is canonical while that phase is
+in progress, so a retry after the clock crosses an hour still resumes the same
+boundary; use the same `--retain-days` value or the command rejects the retry.
+It checkpoints the WAL, then clears the phase marker, and runs `VACUUM` only
+when `--vacuum` is supplied. Rate-limit observations
 remain because the current rollup cannot reproduce their history. The adjacent
 maintenance lock serializes this operation with schema migration; current
 telemetry ingestion takes the same lock, and `--quiesced` is still required

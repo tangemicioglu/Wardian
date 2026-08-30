@@ -866,7 +866,7 @@ fn next_batch_end(conn: &Connection, table: &str, last_id: i64) -> rusqlite::Res
     conn.query_row(
         &format!("SELECT MAX(id) FROM {table} WHERE id > ?1"),
         params![last_id],
-        |row| row.get(0),
+        |row| row.get::<_, Option<i64>>(0),
     )
 }
 
@@ -1052,6 +1052,52 @@ mod tests {
         run_telemetry_migrations(&conn).unwrap();
         run_telemetry_migrations(&conn).unwrap();
         assert_eq!(table_names(&conn).len(), 9);
+    }
+
+    #[test]
+    fn empty_legacy_fact_tables_complete_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_legacy_fixture(&conn, 0);
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn one_complete_copy_batch_finishes_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_legacy_fixture(&conn, COPY_BATCH_SIZE as usize);
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            COPY_BATCH_SIZE
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            COPY_BATCH_SIZE
+        );
     }
 
     #[test]

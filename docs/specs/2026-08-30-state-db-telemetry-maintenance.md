@@ -33,8 +33,11 @@ and integrity-checks the backup before mutating the source. It rebuilds every
 hourly bucket touched by the old turns, edits, and completed activity intervals
 and records a durable prepared phase before deleting raw rows in bounded
 batches. An interrupted retry resumes that phase without rebuilding rollups
-from rows already pruned, so their historical contributions remain intact. It
-then checkpoints the WAL and clears the phase marker. The
+from rows already pruned, so their historical contributions remain intact. The
+persisted cutoff is canonical while that phase is in progress, so a retry after
+the clock crosses an hour still resumes the same boundary; the retry must keep
+the original retention window. It then checkpoints the WAL and clears the phase
+marker. The
 current rollup does not reproduce rate-limit history, so `telemetry_limits` is
 retained. `VACUUM` is opt-in and runs only in this explicit offline path.
 

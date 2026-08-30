@@ -20,6 +20,7 @@ use std::path::Path;
 
 const DELETE_BATCH_SIZE: i64 = 2_000;
 const RETENTION_PREPARED_KEY: &str = "telemetry_maintenance_prepared_cutoff";
+const RETENTION_WINDOW_KEY: &str = "telemetry_maintenance_prepared_retain_days";
 
 /// The durable effects of one explicit telemetry maintenance run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,8 +77,8 @@ fn maintain_at_with_hook(
     let _telemetry_lock = acquire_telemetry_lock(conn)?;
     create_verified_backup(conn, backup_path)?;
 
-    let cutoff = retention_cutoff(now, retain_days);
-    prepare_retention_rollups(conn, &cutoff)?;
+    let requested_cutoff = retention_cutoff(now, retain_days);
+    let cutoff = prepare_retention_rollups(conn, &requested_cutoff, retain_days)?;
     let turns_deleted = delete_turns_before(conn, &cutoff, after_batch)?;
     let edits_deleted = delete_edits_before(conn, &cutoff, after_batch)?;
     let activity_deleted = delete_activity_before(conn, &cutoff, after_batch)?;
@@ -179,8 +180,18 @@ fn cutoff_epoch(cutoff: &str) -> rusqlite::Result<i64> {
         .map_err(|error| invalid_request(format!("invalid retention cutoff: {error}")))
 }
 
-fn prepare_retention_rollups(conn: &Connection, cutoff: &str) -> rusqlite::Result<()> {
-    let cutoff_epoch = cutoff_epoch(cutoff)?;
+fn cutoff_from_epoch(epoch: i64) -> rusqlite::Result<String> {
+    DateTime::<Utc>::from_timestamp(epoch, 0)
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .ok_or_else(|| invalid_request(format!("invalid persisted retention cutoff: {epoch}")))
+}
+
+fn prepare_retention_rollups(
+    conn: &Connection,
+    requested_cutoff: &str,
+    retain_days: u32,
+) -> rusqlite::Result<String> {
+    let requested_epoch = cutoff_epoch(requested_cutoff)?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let prepared = tx
         .query_row(
@@ -190,25 +201,47 @@ fn prepare_retention_rollups(conn: &Connection, cutoff: &str) -> rusqlite::Resul
         )
         .optional()?;
     match prepared {
-        Some(previous) if previous != cutoff_epoch => {
-            return Err(invalid_request(
-                "an interrupted retention run exists; resume it with the same retention window",
-            ));
-        }
-        Some(_) => {
-            tx.rollback()?;
-            return Ok(());
+        Some(previous) => {
+            let previous_retain_days = tx
+                .query_row(
+                    "SELECT value FROM telemetry_meta WHERE key = ?1",
+                    params![RETENTION_WINDOW_KEY],
+                    |row| row.get::<_, u32>(0),
+                )
+                .optional()?;
+            if let Some(previous_retain_days) = previous_retain_days {
+                if previous_retain_days != retain_days {
+                    return Err(invalid_request(
+                        "an interrupted retention run exists; resume it with the same retention window",
+                    ));
+                }
+            } else {
+                // Older prepared markers did not persist the requested window.
+                // Adopt the current request only as metadata; the already
+                // prepared cutoff remains the canonical recovery boundary.
+                tx.execute(
+                    "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
+                    params![RETENTION_WINDOW_KEY, retain_days],
+                )?;
+                tx.commit()?;
+            }
+            return cutoff_from_epoch(previous);
         }
         None => {}
     }
 
-    let dirty = dirty_buckets_before(&tx, cutoff)?;
+    let dirty = dirty_buckets_before(&tx, requested_cutoff)?;
     recompute_buckets(&tx, &dirty)?;
     tx.execute(
         "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
-        params![RETENTION_PREPARED_KEY, cutoff_epoch],
+        params![RETENTION_PREPARED_KEY, requested_epoch],
     )?;
-    tx.commit()
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)",
+        params![RETENTION_WINDOW_KEY, retain_days],
+    )?;
+    tx.commit()?;
+    Ok(requested_cutoff.to_owned())
 }
 
 fn clear_retention_marker(conn: &Connection, cutoff: &str) -> rusqlite::Result<()> {
@@ -217,6 +250,10 @@ fn clear_retention_marker(conn: &Connection, cutoff: &str) -> rusqlite::Result<(
     tx.execute(
         "DELETE FROM telemetry_meta WHERE key = ?1 AND value = ?2",
         params![RETENTION_PREPARED_KEY, cutoff_epoch],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_meta WHERE key = ?1",
+        params![RETENTION_WINDOW_KEY],
     )?;
     tx.commit()
 }
@@ -525,7 +562,11 @@ mod tests {
             1
         );
 
-        maintain_at(&conn, 1, &retry_backup, false, now).unwrap();
+        let later = DateTime::parse_from_rfc3339("2026-08-30T13:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let report = maintain_at(&conn, 1, &retry_backup, false, later).unwrap();
+        assert_eq!(report.cutoff, "2026-08-29T12:00:00.000Z");
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM telemetry_turns WHERE ended_at < '2026-08-29T12:00:00.000Z'",
