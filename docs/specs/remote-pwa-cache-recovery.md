@@ -4,6 +4,7 @@ The remote service worker cache is versioned with the short source revision
 injected during the Vite production build. Activation deletes older shell
 caches, so a client holding the legacy `wardian-remote-app-shell-v1` cache
 automatically moves to the current shell on its next load.
+This requires no manual site-data deletion from the user.
 
 Navigation requests are bounded by a five-second timeout and fall back to the
 cached `/remote` shell. Shell precaching is best effort per URL, so one missing
