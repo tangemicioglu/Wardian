@@ -6559,7 +6559,7 @@ mod tests {
 
         // The PTY receipt alone must not release Return. Codex's repaint is the
         // provider-owned proof that its composer consumed the paste.
-        crate::delivery::codex_composer::record_test_active_composer_repaint(
+        crate::delivery::codex_composer::tests::record_active_composer_repaint(
             &state,
             "agent-1",
             b"\r\n\xe2\x80\xba hello",
