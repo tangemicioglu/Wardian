@@ -43,7 +43,9 @@ verifies a backup under `<wardian-home>/backups/telemetry`, keeps the two newest
 automatic backups, recomputes affected hourly rollups, removes expired detail
 facts in bounded batches, keeps only the newest rate-limit gauge per provider,
 checkpoints the WAL, and vacuums to reclaim released pages. The CLI remains
-read-only.
+read-only. If a retention attempt is interrupted after its prepared phase,
+the next application retry reuses the newest verified automatic backup and
+cleans abandoned temporary backup files before continuing.
 
 On startup, a v4-to-v5 schema migration first switches a file-backed database
 from WAL to SQLite's rollback journal and then holds exclusive locking mode

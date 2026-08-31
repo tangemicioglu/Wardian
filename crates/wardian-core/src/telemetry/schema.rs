@@ -7,6 +7,8 @@
 //! or a crash between fact write and cursor advance.
 
 use crate::telemetry::identity::{canonical_path, source_key};
+use crate::telemetry::rollup::recompute_buckets;
+use crate::telemetry::store::{mark_dirty, mark_dirty_span, DirtyBuckets};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::fs::{File, OpenOptions};
@@ -32,7 +34,10 @@ const TURN_PROGRESS_KEY: &str = "normalization_turn_last_id";
 const EDIT_PROGRESS_KEY: &str = "normalization_edit_last_id";
 const LEGACY_WRITER_FENCE_KEY: &str = "normalization_legacy_writer_fence";
 const SOURCE_KEY_FORMAT_VERSION_KEY: &str = "telemetry_source_key_format_version";
+const SOURCE_KEY_FORMAT_VERSION: i64 = 2;
 const COMPACT_FACTS_VERSION_KEY: &str = "telemetry_compact_facts_version";
+const ROLLUP_REBUILD_VERSION_KEY: &str = "telemetry_rollup_rebuild_version";
+const ROLLUP_REBUILD_VERSION: i64 = 1;
 const TELEMETRY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const TELEMETRY_LOCK_POLL: Duration = Duration::from_millis(50);
 
@@ -596,7 +601,7 @@ fn migrate_legacy_schema_unlocked(
             |row| row.get(0),
         )
         .optional()?;
-    if canonicalization_done != Some(1) {
+    if canonicalization_done != Some(SOURCE_KEY_FORMAT_VERSION) {
         // A process interrupted after an earlier implementation installed the
         // fence can leave it behind. The exclusive migration lock fences old
         // writers for this repair, so remove that stale fence before doing the
@@ -613,7 +618,7 @@ fn migrate_legacy_schema_unlocked(
             clear_legacy_writer_fence(&tx)?;
             tx.commit()?;
         }
-        canonicalize_legacy_sources(conn)?;
+        canonicalize_legacy_sources(conn, canonicalization_done == Some(1))?;
     }
     // The adjacent lease only coordinates current binaries. Older v4 clients
     // do not know about it and can still issue direct writes to the legacy
@@ -652,6 +657,12 @@ fn migrate_legacy_schema_unlocked(
     tx.execute("DROP TABLE telemetry_turns", [])?;
     tx.execute("DROP TABLE telemetry_edits", [])?;
     ensure_compatibility_views(&tx)?;
+    recompute_migrated_rollups(&tx)?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![ROLLUP_REBUILD_VERSION_KEY, ROLLUP_REBUILD_VERSION],
+    )?;
     tx.execute(
         "DELETE FROM telemetry_meta WHERE key IN (?1, ?2)",
         params![TURN_PROGRESS_KEY, EDIT_PROGRESS_KEY],
@@ -669,78 +680,301 @@ fn migrate_legacy_schema_unlocked(
     tx.commit()
 }
 
+#[derive(Debug, Clone)]
+struct MigrationSource {
+    source_key: String,
+    source_path: String,
+    session_id: String,
+    provider: String,
+    provider_session_id: Option<String>,
+    source_kind: Option<String>,
+    cursor_kind: Option<String>,
+    cursor_value: i64,
+    last_size: i64,
+    last_modified: Option<String>,
+    last_ingested_at: Option<String>,
+    parser_version: i64,
+    fingerprint: Option<String>,
+    carry_turn_id: Option<String>,
+    carry_model: Option<String>,
+    carry_effort: Option<String>,
+    carry_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceAliasPlan {
+    canonical_source_key: String,
+    canonical_path: String,
+    keep_source_key: String,
+    reset_state: bool,
+}
+
+fn table_columns(
+    conn: &Connection,
+    table: &str,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+    Ok(columns)
+}
+
+fn source_column(columns: &std::collections::HashSet<String>, name: &str) -> String {
+    if columns.contains(name) {
+        name.to_owned()
+    } else {
+        "NULL".to_owned()
+    }
+}
+
+fn load_migration_sources(conn: &Connection) -> rusqlite::Result<Vec<MigrationSource>> {
+    let columns = table_columns(conn, "telemetry_sources")?;
+    let query = format!(
+        "SELECT source_key, source_path, session_id, provider,
+                {provider_session_id}, {source_kind}, {cursor_kind},
+                COALESCE({cursor_value}, 0), COALESCE({last_size}, 0),
+                {last_modified}, {last_ingested_at},
+                COALESCE({parser_version}, 0), {fingerprint},
+                {carry_turn_id}, {carry_model}, {carry_effort}, {carry_cwd}
+         FROM telemetry_sources",
+        provider_session_id = source_column(&columns, "provider_session_id"),
+        source_kind = source_column(&columns, "source_kind"),
+        cursor_kind = source_column(&columns, "cursor_kind"),
+        cursor_value = source_column(&columns, "cursor_value"),
+        last_size = source_column(&columns, "last_size"),
+        last_modified = source_column(&columns, "last_modified"),
+        last_ingested_at = source_column(&columns, "last_ingested_at"),
+        parser_version = source_column(&columns, "parser_version"),
+        fingerprint = source_column(&columns, "fingerprint"),
+        carry_turn_id = source_column(&columns, "carry_turn_id"),
+        carry_model = source_column(&columns, "carry_model"),
+        carry_effort = source_column(&columns, "carry_effort"),
+        carry_cwd = source_column(&columns, "carry_cwd"),
+    );
+    let mut statement = conn.prepare(&query)?;
+    let sources = statement
+        .query_map([], |row| {
+            Ok(MigrationSource {
+                source_key: row.get(0)?,
+                source_path: row.get(1)?,
+                session_id: row.get(2)?,
+                provider: row.get(3)?,
+                provider_session_id: row.get(4)?,
+                source_kind: row.get(5)?,
+                cursor_kind: row.get(6)?,
+                cursor_value: row.get(7)?,
+                last_size: row.get(8)?,
+                last_modified: row.get(9)?,
+                last_ingested_at: row.get(10)?,
+                parser_version: row.get(11)?,
+                fingerprint: row.get(12)?,
+                carry_turn_id: row.get(13)?,
+                carry_model: row.get(14)?,
+                carry_effort: row.get(15)?,
+                carry_cwd: row.get(16)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(sources)
+}
+
+fn source_states_are_compatible(sources: &[MigrationSource]) -> bool {
+    let Some(first) = sources.first() else {
+        return true;
+    };
+    sources.iter().all(|source| {
+        source.source_kind == first.source_kind
+            && source.cursor_kind == first.cursor_kind
+            && source.parser_version == first.parser_version
+            && match (&first.fingerprint, &source.fingerprint) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+    })
+}
+
+fn source_alias_plans(
+    conn: &Connection,
+    force_reset: bool,
+) -> rusqlite::Result<Vec<SourceAliasPlan>> {
+    let mut groups: std::collections::BTreeMap<String, (String, Vec<MigrationSource>)> =
+        std::collections::BTreeMap::new();
+    for source in load_migration_sources(conn)? {
+        let physical_path = canonical_path(std::path::Path::new(&source.source_path));
+        let canonical_path = physical_path.to_string_lossy().to_string();
+        let canonical_key = source_key(&source.provider, &source.session_id, &canonical_path);
+        groups
+            .entry(canonical_key)
+            .or_insert_with(|| (canonical_path.clone(), Vec::new()))
+            .1
+            .push(source);
+    }
+
+    let mut plans = Vec::with_capacity(groups.len());
+    for (canonical_source_key, (canonical_path, sources)) in groups {
+        let Some(keep_source) = sources.iter().max_by(|left, right| {
+            left.cursor_value
+                .cmp(&right.cursor_value)
+                .then_with(|| {
+                    (left.source_key == canonical_source_key)
+                        .cmp(&(right.source_key == canonical_source_key))
+                })
+                .then_with(|| left.source_key.cmp(&right.source_key))
+        }) else {
+            return Err(sqlite_io_error(io::Error::other(
+                "telemetry source alias group was empty",
+            )));
+        };
+        plans.push(SourceAliasPlan {
+            canonical_source_key,
+            canonical_path,
+            keep_source_key: keep_source.source_key.clone(),
+            reset_state: force_reset || !source_states_are_compatible(&sources),
+        });
+    }
+    Ok(plans)
+}
+
+fn install_source_alias_plans(
+    conn: &Connection,
+    plans: &[SourceAliasPlan],
+) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS temp.telemetry_source_aliases;
+         CREATE TEMP TABLE telemetry_source_aliases (
+             old_source_key TEXT PRIMARY KEY,
+             canonical_source_key TEXT NOT NULL,
+             canonical_path TEXT NOT NULL,
+             keep_source_key TEXT NOT NULL,
+             reset_state INTEGER NOT NULL
+         );",
+    )?;
+    let sources = load_migration_sources(conn)?;
+    let plans_by_key = plans
+        .iter()
+        .map(|plan| (plan.canonical_source_key.as_str(), plan))
+        .collect::<std::collections::HashMap<_, _>>();
+    for source in sources {
+        let physical_path = canonical_path(std::path::Path::new(&source.source_path));
+        let canonical_path = physical_path.to_string_lossy().to_string();
+        let canonical_key = source_key(&source.provider, &source.session_id, &canonical_path);
+        let Some(plan) = plans_by_key.get(canonical_key.as_str()) else {
+            return Err(sqlite_io_error(io::Error::other(
+                "telemetry source was missing from its alias plan",
+            )));
+        };
+        conn.execute(
+            "INSERT INTO telemetry_source_aliases
+                (old_source_key, canonical_source_key, canonical_path, keep_source_key, reset_state)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                source.source_key,
+                plan.canonical_source_key,
+                plan.canonical_path,
+                plan.keep_source_key,
+                plan.reset_state as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn update_migration_source(
+    conn: &Connection,
+    source: &MigrationSource,
+    plan: &SourceAliasPlan,
+    extended_columns: bool,
+) -> rusqlite::Result<()> {
+    let reset = plan.reset_state;
+    if extended_columns {
+        conn.execute(
+            "UPDATE telemetry_sources
+             SET source_key = ?1, source_path = ?2, session_id = ?3,
+                 provider_session_id = ?4, provider = ?5, source_kind = ?6,
+                 cursor_kind = ?7, cursor_value = ?8, last_size = ?9,
+                 last_modified = ?10, last_ingested_at = ?11,
+                 parser_version = ?12, fingerprint = ?13,
+                 carry_turn_id = ?14, carry_model = ?15,
+                 carry_effort = ?16, carry_cwd = ?17
+             WHERE source_key = ?18",
+            params![
+                plan.canonical_source_key,
+                plan.canonical_path,
+                source.session_id,
+                source.provider_session_id,
+                source.provider,
+                source.source_kind.as_deref().unwrap_or("jsonl"),
+                source.cursor_kind.as_deref().unwrap_or("byte_offset"),
+                if reset { 0 } else { source.cursor_value },
+                if reset { 0 } else { source.last_size },
+                if reset {
+                    None
+                } else {
+                    source.last_modified.as_deref()
+                },
+                if reset {
+                    None
+                } else {
+                    source.last_ingested_at.as_deref()
+                },
+                if reset { 0 } else { source.parser_version },
+                if reset {
+                    None
+                } else {
+                    source.fingerprint.as_deref()
+                },
+                if reset {
+                    None
+                } else {
+                    source.carry_turn_id.as_deref()
+                },
+                if reset {
+                    None
+                } else {
+                    source.carry_model.as_deref()
+                },
+                if reset {
+                    None
+                } else {
+                    source.carry_effort.as_deref()
+                },
+                if reset {
+                    None
+                } else {
+                    source.carry_cwd.as_deref()
+                },
+                source.source_key,
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE telemetry_sources
+             SET source_key = ?1, source_path = ?2, session_id = ?3, provider = ?4
+             WHERE source_key = ?5",
+            params![
+                plan.canonical_source_key,
+                plan.canonical_path,
+                source.session_id,
+                source.provider,
+                source.source_key,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 /// Re-key legacy facts by physical source identity and remove alias duplicates.
 ///
 /// This is deliberately a separate committed step before the resumable copy.
 /// If a later copy batch is interrupted, the next invocation sees the already
-/// canonical legacy rows and repeats this function harmlessly. The source
-/// cursor fields are not part of the deduplication contract; keeping one source
-/// row and letting the next ingest confirm its cursor is safer than preserving
-/// an arbitrary alias's position as authoritative.
-fn canonicalize_legacy_sources(conn: &Connection) -> rusqlite::Result<()> {
-    let mut stmt = conn
-        .prepare("SELECT source_key, source_path, session_id, provider FROM telemetry_sources")?;
-    let sources = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
-        std::collections::BTreeMap::new();
-    for (old_source_key, source_path, session_id, provider) in sources {
-        let physical_path = canonical_path(std::path::Path::new(&source_path));
-        let canonical_path = physical_path.to_string_lossy().to_string();
-        let canonical_key = source_key(&provider, &session_id, &canonical_path);
-        groups
-            .entry(canonical_key)
-            .or_default()
-            .push((old_source_key, canonical_path));
-    }
-
+/// canonical legacy rows and repeats this function harmlessly. Compatible
+/// aliases merge their complete source state from the furthest cursor; aliases
+/// with incompatible state are reset so the next ingest rebuilds the source.
+fn canonicalize_legacy_sources(conn: &Connection, force_reset: bool) -> rusqlite::Result<()> {
+    let plans = source_alias_plans(conn, force_reset)?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    tx.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS telemetry_source_aliases (
-             old_source_key TEXT PRIMARY KEY,
-             canonical_source_key TEXT NOT NULL,
-             canonical_path TEXT NOT NULL,
-             keep_source_key TEXT NOT NULL
-         );
-         DELETE FROM telemetry_source_aliases;",
-    )?;
-
-    for (canonical_key, mut aliases) in groups {
-        // Prefer the already-canonical row so a second invocation does not
-        // churn the source table. Otherwise the first stable spelling is the
-        // row whose cursor survives; facts are re-read idempotently if it was
-        // behind the other alias.
-        aliases.sort_by(|left, right| left.0.cmp(&right.0));
-        let keep_source_key = aliases
-            .iter()
-            .find(|(source_key, _)| source_key == &canonical_key)
-            .map(|(source_key, _)| source_key.clone())
-            .unwrap_or_else(|| aliases[0].0.clone());
-        let canonical_path = aliases[0].1.clone();
-
-        for (old_source_key, _) in aliases {
-            tx.execute(
-                "INSERT INTO telemetry_source_aliases
-                    (old_source_key, canonical_source_key, canonical_path, keep_source_key)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    old_source_key,
-                    canonical_key,
-                    canonical_path,
-                    keep_source_key
-                ],
-            )?;
-        }
-    }
+    install_source_alias_plans(&tx, &plans)?;
 
     for table in ["telemetry_turns", "telemetry_edits"] {
         tx.execute(
@@ -770,32 +1004,72 @@ fn canonicalize_legacy_sources(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if object_kind(&tx, "telemetry_activity")?.as_deref() == Some("table") {
+        tx.execute(
+            "UPDATE telemetry_activity
+             SET source_key = (SELECT canonical_source_key
+                               FROM telemetry_source_aliases
+                               WHERE old_source_key = telemetry_activity.source_key)
+             WHERE source_key IN (SELECT old_source_key FROM telemetry_source_aliases)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM telemetry_activity
+             WHERE id NOT IN (
+                 SELECT MIN(id) FROM telemetry_activity GROUP BY session_id, started_at
+             )",
+            [],
+        )?;
+    }
+
+    for plan in &plans {
+        if plan.reset_state {
+            tx.execute(
+                "DELETE FROM telemetry_turns
+                 WHERE source_key = ?1",
+                params![plan.canonical_source_key],
+            )?;
+            tx.execute(
+                "DELETE FROM telemetry_edits
+                 WHERE source_key = ?1",
+                params![plan.canonical_source_key],
+            )?;
+            if object_kind(&tx, "telemetry_activity")?.as_deref() == Some("table") {
+                tx.execute(
+                    "DELETE FROM telemetry_activity WHERE source_key = ?1",
+                    params![plan.canonical_source_key],
+                )?;
+            }
+        }
+    }
+
+    let migration_sources = load_migration_sources(&tx)?;
+    let sources_by_key = migration_sources
+        .iter()
+        .map(|source| (source.source_key.as_str(), source))
+        .collect::<std::collections::HashMap<_, _>>();
+    let extended_source_columns = table_columns(&tx, "telemetry_sources")?.contains("source_kind");
     tx.execute(
         "DELETE FROM telemetry_sources
          WHERE source_key IN (
              SELECT old_source_key FROM telemetry_source_aliases
              WHERE old_source_key <> keep_source_key
-         )",
+        )",
         [],
     )?;
-    tx.execute(
-        "UPDATE telemetry_sources
-         SET source_key = (SELECT canonical_source_key
-                           FROM telemetry_source_aliases
-                           WHERE old_source_key = telemetry_sources.source_key),
-             source_path = (SELECT canonical_path
-                            FROM telemetry_source_aliases
-                            WHERE old_source_key = telemetry_sources.source_key)
-         WHERE source_key IN (
-             SELECT keep_source_key FROM telemetry_source_aliases
-         )",
-        [],
-    )?;
+    for plan in &plans {
+        let Some(source) = sources_by_key.get(plan.keep_source_key.as_str()) else {
+            return Err(sqlite_io_error(io::Error::other(
+                "selected telemetry source did not survive alias deletion",
+            )));
+        };
+        update_migration_source(&tx, source, plan, extended_source_columns)?;
+    }
 
     tx.execute(
-        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        params![SOURCE_KEY_FORMAT_VERSION_KEY, SOURCE_KEY_FORMAT_VERSION],
     )?;
 
     tx.commit()
@@ -817,68 +1091,12 @@ fn canonicalize_normalized_sources(tx: &Transaction<'_>) -> rusqlite::Result<()>
             |row| row.get(0),
         )
         .optional()?;
-    if done == Some(1) {
+    if done == Some(SOURCE_KEY_FORMAT_VERSION) {
         return Ok(());
     }
 
-    let mut stmt =
-        tx.prepare("SELECT source_key, source_path, session_id, provider FROM telemetry_sources")?;
-    let sources = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
-        std::collections::BTreeMap::new();
-    for (old_source_key, source_path, session_id, provider) in sources {
-        let physical_path = canonical_path(std::path::Path::new(&source_path));
-        let canonical_path = physical_path.to_string_lossy().to_string();
-        let canonical_key = source_key(&provider, &session_id, &canonical_path);
-        groups
-            .entry(canonical_key)
-            .or_default()
-            .push((old_source_key, canonical_path));
-    }
-
-    tx.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS telemetry_source_aliases (
-             old_source_key TEXT PRIMARY KEY,
-             canonical_source_key TEXT NOT NULL,
-             canonical_path TEXT NOT NULL,
-             keep_source_key TEXT NOT NULL
-         );
-         DELETE FROM telemetry_source_aliases;",
-    )?;
-
-    for (canonical_key, mut aliases) in groups {
-        aliases.sort_by(|left, right| left.0.cmp(&right.0));
-        let keep_source_key = aliases
-            .iter()
-            .find(|(old_source_key, _)| old_source_key == &canonical_key)
-            .map(|(old_source_key, _)| old_source_key.clone())
-            .unwrap_or_else(|| aliases[0].0.clone());
-        let canonical_path = aliases[0].1.clone();
-
-        for (old_source_key, _) in aliases {
-            tx.execute(
-                "INSERT INTO telemetry_source_aliases
-                    (old_source_key, canonical_source_key, canonical_path, keep_source_key)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    old_source_key,
-                    canonical_key,
-                    canonical_path,
-                    keep_source_key
-                ],
-            )?;
-        }
-    }
+    let plans = source_alias_plans(tx, done == Some(1))?;
+    install_source_alias_plans(tx, &plans)?;
 
     tx.execute(
         "INSERT OR IGNORE INTO telemetry_strings(kind, value)
@@ -952,26 +1170,68 @@ fn canonicalize_normalized_sources(tx: &Transaction<'_>) -> rusqlite::Result<()>
     }
 
     tx.execute(
+        "UPDATE telemetry_activity
+         SET source_key = (SELECT canonical_source_key
+                           FROM telemetry_source_aliases
+                           WHERE old_source_key = telemetry_activity.source_key)
+         WHERE source_key IN (SELECT old_source_key FROM telemetry_source_aliases)",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_activity
+         WHERE id NOT IN (
+             SELECT MIN(id) FROM telemetry_activity GROUP BY session_id, started_at
+         )",
+        [],
+    )?;
+
+    for plan in &plans {
+        if plan.reset_state {
+            tx.execute(
+                "DELETE FROM telemetry_turn_facts
+                 WHERE source_ref = (
+                     SELECT string_id FROM telemetry_strings
+                     WHERE kind = 'source_key' AND value = ?1
+                 )",
+                params![plan.canonical_source_key],
+            )?;
+            tx.execute(
+                "DELETE FROM telemetry_edit_facts
+                 WHERE source_ref = (
+                     SELECT string_id FROM telemetry_strings
+                     WHERE kind = 'source_key' AND value = ?1
+                 )",
+                params![plan.canonical_source_key],
+            )?;
+            tx.execute(
+                "DELETE FROM telemetry_activity WHERE source_key = ?1",
+                params![plan.canonical_source_key],
+            )?;
+        }
+    }
+
+    let migration_sources = load_migration_sources(tx)?;
+    let sources_by_key = migration_sources
+        .iter()
+        .map(|source| (source.source_key.as_str(), source))
+        .collect::<std::collections::HashMap<_, _>>();
+    let extended_source_columns = table_columns(tx, "telemetry_sources")?.contains("source_kind");
+    tx.execute(
         "DELETE FROM telemetry_sources
          WHERE source_key IN (
              SELECT old_source_key FROM telemetry_source_aliases
              WHERE old_source_key <> keep_source_key
-         )",
+        )",
         [],
     )?;
-    tx.execute(
-        "UPDATE telemetry_sources
-         SET source_key = (SELECT canonical_source_key
-                           FROM telemetry_source_aliases
-                           WHERE old_source_key = telemetry_sources.source_key),
-             source_path = (SELECT canonical_path
-                            FROM telemetry_source_aliases
-                            WHERE old_source_key = telemetry_sources.source_key)
-         WHERE source_key IN (
-             SELECT keep_source_key FROM telemetry_source_aliases
-         )",
-        [],
-    )?;
+    for plan in &plans {
+        let Some(source) = sources_by_key.get(plan.keep_source_key.as_str()) else {
+            return Err(sqlite_io_error(io::Error::other(
+                "selected telemetry source did not survive alias deletion",
+            )));
+        };
+        update_migration_source(tx, source, plan, extended_source_columns)?;
+    }
     tx.execute(
         "DELETE FROM telemetry_source_paths
          WHERE source_ref NOT IN (
@@ -1003,11 +1263,70 @@ fn canonicalize_normalized_sources(tx: &Transaction<'_>) -> rusqlite::Result<()>
         [],
     )?;
     tx.execute(
-        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        params![SOURCE_KEY_FORMAT_VERSION_KEY, SOURCE_KEY_FORMAT_VERSION],
     )?;
     Ok(())
+}
+
+/// Rebuild every rollup bucket that may have existed before source repair.
+///
+/// Alias repair can remove facts without changing their session or timestamp,
+/// so collecting only newly inserted facts would leave an already-inflated
+/// bucket untouched. Existing rollup rows are included to remove orphaned
+/// buckets, while current facts and activity cover buckets that were missing
+/// or newly regrouped during migration.
+fn recompute_migrated_rollups(conn: &Connection) -> rusqlite::Result<()> {
+    if object_kind(conn, "telemetry_rollup_hourly")?.as_deref() != Some("table")
+        || object_kind(conn, "telemetry_activity")?.as_deref() != Some("table")
+    {
+        return Ok(());
+    }
+
+    let mut dirty = DirtyBuckets::new();
+    let mut statement =
+        conn.prepare("SELECT bucket_start, session_id FROM telemetry_rollup_hourly")?;
+    for row in statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        dirty.insert(row?);
+    }
+
+    for (table, timestamp_column) in [
+        ("telemetry_turn_facts", "ended_at"),
+        ("telemetry_edit_facts", "occurred_at"),
+    ] {
+        let query = format!(
+            "SELECT sessions.value, facts.{timestamp_column}
+             FROM {table} facts
+             JOIN telemetry_strings sessions
+               ON sessions.kind = 'session'
+              AND sessions.string_id = facts.session_ref"
+        );
+        let mut statement = conn.prepare(&query)?;
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (session_id, timestamp) = row?;
+            mark_dirty(&mut dirty, &session_id, &timestamp);
+        }
+    }
+
+    let mut statement =
+        conn.prepare("SELECT session_id, started_at, ended_at FROM telemetry_activity")?;
+    for row in statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (session_id, started_at, ended_at) = row?;
+        mark_dirty_span(&mut dirty, &session_id, &started_at, &ended_at);
+    }
+
+    recompute_buckets(conn, &dirty)
 }
 
 /// Collapse byte-offset provider facts to the finest grain the Analytics
@@ -1217,11 +1536,43 @@ fn repair_forward_compatibility(
     before_marker: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let source_repair_needed = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        != Some(SOURCE_KEY_FORMAT_VERSION);
+    let compact_repair_needed = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![COMPACT_FACTS_VERSION_KEY],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        != Some(1);
+    let rollup_rebuild_needed = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![ROLLUP_REBUILD_VERSION_KEY],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        != Some(ROLLUP_REBUILD_VERSION);
     create_normalized_schema(&tx)?;
     ensure_normalized_indexes(&tx)?;
     canonicalize_normalized_sources(&tx)?;
     compact_normalized_facts(&tx)?;
     ensure_compatibility_views(&tx)?;
+    if source_repair_needed || compact_repair_needed || rollup_rebuild_needed {
+        recompute_migrated_rollups(&tx)?;
+        tx.execute(
+            "INSERT INTO telemetry_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![ROLLUP_REBUILD_VERSION_KEY, ROLLUP_REBUILD_VERSION],
+        )?;
+    }
     if let Some(hook) = before_marker.as_deref_mut() {
         hook()?;
     }
@@ -1537,8 +1888,12 @@ fn reset_telemetry_schema(conn: &Connection) -> rusqlite::Result<()> {
         drop_object(conn, name)?;
     }
     conn.execute(
-        "DELETE FROM telemetry_meta WHERE key = ?1",
-        params![COMPACT_FACTS_VERSION_KEY],
+        "DELETE FROM telemetry_meta WHERE key IN (?1, ?2, ?3)",
+        params![
+            COMPACT_FACTS_VERSION_KEY,
+            SOURCE_KEY_FORMAT_VERSION_KEY,
+            ROLLUP_REBUILD_VERSION_KEY
+        ],
     )?;
     Ok(())
 }
@@ -1966,13 +2321,48 @@ mod tests {
             params![alias_key, alias.to_string_lossy()],
         )
         .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE telemetry_activity (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 started_at TEXT NOT NULL,
+                 ended_at TEXT NOT NULL,
+                 last_event_at TEXT NOT NULL,
+                 event_count INTEGER NOT NULL,
+                 method TEXT NOT NULL,
+                 source_key TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE telemetry_rollup_hourly (
+                 bucket_start TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 model TEXT NOT NULL DEFAULT '',
+                 measured_active_ms INTEGER NOT NULL DEFAULT 0,
+                 clustered_active_ms INTEGER NOT NULL DEFAULT 0,
+                 turns INTEGER NOT NULL DEFAULT 0,
+                 input_tokens INTEGER,
+                 cached_input_tokens INTEGER,
+                 cache_write_tokens INTEGER,
+                 output_tokens INTEGER,
+                 reasoning_tokens INTEGER,
+                 context_window INTEGER,
+                 tokens_reported INTEGER NOT NULL DEFAULT 0,
+                 files_touched INTEGER NOT NULL DEFAULT 0,
+                 lines_added INTEGER NOT NULL DEFAULT 0,
+                 lines_removed INTEGER NOT NULL DEFAULT 0,
+                 cost_usd REAL,
+                 PRIMARY KEY (bucket_start, session_id, provider, model)
+             );",
+        )
+        .unwrap();
         for source_key in ["source-a".to_string(), alias_key.clone()] {
             conn.execute(
                 "INSERT INTO telemetry_turns
                     (event_key, session_id, provider, turn_id, ended_at,
-                     source_key, source_path)
+                     input_tokens, source_key, source_path)
                  VALUES ('same-event', 'session-a', 'codex', 'turn-a',
-                         '2026-08-30T00:00:00Z', ?1, ?2)",
+                         '2026-08-30T00:00:00Z', 7, ?1, ?2)",
                 params![
                     source_key,
                     if source_key == "source-a" {
@@ -1984,6 +2374,13 @@ mod tests {
             )
             .unwrap();
         }
+        conn.execute(
+            "INSERT INTO telemetry_rollup_hourly
+                (bucket_start, session_id, provider, model, turns, input_tokens)
+             VALUES ('2026-08-30T00:00:00.000Z', 'session-a', 'codex', 'model-a', 99, 999)",
+            [],
+        )
+        .unwrap();
 
         run_telemetry_migrations(&conn).unwrap();
 
@@ -2014,6 +2411,17 @@ mod tests {
             .to_string();
         assert_eq!(source_key, format!("codex|{canonical}"));
         assert_eq!(source_path, canonical);
+        assert_eq!(
+            conn.query_row::<(i64, i64), _, _>(
+                "SELECT turns, input_tokens FROM telemetry_rollup_hourly
+                 WHERE bucket_start = '2026-08-30T00:00:00.000Z'
+                   AND session_id = 'session-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap(),
+            (1, 7)
+        );
     }
 
     #[test]
@@ -2038,25 +2446,51 @@ mod tests {
             params![SOURCE_KEY_FORMAT_VERSION_KEY],
         )
         .unwrap();
-        for (agent, path) in [("agent-a", physical_text), ("agent-b", alias_text)] {
+        for (agent, path, cursor, carry) in [
+            ("agent-a", physical_text, 100_i64, "carry-a"),
+            ("agent-b", alias_text, 200_i64, "carry-b"),
+        ] {
             let old_key = format!("codex|{agent}|{path}");
             conn.execute(
                 "INSERT INTO telemetry_sources
-                    (source_key, source_path, session_id, provider, source_kind, cursor_kind)
-                 VALUES (?1, ?2, ?3, 'codex', 'jsonl', 'byte_offset')",
-                params![old_key, path, agent],
+                    (source_key, source_path, session_id, provider, source_kind,
+                     cursor_kind, cursor_value, parser_version, fingerprint,
+                     carry_turn_id)
+                 VALUES (?1, ?2, ?3, 'codex', 'jsonl', 'byte_offset', ?4, 1,
+                         'same-fingerprint', ?5)",
+                params![old_key, path, agent, cursor, carry],
             )
             .unwrap();
             conn.execute(
                 "INSERT INTO telemetry_turns
                     (event_key, session_id, provider, turn_id, ended_at,
-                     source_key, source_path)
+                     input_tokens, output_tokens, source_key, source_path)
                  VALUES ('same-event', ?1, 'codex', 'turn-a',
-                         '2026-08-30T00:00:00Z', ?2, ?3)",
+                         '2026-08-30T00:00:00Z', 7, 3, ?2, ?3)",
                 params![agent, old_key, path],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_activity
+                    (session_id, provider, started_at, ended_at, last_event_at,
+                     event_count, method, source_key)
+                 VALUES (?1, 'codex', '2026-08-30T00:10:00Z',
+                         '2026-08-30T00:11:00Z', '2026-08-30T00:11:00Z',
+                         1, 'measured', ?2)",
+                params![agent, old_key],
+            )
+            .unwrap();
         }
+
+        conn.execute(
+            "INSERT INTO telemetry_rollup_hourly
+                (bucket_start, session_id, provider, model, turns,
+                 input_tokens, output_tokens, tokens_reported)
+             VALUES ('2026-08-30T00:00:00.000Z', 'agent-a', 'codex', 'model-a',
+                     99, 999, 999, 1)",
+            [],
+        )
+        .unwrap();
 
         run_telemetry_migrations(&conn).unwrap();
 
@@ -2083,6 +2517,150 @@ mod tests {
             )
             .unwrap(),
             format!("codex|{canonical}")
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64, i64), _, _>(
+                "SELECT cursor_value, last_size, parser_version
+                 FROM telemetry_sources",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+            .0,
+            200
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64, i64), _, _>(
+                "SELECT turns, input_tokens, output_tokens
+                 FROM telemetry_rollup_hourly
+                 WHERE bucket_start = '2026-08-30T00:00:00.000Z'
+                   AND session_id = 'agent-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap(),
+            (1, 7, 3)
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_activity
+                 WHERE source_key = ?1",
+                params![format!("codex|{canonical}")],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            2
+        );
+
+        let source_state =
+            crate::telemetry::store::load_source_state(&conn, &format!("codex|{canonical}"))
+                .unwrap()
+                .expect("canonical source state should survive migration");
+        let replay = crate::telemetry::models::ParsedFacts {
+            turns: vec![crate::telemetry::models::TurnFact {
+                event_key: "same-event".to_owned(),
+                session_id: "agent-a".to_owned(),
+                provider: "codex".to_owned(),
+                turn_id: Some("turn-a".to_owned()),
+                model: None,
+                effort: None,
+                started_at: None,
+                ended_at: "2026-08-30T00:00:00Z".to_owned(),
+                input_tokens: Some(7),
+                cached_input_tokens: None,
+                cache_write_tokens: None,
+                output_tokens: Some(3),
+                reasoning_tokens: None,
+                context_window: None,
+                cost_usd: None,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            crate::telemetry::store::write_facts(&conn, &replay, &[], &source_state,)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT SUM(input_tokens) FROM telemetry_turns",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            7
+        );
+
+        crate::telemetry::store::purge_source_facts(&conn, &format!("codex|{canonical}")).unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn pre_correction_normalized_marker_forces_a_safe_source_rebuild() {
+        let directory = tempfile::tempdir().unwrap();
+        let physical = directory.path().join("rollout.jsonl");
+        std::fs::write(&physical, "session\n").unwrap();
+        let path = std::fs::canonicalize(&physical)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let canonical = format!("codex|{path}");
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_sources
+                (source_key, source_path, session_id, provider, source_kind,
+                 cursor_kind, cursor_value, parser_version, fingerprint)
+             VALUES (?1, ?2, 'agent-a', 'codex', 'jsonl', 'byte_offset',
+                     200, 1, 'same-fingerprint')",
+            params![canonical, path],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'agent-a', 'codex', '2026-08-30T00:00:00Z', ?1, ?2)",
+            params![canonical, path],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE telemetry_meta SET value = 1 WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        )
+        .unwrap();
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64), _, _>(
+                "SELECT cursor_value, parser_version FROM telemetry_sources",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![SOURCE_KEY_FORMAT_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            SOURCE_KEY_FORMAT_VERSION
         );
     }
 

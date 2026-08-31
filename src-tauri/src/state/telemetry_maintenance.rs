@@ -19,6 +19,7 @@ pub const TELEMETRY_RAW_RETENTION_DAYS: u32 = 90;
 
 const AUTOMATIC_BACKUP_PREFIX: &str = "state.db.telemetry-";
 const AUTOMATIC_BACKUP_SUFFIX: &str = ".backup";
+const AUTOMATIC_BACKUP_TEMP_SUFFIX: &str = ".tmp";
 const AUTOMATIC_BACKUP_COUNT: usize = 2;
 const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -44,7 +45,55 @@ fn is_automatic_backup(path: &Path) -> bool {
         })
 }
 
+fn is_automatic_backup_temp(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with(AUTOMATIC_BACKUP_PREFIX)
+                && name.ends_with(&format!(
+                    "{AUTOMATIC_BACKUP_SUFFIX}{AUTOMATIC_BACKUP_TEMP_SUFFIX}"
+                ))
+        })
+}
+
 fn prune_automatic_backups(directory: &Path) -> io::Result<()> {
+    remove_incomplete_backup_temps(directory)?;
+    let mut backups = Vec::new();
+    for entry in std::fs::read_dir(directory)?.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if is_automatic_backup(&path) {
+            backups.push(path);
+        }
+    }
+    backups.sort();
+
+    let remove_count = backups.len().saturating_sub(AUTOMATIC_BACKUP_COUNT);
+    for backup in backups.into_iter().take(remove_count) {
+        std::fs::remove_file(backup)?;
+    }
+    Ok(())
+}
+
+fn remove_incomplete_backup_temps(directory: &Path) -> io::Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(directory)?.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_file()) && is_automatic_backup_temp(&path) {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn newest_verified_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
+    if !directory.exists() {
+        return Ok(None);
+    }
     let mut backups = std::fs::read_dir(directory)?
         .flatten()
         .filter_map(|entry| {
@@ -57,12 +106,15 @@ fn prune_automatic_backups(directory: &Path) -> io::Result<()> {
         })
         .collect::<Vec<_>>();
     backups.sort();
-
-    let remove_count = backups.len().saturating_sub(AUTOMATIC_BACKUP_COUNT);
-    for backup in backups.into_iter().take(remove_count) {
+    for backup in backups.into_iter().rev() {
+        if wardian_core::telemetry::verify_backup(&backup).is_ok() {
+            return Ok(Some(backup));
+        }
+        // Automatic files are owned by this scheduler. An invalid one cannot
+        // serve as a recovery baseline and should not pin disk space forever.
         std::fs::remove_file(backup)?;
     }
-    Ok(())
+    Ok(None)
 }
 
 fn agent_runtime_is_active(agent: &ActiveAgent) -> bool {
@@ -87,7 +139,13 @@ fn maintain_if_due_at(
     }
 
     std::fs::create_dir_all(&backup_directory)?;
-    let backup_path = new_backup_path(&backup_directory);
+    remove_incomplete_backup_temps(&backup_directory)?;
+    let backup_path = if wardian_core::telemetry::retention_is_prepared(conn)? {
+        newest_verified_backup(&backup_directory)?
+            .unwrap_or_else(|| new_backup_path(&backup_directory))
+    } else {
+        new_backup_path(&backup_directory)
+    };
     let report =
         wardian_core::telemetry::maintain(conn, TELEMETRY_RAW_RETENTION_DAYS, &backup_path, true)?;
 
@@ -198,6 +256,17 @@ mod tests {
     }
 
     #[test]
+    fn backup_rotation_removes_incomplete_temporary_files() {
+        let directory = tempdir().unwrap();
+        let temporary = directory.path().join("state.db.telemetry-300-1.backup.tmp");
+        std::fs::write(&temporary, []).unwrap();
+
+        prune_automatic_backups(directory.path()).unwrap();
+
+        assert!(!temporary.exists());
+    }
+
+    #[test]
     fn due_check_skips_backup_when_no_raw_fact_is_expired() {
         let directory = tempdir().unwrap();
         let database = directory.path().join("state.db");
@@ -242,5 +311,50 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[test]
+    fn due_check_reuses_verified_backup_when_retention_is_in_progress() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let baseline = backup_directory.join("state.db.telemetry-100-1.backup");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let now = Utc::now();
+        let old =
+            (now - chrono::Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        let cutoff =
+            wardian_core::telemetry::retention_cutoff(now, TELEMETRY_RAW_RETENTION_DAYS).unwrap();
+        let cutoff_epoch = chrono::DateTime::parse_from_rfc3339(&cutoff)
+            .unwrap()
+            .timestamp();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&backup_directory).unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![baseline.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_meta(key, value) VALUES ('telemetry_maintenance_prepared_cutoff', ?1),
+                ('telemetry_maintenance_prepared_retain_days', ?2)",
+            rusqlite::params![cutoff_epoch, TELEMETRY_RAW_RETENTION_DAYS],
+        )
+        .unwrap();
+
+        let report = maintain_if_due_at(&conn, directory.path())
+            .unwrap()
+            .expect("prepared retention should resume");
+
+        assert_eq!(report.turns_deleted, 1);
+        assert!(baseline.exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
     }
 }

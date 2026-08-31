@@ -80,10 +80,13 @@ maintenance command.
 ## Recovery and disk behavior
 
 Before deleting any raw fact, the core operation creates and integrity-checks a
-full SQLite backup. It recomputes affected hourly buckets, records a durable
-prepared cutoff, deletes in bounded transactions, checkpoints the WAL, and
-vacuum-compacts the database. Interrupted deletion resumes at the recorded
-cutoff. The application keeps the two newest automatic backups in
+full SQLite backup through a temporary sibling path, then atomically promotes
+it. It recomputes affected hourly buckets, records a durable prepared cutoff,
+deletes in bounded transactions, checkpoints the WAL, and vacuum-compacts the
+database. Interrupted deletion resumes at the recorded cutoff and reuses the
+newest verified automatic backup rather than creating another full copy for
+each retry. Failed temporary outputs are removed. After success, the
+application keeps the two newest automatic backups in
 `<wardian-home>/backups/telemetry` and rotates only files with its exact backup
 prefix.
 

@@ -25,6 +25,7 @@ const DELETE_BATCH_SIZE: i64 = 2_000;
 pub const MAX_RETENTION_DAYS: u32 = 90_000_000;
 const RETENTION_PREPARED_KEY: &str = "telemetry_maintenance_prepared_cutoff";
 const RETENTION_WINDOW_KEY: &str = "telemetry_maintenance_prepared_retain_days";
+const BACKUP_TEMP_SUFFIX: &str = ".tmp";
 
 /// The durable effects of one explicit telemetry maintenance run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +46,9 @@ pub struct MaintenanceReport {
 ///
 /// The application maintenance service calls this only at a quiescent
 /// lifecycle boundary. The backup is verified before any source row is
-/// deleted, and `vacuum` must be opted into because it rewrites the whole
-/// database.
+/// deleted; callers resuming a prepared retention phase may pass its existing
+/// verified baseline. `vacuum` must be opted into because it rewrites the
+/// whole database.
 pub fn maintain(
     conn: &Connection,
     retain_days: u32,
@@ -174,14 +176,40 @@ fn has_expired_raw_telemetry_at(
 
 fn create_verified_backup(conn: &Connection, backup_path: &Path) -> rusqlite::Result<()> {
     if backup_path.exists() {
-        return Err(invalid_request(format!(
-            "backup destination already exists: {}",
-            backup_path.display()
-        )));
+        return verify_backup(backup_path);
     }
-    let backup_path_string = backup_path.to_string_lossy().into_owned();
-    conn.execute("VACUUM INTO ?1", params![backup_path_string])?;
 
+    let temporary_path = backup_temp_path(backup_path);
+    if temporary_path.exists() {
+        std::fs::remove_file(&temporary_path).map_err(sqlite_io_error)?;
+    }
+
+    let result = (|| {
+        let temporary_path_string = temporary_path.to_string_lossy().into_owned();
+        conn.execute("VACUUM INTO ?1", params![temporary_path_string])?;
+        verify_backup(&temporary_path)?;
+        std::fs::rename(&temporary_path, backup_path).map_err(sqlite_io_error)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+fn backup_temp_path(backup_path: &Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!(
+        "{}{}",
+        backup_path.to_string_lossy(),
+        BACKUP_TEMP_SUFFIX
+    ))
+}
+
+/// Verify that a telemetry backup is readable and passes SQLite integrity
+/// checks. Existing verified backups may be supplied to [`maintain`] when an
+/// interrupted retention run is being resumed.
+pub fn verify_backup(backup_path: &Path) -> rusqlite::Result<()> {
     let backup = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let integrity: String = backup.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     if integrity != "ok" {
@@ -190,6 +218,19 @@ fn create_verified_backup(conn: &Connection, backup_path: &Path) -> rusqlite::Re
         )));
     }
     Ok(())
+}
+
+/// Return whether a destructive retention phase has already prepared its
+/// cutoff and must resume with the same retention window.
+pub fn retention_is_prepared(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM telemetry_meta WHERE key = ?1
+         )",
+        params![RETENTION_PREPARED_KEY],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
 }
 
 fn dirty_buckets_before(conn: &Connection, cutoff: &str) -> rusqlite::Result<DirtyBuckets> {
@@ -570,6 +611,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_backup_creation_removes_the_temporary_destination() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup = directory
+            .path()
+            .join("missing-parent")
+            .join("state.db.backup");
+        let conn = Connection::open(&database).unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert!(maintain_at(
+            &conn,
+            1,
+            &backup,
+            false,
+            DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .is_err());
+        assert!(!backup.exists());
+        assert!(!backup_temp_path(&backup).exists());
+    }
+
+    #[test]
     fn maintenance_requires_explicit_retention() {
         let conn = Connection::open_in_memory().unwrap();
         run_telemetry_migrations(&conn).unwrap();
@@ -774,7 +840,6 @@ mod tests {
         let directory = tempdir().unwrap();
         let database = directory.path().join("state.db");
         let first_backup = directory.path().join("state.db.first.backup");
-        let retry_backup = directory.path().join("state.db.retry.backup");
         let conn = Connection::open(&database).unwrap();
         run_telemetry_migrations(&conn).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
@@ -824,6 +889,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert!(maintain_at_with_hook(&conn, 1, &first_backup, false, now, &mut hook,).is_err());
+        assert!(first_backup.exists());
         assert_eq!(
             conn.query_row::<i64, _, _>(
                 "SELECT count(*) FROM telemetry_turns WHERE ended_at < '2026-08-29T12:00:00.000Z'",
@@ -837,7 +903,7 @@ mod tests {
         let later = DateTime::parse_from_rfc3339("2026-08-30T13:00:00.000Z")
             .unwrap()
             .with_timezone(&Utc);
-        let report = maintain_at(&conn, 1, &retry_backup, false, later).unwrap();
+        let report = maintain_at(&conn, 1, &first_backup, false, later).unwrap();
         assert_eq!(report.cutoff, "2026-08-29T12:00:00.000Z");
         assert_eq!(
             conn.query_row::<i64, _, _>(

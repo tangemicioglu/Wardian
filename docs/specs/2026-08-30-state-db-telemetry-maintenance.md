@@ -45,7 +45,9 @@ quiescent lifecycle boundary; the function owns backup verification, durable
 recovery markers, deletion, checkpointing, and optional compaction.
 
 The function creates and integrity-checks the backup before mutating the
-source. It rebuilds every
+source. A new backup is built through a temporary sibling and atomically
+promoted only after verification; an existing verified backup may be supplied
+when resuming a prepared phase. It rebuilds every
 hourly bucket touched by the old turns, edits, and completed activity intervals
 and records a durable prepared phase before deleting raw rows in bounded
 batches. An interrupted retry resumes that phase without rebuilding rollups
@@ -62,6 +64,13 @@ software maintenance policy requests it at a quiescent lifecycle boundary.
 The desktop application currently supplies a 90-day product policy. Choosing a
 shorter or longer window remains a product decision and requires updating the
 automatic-retention specification and its application constant together.
+
+The v4-to-v5 source repair merges complete compatible alias state from the
+furthest cursor. Incompatible parser, cursor, medium, or file-identity state
+resets the canonical source and purges its facts for a single complete reread.
+Turns, edits, and activity intervals all follow the same alias map. A versioned
+rollup repair runs once for upgraded stores so existing buckets are reconciled
+after alias deduplication without adding work to every startup.
 
 ## Evidence boundary
 
