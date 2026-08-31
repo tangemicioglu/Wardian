@@ -103,6 +103,19 @@
   height: 100%;
 }
 
+/* A maximized group owns the complete pane. Dockview preserves its split tree
+ * while siblings are hidden, so its visual sash would otherwise remain as a
+ * misleading boundary inside that single-pane view. */
+.wardian-workbench-layout[data-zoomed-group-id]:not([data-zoomed-group-id="none"])
+  .dv-split-view-container
+  > .dv-sash-container,
+.wardian-workbench-layout[data-zoomed-group-id]:not([data-zoomed-group-id="none"])
+  .dv-split-view-container
+  > .dv-view-container
+  > .dv-view:not(:first-child)::before {
+  display: none;
+}
+
 /* Dockview owns pane geometry; each surface owns its own scrolling region. */
 .dockview-theme-wardian .dv-view {
   overflow: clip;

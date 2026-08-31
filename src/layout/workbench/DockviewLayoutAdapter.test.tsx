@@ -1053,6 +1053,20 @@ describe("DockviewLayoutAdapter", () => {
     }));
   });
 
+  it("removes model-owned split boundaries while a pane is zoomed and restores them afterward", async () => {
+    const documentModel = makeTwoGroupDocument();
+    const { rerender } = render(<DockviewLayoutAdapter document={documentModel} />);
+
+    await waitFor(() => expect(screen.getAllByTestId("workbench-group")).toHaveLength(2));
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+
+    rerender(<DockviewLayoutAdapter document={documentModel} zoomed_group_id="group-1" />);
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+
+    rerender(<DockviewLayoutAdapter document={documentModel} />);
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
   it("defers rather than drops user activation during canonical projection", async () => {
     const onCommand = vi.fn();
     render(
