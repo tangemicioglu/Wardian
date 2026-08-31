@@ -156,10 +156,12 @@ fn remove_pending_backup(directory: &Path) -> io::Result<()> {
 
 fn adopt_legacy_baseline(directory: &Path) -> io::Result<PathBuf> {
     let pending = pending_backup_path(directory);
-    // This branch is only for databases prepared before the pending-baseline
-    // protocol existed. Any pending file is therefore unassociated and must
-    // not be allowed to replace the legacy recovery snapshot.
-    remove_pending_backup(directory)?;
+    // A process can terminate after moving a legacy backup here but before
+    // core records its durable association. Preserve that verified file so a
+    // retry cannot replace the only pre-deletion recovery baseline.
+    if verified_pending_backup(directory)?.is_some() {
+        return Ok(pending);
+    }
     if let Some(legacy_baseline) = newest_verified_backup(directory)? {
         std::fs::rename(legacy_baseline, &pending)?;
     }
@@ -530,6 +532,80 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn interrupted_legacy_adoption_reuses_pending_baseline() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let baseline = backup_directory.join("state.db.telemetry-100-1.backup");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let now = Utc::now();
+        let old = (now - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        let cutoff =
+            wardian_core::telemetry::retention_cutoff(now, TELEMETRY_RAW_RETENTION_DAYS).unwrap();
+        let cutoff_epoch = chrono::DateTime::parse_from_rfc3339(&cutoff)
+            .unwrap()
+            .timestamp();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
+             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
+                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
+            [],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&backup_directory).unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![baseline.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_meta(key, value) VALUES ('telemetry_maintenance_prepared_cutoff', ?1),
+                ('telemetry_maintenance_prepared_retain_days', ?2)",
+            rusqlite::params![cutoff_epoch, TELEMETRY_RAW_RETENTION_DAYS],
+        )
+        .unwrap();
+
+        // Model termination immediately after adopt_legacy_baseline renames
+        // the verified legacy file and before core can persist association.
+        let pending = pending_backup_path(&backup_directory);
+        std::fs::rename(&baseline, &pending).unwrap();
+        let pending_size = std::fs::metadata(&pending).unwrap().len();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_limit_cleanup
+             BEFORE DELETE ON telemetry_limits
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected post-association failure');
+             END;",
+        )
+        .unwrap();
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        assert_eq!(std::fs::metadata(&pending).unwrap().len(), pending_size);
+        assert!(wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
+        assert!(!baseline.exists());
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        assert_eq!(std::fs::metadata(&pending).unwrap().len(), pending_size);
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+
+        conn.execute_batch("DROP TRIGGER reject_limit_cleanup;")
+            .unwrap();
+        maintain_if_due_at(&conn, directory.path())
+            .unwrap()
+            .expect("the interrupted legacy retention should complete after retry");
+        assert!(!pending.exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
     }
 
     #[test]
