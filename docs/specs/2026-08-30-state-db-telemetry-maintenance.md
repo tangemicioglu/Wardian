@@ -1,5 +1,9 @@
 # State Database Telemetry Maintenance
 
+Status: core recovery and compaction design; the application policy and
+schedule are defined by
+[`2026-08-30-state-db-automatic-telemetry-retention.md`](./2026-08-30-state-db-automatic-telemetry-retention.md).
+
 ## Decision
 
 Normalize repeated telemetry strings into integer lookup references during the
@@ -50,19 +54,23 @@ persisted cutoff is canonical while that phase is in progress, so a retry after
 the clock crosses an hour still resumes the same boundary; the retry must keep
 the original retention window. It then checkpoints the WAL and clears the phase
 marker. The
-current rollup does not reproduce rate-limit history, so `telemetry_limits` is
-retained. `VACUUM` is opt-in and runs only when the software maintenance policy
-requests it at a quiescent lifecycle boundary.
+Rate limits are account-level gauges. The write path keeps only the newest
+observation per provider, and maintenance removes older observations already
+present in an installed database. `VACUUM` is opt-in and runs only when the
+software maintenance policy requests it at a quiescent lifecycle boundary.
 
-The research investigation's candidate window is 90 days, but it is not a
-product default. Choosing a shorter or longer window remains an operator or
-product decision until retention requirements are established by usage data.
+The desktop application currently supplies a 90-day product policy. Choosing a
+shorter or longer window remains a product decision and requires updating the
+automatic-retention specification and its application constant together.
 
 ## Evidence boundary
 
-Hourly rollups answer aggregate dashboard queries but do not reproduce every raw
-fact: distinct turns, file paths, activity intervals, or rate-limit history can
-require detail rows. The maintenance path therefore deletes only fact families
-whose historical aggregate can be rebuilt and keeps the non-reproducible limit
-observations. The normalized lookup tables and source cursors remain so future
-ingest continues to address the same provider sources.
+The Dashboard reads its trailing window on open, on a 15-second backstop, and
+when telemetry changes. Analytics reads on a two-minute backstop and on the
+same update event. Neither surface requests individual provider events. The
+five-minute compact facts preserve the finest Analytics cells, distinct turn
+and file counts, model attribution, and rollup repair for byte-offset sources;
+timestamp-cursor sources retain event identities only because their overlap
+reads require them for deduplication. Rate-limit history is intentionally not a
+retained contract; the current gauge is sufficient. Source cursors and
+fingerprints remain so future ingest continues to address the same sources.

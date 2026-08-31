@@ -1,8 +1,9 @@
 //! Core-owned telemetry retention and compaction.
 //!
 //! Raw turns, edits, and completed activity intervals are safe to remove only
-//! after their hourly buckets have been recomputed. Rate-limit observations do
-//! not have an equivalent rollup, so this path deliberately retains them.
+//! after their hourly buckets have been recomputed. Rate-limit observations are
+//! account gauges rather than history, so only the newest row per provider is
+//! retained.
 //!
 //! The application maintenance service supplies the retention window and a new
 //! backup destination. No age policy is silently chosen, and compaction is
@@ -32,6 +33,7 @@ pub struct MaintenanceReport {
     pub turns_deleted: i64,
     pub edits_deleted: i64,
     pub activity_deleted: i64,
+    pub limits_deleted: i64,
     pub limits_retained: i64,
     pub wal_log_frames: i64,
     pub wal_checkpointed_frames: i64,
@@ -85,6 +87,7 @@ fn maintain_at_with_hook(
     let turns_deleted = delete_turns_before(conn, &cutoff, after_batch)?;
     let edits_deleted = delete_edits_before(conn, &cutoff, after_batch)?;
     let activity_deleted = delete_activity_before(conn, &cutoff, after_batch)?;
+    let limits_deleted = delete_stale_limits(conn, after_batch)?;
     let limits_retained = conn.query_row("SELECT count(*) FROM telemetry_limits", [], |row| {
         row.get(0)
     })?;
@@ -101,6 +104,7 @@ fn maintain_at_with_hook(
         turns_deleted,
         edits_deleted,
         activity_deleted,
+        limits_deleted,
         limits_retained,
         wal_log_frames: checkpoint.1,
         wal_checkpointed_frames: checkpoint.2,
@@ -125,6 +129,47 @@ pub fn retention_cutoff(now: DateTime<Utc>, retain_days: u32) -> rusqlite::Resul
         .and_then(|value| value.with_nanosecond(0))
         .unwrap_or(raw);
     Ok(floored.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+/// Return whether any raw telemetry covered by the retention policy is ready
+/// for maintenance.
+///
+/// The application checks this before creating a full backup. A scheduled
+/// maintenance pass that has nothing to prune must be cheap and must not create
+/// another copy of the database merely because the app restarted.
+pub fn has_expired_raw_telemetry(conn: &Connection, retain_days: u32) -> rusqlite::Result<bool> {
+    has_expired_raw_telemetry_at(conn, retain_days, Utc::now())
+}
+
+fn has_expired_raw_telemetry_at(
+    conn: &Connection,
+    retain_days: u32,
+    now: DateTime<Utc>,
+) -> rusqlite::Result<bool> {
+    let cutoff = retention_cutoff(now, retain_days)?;
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM telemetry_turns
+             WHERE julianday(ended_at) < julianday(?1)
+         ) OR EXISTS(
+             SELECT 1 FROM telemetry_edits
+             WHERE julianday(occurred_at) < julianday(?1)
+        ) OR EXISTS(
+             SELECT 1 FROM telemetry_activity
+             WHERE julianday(ended_at) <= julianday(?1)
+         ) OR EXISTS(
+             SELECT 1 FROM telemetry_limits older
+             WHERE EXISTS(
+                 SELECT 1 FROM telemetry_limits newer
+                 WHERE newer.provider = older.provider
+                   AND (newer.observed_at > older.observed_at
+                        OR (newer.observed_at = older.observed_at AND newer.id > older.id))
+             )
+         )",
+        params![cutoff],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
 }
 
 fn create_verified_backup(conn: &Connection, backup_path: &Path) -> rusqlite::Result<()> {
@@ -394,6 +439,49 @@ fn delete_activity_before(
     }
 }
 
+/// Retain the latest account-level limit gauge for each provider.
+///
+/// Limit observations arrive with the same heartbeat as token counts, but no
+/// current interface asks for their history. Deleting older observations here
+/// keeps an existing database bounded and the write path also avoids creating
+/// new history after this cleanup runs.
+fn delete_stale_limits(
+    conn: &Connection,
+    after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
+) -> rusqlite::Result<i64> {
+    let mut total = 0;
+    loop {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let ids = {
+            let mut statement = tx.prepare(
+                "SELECT older.id FROM telemetry_limits older
+                 WHERE EXISTS(
+                     SELECT 1 FROM telemetry_limits newer
+                     WHERE newer.provider = older.provider
+                       AND (newer.observed_at > older.observed_at
+                            OR (newer.observed_at = older.observed_at AND newer.id > older.id))
+                 )
+                 ORDER BY older.id
+                 LIMIT ?1",
+            )?;
+            let ids = statement
+                .query_map(params![DELETE_BATCH_SIZE], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        if ids.is_empty() {
+            tx.rollback()?;
+            return Ok(total);
+        }
+        for id in &ids {
+            tx.execute("DELETE FROM telemetry_limits WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        total += i64::try_from(ids.len()).unwrap_or(i64::MAX);
+        run_batch_hook(after_batch)?;
+    }
+}
+
 fn run_batch_hook(
     after_batch: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
@@ -435,6 +523,33 @@ mod tests {
             retention_cutoff(now, 90).unwrap(),
             "2026-06-01T12:00:00.000Z"
         );
+    }
+
+    #[test]
+    fn expired_check_only_reports_raw_facts_outside_the_window() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('recent', 'session-a', 'codex', '2026-08-29T12:01:00.000Z', 'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+
+        let now = DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(!has_expired_raw_telemetry_at(&conn, 1, now).unwrap());
+
+        conn.execute(
+            "INSERT INTO telemetry_edits
+                (event_key, session_id, provider, occurred_at, path, op, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', '2026-08-29T11:59:59.999Z', 'a.rs', 'modify', 'source-a', 'log')",
+            [],
+        )
+        .unwrap();
+        assert!(has_expired_raw_telemetry_at(&conn, 1, now).unwrap());
     }
 
     #[test]
@@ -504,6 +619,12 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
+             VALUES ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
+            [],
+        )
+        .unwrap();
 
         let now = DateTime::parse_from_rfc3339("2026-08-30T12:00:00.000Z")
             .unwrap()
@@ -512,6 +633,7 @@ mod tests {
         assert!(report.turns_deleted >= 1);
         assert_eq!(report.edits_deleted, 1);
         assert_eq!(report.activity_deleted, 1);
+        assert_eq!(report.limits_deleted, 1);
         assert_eq!(report.limits_retained, 1);
         assert_eq!(
             conn.query_row::<i64, _, _>(

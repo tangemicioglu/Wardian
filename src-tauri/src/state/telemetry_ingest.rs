@@ -16,6 +16,7 @@ use crate::utils::fs::get_wardian_home;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
+use wardian_core::telemetry::identity::canonical_path;
 use wardian_core::telemetry::ingest::{ingest_source, IngestError};
 use wardian_core::telemetry::sources::opencode::sessions_in_directory;
 use wardian_core::telemetry::sources::{is_supported, uses_archive, SourceContext, SourceError};
@@ -190,7 +191,21 @@ impl MachineCatalog {
             for segment in projected {
                 root = root.join(segment);
             }
-            paths.extend(index_transcripts(&root).into_values());
+            let shared_paths: HashSet<PathBuf> =
+                shared.values().map(|path| canonical_path(path)).collect();
+            let known = known_session_ids(agent);
+            paths.extend(index_transcripts(&root).into_values().filter(|path| {
+                // A projected provider home is normally private, but
+                // it can also be a junction into the shared provider
+                // home. In the latter case the directory scan sees
+                // every rollout on the machine; retain only the files
+                // whose provider session belongs to this agent.
+                let physical = canonical_path(path);
+                if !shared_paths.contains(&physical) {
+                    return true;
+                }
+                transcript_session_id(path).is_none_or(|id| known.contains(&id))
+            }));
         }
 
         // Agents without a projected home write into the shared one, where a
@@ -446,6 +461,7 @@ pub fn discover_sources_with(
         };
 
         for (path, provider_session_ids) in resolved {
+            let path = canonical_path(&path);
             let key = (
                 agent.session_id.clone(),
                 agent.provider.clone(),

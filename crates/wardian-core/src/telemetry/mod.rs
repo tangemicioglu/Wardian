@@ -37,9 +37,9 @@ pub mod store;
 
 pub use activity::{ACTIVE_GAP_THRESHOLD_MS, ACTIVE_SINGLETON_MS};
 pub use horizon::{resolve_horizon, Horizon, HorizonWindow};
-pub use identity::{content_key, file_fingerprint};
+pub use identity::{canonical_path, content_key, file_fingerprint, source_key};
 pub use ingest::{ingest_source, IngestError, IngestOutcome};
-pub use maintenance::{maintain, MaintenanceReport};
+pub use maintenance::{has_expired_raw_telemetry, maintain, MaintenanceReport};
 pub use matrix::{matrix, totals_at, Grain, Matrix, MatrixRow, Measure};
 pub use models::{
     ActiveTime, ActivityMethod, BreakdownRow, Cursor, CursorKind, EditFact, EditOp, IntervalFact,

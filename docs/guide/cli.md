@@ -34,13 +34,16 @@ Read telemetry without changing the app-owned source cursors:
 wardian telemetry summary --horizon week --dimension provider
 ```
 
-Telemetry retention and compaction are application-owned core operations, not
-CLI commands. Application code supplies an explicit retention policy and
-backup destination to the core function. It verifies the backup,
-recomputes affected hourly rollups, deletes only reproducible raw facts in
-bounded batches, checkpoints the WAL, and optionally vacuums while holding the
-same maintenance lease used by migration and ingestion. No retention window is
-silently selected by the software.
+Telemetry retention and compaction are application-owned operations, not CLI
+commands. Wardian applies a documented 90-day detail policy once per day when
+no provider runtime is active. Codex, Claude, and Pi callback facts are
+coalesced at five-minute interface grain as they arrive; timestamp-cursor
+sources retain event identities for safe overlap rereads. Wardian creates and
+verifies a backup under `<wardian-home>/backups/telemetry`, keeps the two newest
+automatic backups, recomputes affected hourly rollups, removes expired detail
+facts in bounded batches, keeps only the newest rate-limit gauge per provider,
+checkpoints the WAL, and vacuums to reclaim released pages. The CLI remains
+read-only.
 
 On startup, a v4-to-v5 schema migration first switches a file-backed database
 from WAL to SQLite's rollback journal and then holds exclusive locking mode

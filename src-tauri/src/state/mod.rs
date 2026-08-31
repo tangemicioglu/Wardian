@@ -9,6 +9,7 @@ pub mod file_resources;
 pub mod interactions;
 pub mod mailbox;
 pub mod telemetry_ingest;
+pub mod telemetry_maintenance;
 pub mod terminal_session;
 pub mod terminal_text;
 pub mod user_terminal;

@@ -6,6 +6,59 @@
 //! rewritten, and reusing offsets across a replaced file would make new records
 //! collide with old ones and silently vanish into `INSERT OR IGNORE`.
 
+use sha2::{Digest, Sha256};
+
+/// Resolve a source path to the physical file identity when it exists.
+///
+/// Wardian can expose one provider log through several projected habitat paths.
+/// On Windows those projections are commonly directory junctions, so string
+/// equality is not enough to tell whether two discovered paths are one source.
+/// Falling back to the supplied path keeps discovery useful for a source that
+/// disappears between cataloguing and ingest; the next successful discovery
+/// will reconcile it to the physical path again.
+pub fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Build the persisted identity for one provider source.
+///
+/// Codex and Claude use one append-only file per provider session. The physical
+/// path is therefore the source identity, and including Wardian's agent id
+/// would multiply one file whenever a projected habitat exposed it through
+/// more than one agent. OpenCode is different: one SQLite file legitimately
+/// contains many agents, so its agent id remains part of the key. Providers
+/// backed by Wardian's own archive also keep their agent-scoped identity.
+pub fn source_key(provider: &str, session_id: &str, source_path: &str) -> String {
+    if matches!(provider, "codex" | "claude") {
+        format!("{provider}|{source_path}")
+    } else {
+        format!("{provider}|{session_id}|{source_path}")
+    }
+}
+
+/// Stable storage identity for an aggregate row.
+///
+/// Aggregate rows deliberately do not retain the provider event key: one row
+/// can represent several callbacks in the same five-minute cell. The hash
+/// keeps arbitrary provider identifiers and file paths out of a delimiter
+/// format while leaving the key opaque to readers.
+pub(crate) fn compact_fact_key(kind: &str, parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(kind.as_bytes());
+    for part in parts {
+        hasher.update([0]);
+        hasher.update(part.as_bytes());
+    }
+    format!(
+        "compact:{kind}:{}",
+        hex_digest(hasher.finalize().as_slice())
+    )
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// FNV-1a 64-bit, written out rather than taken from the standard library.
 ///
 /// `DefaultHasher` would be simpler and is wrong here for one reason: its output
@@ -91,6 +144,18 @@ mod tests {
     #[test]
     fn identical_content_keys_match() {
         assert_eq!(content_key(b"same record"), content_key(b"same record"));
+    }
+
+    #[test]
+    fn file_backed_sources_do_not_include_the_wardian_agent_in_their_key() {
+        assert_eq!(
+            source_key("codex", "agent-a", "rollout.jsonl"),
+            source_key("codex", "agent-b", "rollout.jsonl")
+        );
+        assert_ne!(
+            source_key("opencode", "agent-a", "opencode.db"),
+            source_key("opencode", "agent-b", "opencode.db")
+        );
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! Telemetry store schema.
 //!
-//! Fact tables are append-only and carry uniqueness constraints that make
-//! re-ingest idempotent, because a source may legitimately be re-read after a
-//! rotation, a parser version bump, or a crash between fact write and cursor
-//! advance.
+//! Fact tables carry source ownership and uniqueness constraints. Byte-offset
+//! providers store five-minute aggregates; timestamp-cursor providers retain
+//! event rows because their overlap/rewrite handling needs those identities.
+//! A source may legitimately be re-read after rotation, a parser version bump,
+//! or a crash between fact write and cursor advance.
 
+use crate::telemetry::identity::{canonical_path, source_key};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::fs::{File, OpenOptions};
@@ -29,6 +31,8 @@ const COPY_BATCH_SIZE: i64 = 2_000;
 const TURN_PROGRESS_KEY: &str = "normalization_turn_last_id";
 const EDIT_PROGRESS_KEY: &str = "normalization_edit_last_id";
 const LEGACY_WRITER_FENCE_KEY: &str = "normalization_legacy_writer_fence";
+const SOURCE_KEY_FORMAT_VERSION_KEY: &str = "telemetry_source_key_format_version";
+const COMPACT_FACTS_VERSION_KEY: &str = "telemetry_compact_facts_version";
 const TELEMETRY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const TELEMETRY_LOCK_POLL: Duration = Duration::from_millis(50);
 
@@ -94,9 +98,7 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
     if stored == Some(LEGACY_TELEMETRY_SCHEMA_VERSION)
         && normalized_stored == Some(TELEMETRY_SCHEMA_VERSION)
     {
-        create_normalized_schema(conn)?;
-        ensure_normalized_indexes(conn)?;
-        ensure_compatibility_views(conn)?;
+        repair_forward_compatibility(conn, &mut None)?;
         return Ok(());
     }
 
@@ -109,13 +111,11 @@ pub fn run_telemetry_migrations(conn: &Connection) -> rusqlite::Result<()> {
         reset_telemetry_schema(conn)?;
     }
 
-    // Sources are keyed by provider, agent session, and path together.
-    //
-    // Path alone is wrong for any provider that keeps one database for the whole
-    // machine, which opencode does: every agent's turns live in a single
-    // `opencode.db`. Keyed by path, the first agent to ingest would leave its
-    // high-water mark as *the* cursor, and the next agent would resume from a
-    // position in someone else's history and silently skip its own.
+    // OpenCode sources are keyed by provider, agent session, and path because
+    // one database contains many agents. File-backed Codex and Claude sources
+    // use the physical path alone within their provider; including the Wardian
+    // agent id would duplicate one rollout when a projected habitat is a
+    // junction into the shared provider home.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS telemetry_sources (
             source_key          TEXT PRIMARY KEY,
@@ -583,6 +583,38 @@ fn migrate_legacy_schema_unlocked(
     conn: &Connection,
     batch_hook: &mut Option<&mut dyn FnMut() -> rusqlite::Result<()>>,
 ) -> rusqlite::Result<()> {
+    // The caller holds the exclusive migration lock while this function runs,
+    // so the legacy tables are quiescent for this one-time source re-key. It
+    // must happen before the DML fence below: the fence intentionally rejects
+    // all legacy-table writes, including this migration's own normalization.
+    // Once this transaction commits, the fence protects the resumable copy
+    // batches from older clients.
+    let canonicalization_done: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if canonicalization_done != Some(1) {
+        // A process interrupted after an earlier implementation installed the
+        // fence can leave it behind. The exclusive migration lock fences old
+        // writers for this repair, so remove that stale fence before doing the
+        // canonicalization transaction and install it again immediately after.
+        if conn.query_row(
+            "SELECT EXISTS(
+                    SELECT 1 FROM telemetry_meta WHERE key = ?1
+                )",
+            params![LEGACY_WRITER_FENCE_KEY],
+            |row| row.get::<_, i64>(0),
+        )? == 1
+        {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            clear_legacy_writer_fence(&tx)?;
+            tx.commit()?;
+        }
+        canonicalize_legacy_sources(conn)?;
+    }
     // The adjacent lease only coordinates current binaries. Older v4 clients
     // do not know about it and can still issue direct writes to the legacy
     // tables. Persist a database-level fence before the first copy batch so
@@ -615,6 +647,7 @@ fn migrate_legacy_schema_unlocked(
     // the migration can only be admitted before this point; a mismatch keeps
     // the old tables intact for a later retry.
     verify_migrated_counts(&tx)?;
+    compact_normalized_facts(&tx)?;
     clear_legacy_writer_fence(&tx)?;
     tx.execute("DROP TABLE telemetry_turns", [])?;
     tx.execute("DROP TABLE telemetry_edits", [])?;
@@ -634,6 +667,510 @@ fn migrate_legacy_schema_unlocked(
         params![NORMALIZED_SCHEMA_VERSION_KEY, TELEMETRY_SCHEMA_VERSION],
     )?;
     tx.commit()
+}
+
+/// Re-key legacy facts by physical source identity and remove alias duplicates.
+///
+/// This is deliberately a separate committed step before the resumable copy.
+/// If a later copy batch is interrupted, the next invocation sees the already
+/// canonical legacy rows and repeats this function harmlessly. The source
+/// cursor fields are not part of the deduplication contract; keeping one source
+/// row and letting the next ingest confirm its cursor is safer than preserving
+/// an arbitrary alias's position as authoritative.
+fn canonicalize_legacy_sources(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn
+        .prepare("SELECT source_key, source_path, session_id, provider FROM telemetry_sources")?;
+    let sources = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for (old_source_key, source_path, session_id, provider) in sources {
+        let physical_path = canonical_path(std::path::Path::new(&source_path));
+        let canonical_path = physical_path.to_string_lossy().to_string();
+        let canonical_key = source_key(&provider, &session_id, &canonical_path);
+        groups
+            .entry(canonical_key)
+            .or_default()
+            .push((old_source_key, canonical_path));
+    }
+
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS telemetry_source_aliases (
+             old_source_key TEXT PRIMARY KEY,
+             canonical_source_key TEXT NOT NULL,
+             canonical_path TEXT NOT NULL,
+             keep_source_key TEXT NOT NULL
+         );
+         DELETE FROM telemetry_source_aliases;",
+    )?;
+
+    for (canonical_key, mut aliases) in groups {
+        // Prefer the already-canonical row so a second invocation does not
+        // churn the source table. Otherwise the first stable spelling is the
+        // row whose cursor survives; facts are re-read idempotently if it was
+        // behind the other alias.
+        aliases.sort_by(|left, right| left.0.cmp(&right.0));
+        let keep_source_key = aliases
+            .iter()
+            .find(|(source_key, _)| source_key == &canonical_key)
+            .map(|(source_key, _)| source_key.clone())
+            .unwrap_or_else(|| aliases[0].0.clone());
+        let canonical_path = aliases[0].1.clone();
+
+        for (old_source_key, _) in aliases {
+            tx.execute(
+                "INSERT INTO telemetry_source_aliases
+                    (old_source_key, canonical_source_key, canonical_path, keep_source_key)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    old_source_key,
+                    canonical_key,
+                    canonical_path,
+                    keep_source_key
+                ],
+            )?;
+        }
+    }
+
+    for table in ["telemetry_turns", "telemetry_edits"] {
+        tx.execute(
+            &format!(
+                "UPDATE {table}
+                 SET source_key = (SELECT canonical_source_key
+                                   FROM telemetry_source_aliases
+                                   WHERE old_source_key = {table}.source_key),
+                     source_path = (SELECT canonical_path
+                                    FROM telemetry_source_aliases
+                                    WHERE old_source_key = {table}.source_key)
+                 WHERE source_key IN (SELECT old_source_key FROM telemetry_source_aliases)"
+            ),
+            [],
+        )?;
+        // The same provider record was often written once for every projected
+        // path. Event keys are stable across those aliases, so the canonical
+        // `(source, event)` pair is the exact identity to retain.
+        tx.execute(
+            &format!(
+                "DELETE FROM {table}
+                 WHERE id NOT IN (
+                     SELECT MIN(id) FROM {table} GROUP BY source_key, event_key
+                 )"
+            ),
+            [],
+        )?;
+    }
+
+    tx.execute(
+        "DELETE FROM telemetry_sources
+         WHERE source_key IN (
+             SELECT old_source_key FROM telemetry_source_aliases
+             WHERE old_source_key <> keep_source_key
+         )",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE telemetry_sources
+         SET source_key = (SELECT canonical_source_key
+                           FROM telemetry_source_aliases
+                           WHERE old_source_key = telemetry_sources.source_key),
+             source_path = (SELECT canonical_path
+                            FROM telemetry_source_aliases
+                            WHERE old_source_key = telemetry_sources.source_key)
+         WHERE source_key IN (
+             SELECT keep_source_key FROM telemetry_source_aliases
+         )",
+        [],
+    )?;
+
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SOURCE_KEY_FORMAT_VERSION_KEY],
+    )?;
+
+    tx.commit()
+}
+
+/// Repair an already-normalized database written before source keys were made
+/// physical-file based for Codex and Claude.
+///
+/// v5 kept the legacy ABI marker at 4, so an installed database can arrive here
+/// with normalized fact tables and old `provider|agent|path` source keys. The
+/// repair runs in the same transaction as the forward-compatibility marker:
+/// facts are re-pointed, alias collisions are removed, and source cursors are
+/// merged before any compatibility view is exposed.
+fn canonicalize_normalized_sources(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    let done: Option<i64> = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if done == Some(1) {
+        return Ok(());
+    }
+
+    let mut stmt =
+        tx.prepare("SELECT source_key, source_path, session_id, provider FROM telemetry_sources")?;
+    let sources = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for (old_source_key, source_path, session_id, provider) in sources {
+        let physical_path = canonical_path(std::path::Path::new(&source_path));
+        let canonical_path = physical_path.to_string_lossy().to_string();
+        let canonical_key = source_key(&provider, &session_id, &canonical_path);
+        groups
+            .entry(canonical_key)
+            .or_default()
+            .push((old_source_key, canonical_path));
+    }
+
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS telemetry_source_aliases (
+             old_source_key TEXT PRIMARY KEY,
+             canonical_source_key TEXT NOT NULL,
+             canonical_path TEXT NOT NULL,
+             keep_source_key TEXT NOT NULL
+         );
+         DELETE FROM telemetry_source_aliases;",
+    )?;
+
+    for (canonical_key, mut aliases) in groups {
+        aliases.sort_by(|left, right| left.0.cmp(&right.0));
+        let keep_source_key = aliases
+            .iter()
+            .find(|(old_source_key, _)| old_source_key == &canonical_key)
+            .map(|(old_source_key, _)| old_source_key.clone())
+            .unwrap_or_else(|| aliases[0].0.clone());
+        let canonical_path = aliases[0].1.clone();
+
+        for (old_source_key, _) in aliases {
+            tx.execute(
+                "INSERT INTO telemetry_source_aliases
+                    (old_source_key, canonical_source_key, canonical_path, keep_source_key)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    old_source_key,
+                    canonical_key,
+                    canonical_path,
+                    keep_source_key
+                ],
+            )?;
+        }
+    }
+
+    tx.execute(
+        "INSERT OR IGNORE INTO telemetry_strings(kind, value)
+         SELECT DISTINCT 'source_key', canonical_source_key
+         FROM telemetry_source_aliases",
+        [],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO telemetry_source_paths(source_ref, source_path)
+         SELECT strings.string_id, aliases.canonical_path
+         FROM telemetry_source_aliases aliases
+         JOIN telemetry_strings strings
+           ON strings.kind = 'source_key'
+          AND strings.value = aliases.canonical_source_key
+         GROUP BY aliases.canonical_source_key",
+        [],
+    )?;
+
+    for table in ["telemetry_turn_facts", "telemetry_edit_facts"] {
+        // The normalized tables already have a unique `(source_ref, event_key)`
+        // index, so collapse rows while they still carry their old source refs;
+        // updating both aliases to one ref first would trip that index before
+        // the duplicate cleanup could run.
+        tx.execute(
+            &format!(
+                "DELETE FROM {table}
+                 WHERE source_ref IN (
+                     SELECT old.string_id
+                     FROM telemetry_strings old
+                     JOIN telemetry_source_aliases aliases
+                       ON aliases.old_source_key = old.value
+                     WHERE old.kind = 'source_key'
+                 )
+                   AND id NOT IN (
+                     SELECT MIN(facts.id)
+                     FROM {table} facts
+                     JOIN telemetry_strings old
+                       ON old.kind = 'source_key'
+                      AND old.string_id = facts.source_ref
+                     JOIN telemetry_source_aliases aliases
+                       ON aliases.old_source_key = old.value
+                     GROUP BY aliases.canonical_source_key, facts.event_key
+                 )"
+            ),
+            [],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE {table}
+                 SET source_ref = (
+                     SELECT canonical.string_id
+                     FROM telemetry_strings old
+                     JOIN telemetry_source_aliases aliases
+                       ON aliases.old_source_key = old.value
+                     JOIN telemetry_strings canonical
+                       ON canonical.kind = 'source_key'
+                      AND canonical.value = aliases.canonical_source_key
+                     WHERE old.kind = 'source_key'
+                       AND old.string_id = {table}.source_ref
+                 )
+                 WHERE source_ref IN (
+                     SELECT old.string_id
+                     FROM telemetry_strings old
+                     JOIN telemetry_source_aliases aliases
+                       ON aliases.old_source_key = old.value
+                     WHERE old.kind = 'source_key'
+                 )"
+            ),
+            [],
+        )?;
+    }
+
+    tx.execute(
+        "DELETE FROM telemetry_sources
+         WHERE source_key IN (
+             SELECT old_source_key FROM telemetry_source_aliases
+             WHERE old_source_key <> keep_source_key
+         )",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE telemetry_sources
+         SET source_key = (SELECT canonical_source_key
+                           FROM telemetry_source_aliases
+                           WHERE old_source_key = telemetry_sources.source_key),
+             source_path = (SELECT canonical_path
+                            FROM telemetry_source_aliases
+                            WHERE old_source_key = telemetry_sources.source_key)
+         WHERE source_key IN (
+             SELECT keep_source_key FROM telemetry_source_aliases
+         )",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_source_paths
+         WHERE source_ref NOT IN (
+             SELECT source_ref FROM telemetry_turn_facts
+             UNION
+             SELECT source_ref FROM telemetry_edit_facts
+         )
+           AND source_ref NOT IN (
+             SELECT strings.string_id
+             FROM telemetry_strings strings
+             JOIN telemetry_sources sources
+               ON strings.kind = 'source_key' AND strings.value = sources.source_key
+         )",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_strings
+         WHERE kind = 'source_key'
+           AND string_id NOT IN (
+             SELECT source_ref FROM telemetry_turn_facts
+             UNION
+             SELECT source_ref FROM telemetry_edit_facts
+             UNION
+             SELECT strings.string_id
+             FROM telemetry_strings strings
+             JOIN telemetry_sources sources
+               ON strings.kind = 'source_key' AND strings.value = sources.source_key
+         )",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![SOURCE_KEY_FORMAT_VERSION_KEY],
+    )?;
+    Ok(())
+}
+
+/// Collapse byte-offset provider facts to the finest grain the Analytics
+/// interface can render.
+///
+/// A token-count callback is not a UI object. Codex can emit several of them
+/// for one turn, and the matrix never renders finer than five minutes. Keeping
+/// one row per `(source, five-minute bucket, turn, model)` preserves token sums,
+/// per-cell distinct turns, and the model attribution used for edits while
+/// removing the callback-level storage multiplier. Timestamp-cursor sources
+/// are left alone because their overlap rereads still need event identities.
+///
+/// This runs after source canonicalization and before the compatibility views
+/// are exposed. The marker makes it one-way and idempotent for current stores;
+/// a failed transaction leaves the original facts intact and retries safely.
+fn compact_normalized_facts(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    let done: Option<i64> = tx
+        .query_row(
+            "SELECT value FROM telemetry_meta WHERE key = ?1",
+            params![COMPACT_FACTS_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if done == Some(1) {
+        return Ok(());
+    }
+
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS telemetry_compact_turns (
+             event_key TEXT NOT NULL,
+             session_ref INTEGER NOT NULL,
+             provider_ref INTEGER NOT NULL,
+             turn_id TEXT,
+             model_ref INTEGER,
+             effort_ref INTEGER,
+             started_at TEXT,
+             ended_at TEXT NOT NULL,
+             input_tokens INTEGER,
+             cached_input_tokens INTEGER,
+             cache_write_tokens INTEGER,
+             output_tokens INTEGER,
+             reasoning_tokens INTEGER,
+             context_window INTEGER,
+             cost_usd REAL,
+             source_ref INTEGER NOT NULL
+         );
+         CREATE TEMP TABLE IF NOT EXISTS telemetry_compact_edits (
+             event_key TEXT NOT NULL,
+             session_ref INTEGER NOT NULL,
+             provider_ref INTEGER NOT NULL,
+             turn_id TEXT,
+             occurred_at TEXT NOT NULL,
+             workspace TEXT,
+             path TEXT NOT NULL,
+             op TEXT NOT NULL,
+             lines_added INTEGER,
+             lines_removed INTEGER,
+             source_ref INTEGER NOT NULL
+         );
+         DELETE FROM telemetry_compact_turns;
+         DELETE FROM telemetry_compact_edits;",
+    )?;
+
+    // `MIN(event_key)` is safe here because the pre-compaction source/event
+    // uniqueness guarantee means an event key belongs to only one group. The
+    // key is an opaque compatibility identity; the row's actual identity is
+    // the grouped source/bucket/turn/model tuple.
+    let bucket = "strftime('%Y-%m-%dT%H:', facts.ended_at) || printf('%02d:00.000Z', (CAST(strftime('%M', facts.ended_at) AS INTEGER) / 5) * 5)";
+    tx.execute(
+        &format!(
+            "INSERT INTO telemetry_compact_turns (
+                 event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+                 started_at, ended_at, input_tokens, cached_input_tokens,
+                 cache_write_tokens, output_tokens, reasoning_tokens, context_window,
+                 cost_usd, source_ref
+             )
+             SELECT MIN(facts.event_key), facts.session_ref, facts.provider_ref,
+                    facts.turn_id, facts.model_ref, facts.effort_ref,
+                    MIN(facts.started_at), {bucket}, SUM(facts.input_tokens),
+                    SUM(facts.cached_input_tokens), SUM(facts.cache_write_tokens),
+                    SUM(facts.output_tokens), SUM(facts.reasoning_tokens),
+                    MAX(facts.context_window), SUM(facts.cost_usd), facts.source_ref
+             FROM telemetry_turn_facts facts
+             JOIN telemetry_strings providers
+               ON providers.kind = 'provider'
+              AND providers.string_id = facts.provider_ref
+             WHERE providers.value IN ('codex', 'claude', 'pi')
+             GROUP BY facts.source_ref, facts.session_ref, facts.provider_ref,
+                      facts.turn_id, facts.model_ref, facts.effort_ref, {bucket},
+                      COALESCE(facts.turn_id, facts.event_key)"
+        ),
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_turn_facts
+         WHERE provider_ref IN (
+             SELECT string_id FROM telemetry_strings
+             WHERE kind = 'provider' AND value IN ('codex', 'claude', 'pi')
+         )",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO telemetry_turn_facts (
+             event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+             started_at, ended_at, input_tokens, cached_input_tokens,
+             cache_write_tokens, output_tokens, reasoning_tokens, context_window,
+             cost_usd, source_ref
+         )
+         SELECT event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+                started_at, ended_at, input_tokens, cached_input_tokens,
+                cache_write_tokens, output_tokens, reasoning_tokens, context_window,
+                cost_usd, source_ref
+         FROM telemetry_compact_turns",
+        [],
+    )?;
+
+    let bucket = "strftime('%Y-%m-%dT%H:', facts.occurred_at) || printf('%02d:00.000Z', (CAST(strftime('%M', facts.occurred_at) AS INTEGER) / 5) * 5)";
+    tx.execute(
+        &format!(
+            "INSERT INTO telemetry_compact_edits (
+                 event_key, session_ref, provider_ref, turn_id, occurred_at, workspace,
+                 path, op, lines_added, lines_removed, source_ref
+             )
+             SELECT MIN(facts.event_key), facts.session_ref, facts.provider_ref,
+                    facts.turn_id, {bucket}, MIN(facts.workspace), facts.path,
+                    facts.op, SUM(facts.lines_added), SUM(facts.lines_removed),
+                    facts.source_ref
+             FROM telemetry_edit_facts facts
+             JOIN telemetry_strings providers
+               ON providers.kind = 'provider'
+              AND providers.string_id = facts.provider_ref
+             WHERE providers.value IN ('codex', 'claude', 'pi')
+             GROUP BY facts.source_ref, facts.session_ref, facts.provider_ref,
+                      facts.turn_id, {bucket}, facts.workspace, facts.path, facts.op,
+                      COALESCE(facts.turn_id, facts.event_key)"
+        ),
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_edit_facts
+         WHERE provider_ref IN (
+             SELECT string_id FROM telemetry_strings
+             WHERE kind = 'provider' AND value IN ('codex', 'claude', 'pi')
+         )",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO telemetry_edit_facts (
+             event_key, session_ref, provider_ref, turn_id, occurred_at, workspace,
+             path, op, lines_added, lines_removed, source_ref
+         )
+         SELECT event_key, session_ref, provider_ref, turn_id, occurred_at, workspace,
+                path, op, lines_added, lines_removed, source_ref
+         FROM telemetry_compact_edits",
+        [],
+    )?;
+
+    tx.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![COMPACT_FACTS_VERSION_KEY],
+    )?;
+    Ok(())
 }
 
 fn install_legacy_writer_fence(conn: &Connection) -> rusqlite::Result<()> {
@@ -682,6 +1219,8 @@ fn repair_forward_compatibility(
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     create_normalized_schema(&tx)?;
     ensure_normalized_indexes(&tx)?;
+    canonicalize_normalized_sources(&tx)?;
+    compact_normalized_facts(&tx)?;
     ensure_compatibility_views(&tx)?;
     if let Some(hook) = before_marker.as_deref_mut() {
         hook()?;
@@ -997,6 +1536,10 @@ fn reset_telemetry_schema(conn: &Connection) -> rusqlite::Result<()> {
     for name in TELEMETRY_TABLES.into_iter().chain(NORMALIZED_TABLES) {
         drop_object(conn, name)?;
     }
+    conn.execute(
+        "DELETE FROM telemetry_meta WHERE key = ?1",
+        params![COMPACT_FACTS_VERSION_KEY],
+    )?;
     Ok(())
 }
 
@@ -1355,6 +1898,191 @@ mod tests {
             })
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn legacy_byte_offset_facts_are_compacted_to_interface_grain() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_legacy_fixture(&conn, 0);
+        for (event_key, ended_at, input_tokens) in [
+            ("event-a", "2026-08-30T10:01:00.000Z", 100_i64),
+            ("event-b", "2026-08-30T10:04:00.000Z", 200_i64),
+        ] {
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, model, ended_at,
+                     input_tokens, source_key, source_path)
+                 VALUES (?1, 'session-a', 'codex', 'turn-a', 'model-a', ?2,
+                         ?3, 'source-a', 'session.log')",
+                params![event_key, ended_at, input_tokens],
+            )
+            .unwrap();
+        }
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        let (rows, input): (i64, i64) = conn
+            .query_row(
+                "SELECT count(*), SUM(input_tokens) FROM telemetry_turns",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "same turn and five-minute cell should be one row");
+        assert_eq!(input, 300, "compaction must preserve additive measures");
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT value FROM telemetry_meta WHERE key = ?1",
+                params![COMPACT_FACTS_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_provider_path_aliases_collapse_before_normalization() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let physical = directory.path().join("rollout.jsonl");
+        std::fs::write(&physical, "session\n").unwrap();
+        let alias = nested.join("..").join("rollout.jsonl");
+
+        let conn = Connection::open_in_memory().unwrap();
+        create_legacy_fixture(&conn, 0);
+        conn.execute(
+            "UPDATE telemetry_sources SET source_path = ?1 WHERE source_key = 'source-a'",
+            params![physical.to_string_lossy()],
+        )
+        .unwrap();
+
+        let alias_key = format!("codex|session-a|{}", alias.to_string_lossy());
+        conn.execute(
+            "INSERT INTO telemetry_sources(source_key, source_path, session_id, provider)
+             VALUES (?1, ?2, 'session-a', 'codex')",
+            params![alias_key, alias.to_string_lossy()],
+        )
+        .unwrap();
+        for source_key in ["source-a".to_string(), alias_key.clone()] {
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, ended_at,
+                     source_key, source_path)
+                 VALUES ('same-event', 'session-a', 'codex', 'turn-a',
+                         '2026-08-30T00:00:00Z', ?1, ?2)",
+                params![
+                    source_key,
+                    if source_key == "source-a" {
+                        physical.to_string_lossy().to_string()
+                    } else {
+                        alias.to_string_lossy().to_string()
+                    }
+                ],
+            )
+            .unwrap();
+        }
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        let (source_key, source_path): (String, String) = conn
+            .query_row(
+                "SELECT source_key, source_path FROM telemetry_turns",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let canonical = std::fs::canonicalize(&physical)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(source_key, format!("codex|{canonical}"));
+        assert_eq!(source_path, canonical);
+    }
+
+    #[test]
+    fn normalized_v5_aliases_are_repaired_in_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let physical = directory.path().join("rollout.jsonl");
+        std::fs::write(&physical, "session\n").unwrap();
+        let alias = nested.join("..").join("rollout.jsonl");
+        let canonical = std::fs::canonicalize(&physical)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let physical_text = physical.to_string_lossy().to_string();
+        let alias_text = alias.to_string_lossy().to_string();
+
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        )
+        .unwrap();
+        for (agent, path) in [("agent-a", physical_text), ("agent-b", alias_text)] {
+            let old_key = format!("codex|{agent}|{path}");
+            conn.execute(
+                "INSERT INTO telemetry_sources
+                    (source_key, source_path, session_id, provider, source_kind, cursor_kind)
+                 VALUES (?1, ?2, ?3, 'codex', 'jsonl', 'byte_offset')",
+                params![old_key, path, agent],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, ended_at,
+                     source_key, source_path)
+                 VALUES ('same-event', ?1, 'codex', 'turn-a',
+                         '2026-08-30T00:00:00Z', ?2, ?3)",
+                params![agent, old_key, path],
+            )
+            .unwrap();
+        }
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turn_facts", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row::<String, _, _>(
+                "SELECT value FROM telemetry_strings
+                 WHERE kind = 'source_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            format!("codex|{canonical}")
         );
     }
 
