@@ -309,12 +309,27 @@ describe("useRemoteStore watchlists", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
 
+    handlers[0]?.onError?.();
     handlers[0]?.onClose?.();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
+    expect(sockets[1]?.close).not.toHaveBeenCalled();
 
     useRemoteStore.getState().disconnectStatusStream();
     expect(sockets[1]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconnect after an initial status-stream session expiry", async () => {
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream).mockRejectedValueOnce(new RemoteRequestError("expired", 401));
+
+    await useRemoteStore.getState().load();
+    await vi.waitFor(() => expect(useRemoteStore.getState().status).toBe("session_expired"));
+
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
   });
 
   it("stops reconnecting when the status stream reports session expiry", async () => {
