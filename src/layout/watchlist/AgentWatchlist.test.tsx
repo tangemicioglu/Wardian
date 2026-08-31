@@ -152,6 +152,12 @@ describe('AgentWatchlist', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument();
   });
 
+  it('labels the global roster All Agents', () => {
+    render(<AgentWatchlist {...defaultProps} />);
+
+    expect(screen.getByRole('heading', { name: 'All Agents' })).toBeInTheDocument();
+  });
+
   it('keeps the Status column canonical and exposes transient work as activity', () => {
     seedProjections({
       telemetry: {
@@ -177,7 +183,7 @@ describe('AgentWatchlist', () => {
     );
   });
 
-  it('shows an optional description alongside the class without adding another row', () => {
+  it('keeps the optional description out of compact roster metadata', () => {
     const describedAgents = [
       { ...sampleAgents[0], description: 'Owns frontend release follow-up' },
       sampleAgents[1],
@@ -185,11 +191,10 @@ describe('AgentWatchlist', () => {
 
     render(<AgentWatchlist {...defaultProps} agents={describedAgents} />);
 
-    expect(screen.getByText('Coder · Owns frontend release follow-up')).toHaveAttribute(
-      'title',
-      'Owns frontend release follow-up',
-    );
-    expect(screen.getByText('Architect')).toBeInTheDocument();
+    const alphaRow = screen.getByText('Alpha').closest('.watchlist-row');
+    expect(alphaRow).toHaveTextContent('Coder');
+    expect(alphaRow).not.toHaveTextContent('Owns frontend release follow-up');
+    expect(screen.queryByText('Coder · Owns frontend release follow-up')).not.toBeInTheDocument();
   });
 
   it('exposes roster target selection as semantic state', () => {

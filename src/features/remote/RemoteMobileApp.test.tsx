@@ -333,6 +333,12 @@ describe("RemoteMobileApp", () => {
     remoteClient.setCsrfNonce(null);
   });
 
+  it("labels the global mobile watchlist All Agents", () => {
+    render(<RemoteWatchlistView />);
+
+    expect(screen.getByText("All Agents")).toBeVisible();
+  });
+
   it("collapses team members locally from the mobile watchlist chevron", async () => {
     useRemoteStore.setState({
       agents: [
