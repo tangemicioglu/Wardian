@@ -87,11 +87,14 @@ database. Interrupted deletion resumes at the recorded cutoff and reuses the
 verified baseline associated with the attempt rather than creating another
 full copy for each retry. Before the cutoff is prepared, the application-owned
 scheduler uses one stable pending backup path; after the cutoff is prepared,
-that pending baseline remains pinned until the phase completes. A legacy
-verified automatic baseline is moved into the pending slot before association.
-Failed temporary outputs and unassociated pending files are removed before a
-new attempt, so later telemetry is not recovered from an old baseline. A
-pending baseline is promoted only after successful
+that pending baseline remains pinned until the phase completes. A legacy prepared
+run first reuses a valid pending file left by an interrupted adoption; otherwise
+it moves the newest verified automatic baseline that predates the prepared
+cutoff into the pending slot before association. If no such pre-preparation
+baseline exists, the scheduler fails closed without rotating the automatic
+backups. Failed temporary outputs and unassociated pending files are removed
+before a new attempt, so later telemetry is not recovered from an old baseline.
+A pending baseline is promoted only after successful
 completion. After success, the application keeps the two newest automatic backups in
 `<wardian-home>/backups/telemetry` and rotates only files with its exact backup
 prefix.

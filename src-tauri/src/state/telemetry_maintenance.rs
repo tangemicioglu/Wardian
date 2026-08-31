@@ -97,7 +97,39 @@ fn remove_incomplete_backup_temps(directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn newest_verified_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
+fn verified_pending_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
+    let path = pending_backup_path(directory);
+    if !path.exists() {
+        return Ok(None);
+    }
+    if wardian_core::telemetry::verify_backup(&path).is_ok() {
+        return Ok(Some(path));
+    }
+    // The pending file is scheduler-owned. It cannot be a recovery baseline
+    // if it no longer passes SQLite integrity checks, so allow the next run
+    // to create a fresh one at the same stable path.
+    std::fs::remove_file(path)?;
+    Ok(None)
+}
+
+fn backup_contains_prepared_cutoff(path: &Path) -> io::Result<bool> {
+    let backup =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    backup
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM telemetry_meta
+                 WHERE key = 'telemetry_maintenance_prepared_cutoff'
+             )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn newest_verified_preparation_baseline(directory: &Path) -> io::Result<Option<PathBuf>> {
     if !directory.exists() {
         return Ok(None);
     }
@@ -114,28 +146,12 @@ fn newest_verified_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
         .collect::<Vec<_>>();
     backups.sort();
     for backup in backups.into_iter().rev() {
-        if wardian_core::telemetry::verify_backup(&backup).is_ok() {
+        if wardian_core::telemetry::verify_backup(&backup).is_ok()
+            && !backup_contains_prepared_cutoff(&backup)?
+        {
             return Ok(Some(backup));
         }
-        // Automatic files are owned by this scheduler. An invalid one cannot
-        // serve as a recovery baseline and should not pin disk space forever.
-        std::fs::remove_file(backup)?;
     }
-    Ok(None)
-}
-
-fn verified_pending_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
-    let path = pending_backup_path(directory);
-    if !path.exists() {
-        return Ok(None);
-    }
-    if wardian_core::telemetry::verify_backup(&path).is_ok() {
-        return Ok(Some(path));
-    }
-    // The pending file is scheduler-owned. It cannot be a recovery baseline
-    // if it no longer passes SQLite integrity checks, so allow the next run
-    // to create a fresh one at the same stable path.
-    std::fs::remove_file(path)?;
     Ok(None)
 }
 
@@ -162,9 +178,13 @@ fn adopt_legacy_baseline(directory: &Path) -> io::Result<PathBuf> {
     if verified_pending_backup(directory)?.is_some() {
         return Ok(pending);
     }
-    if let Some(legacy_baseline) = newest_verified_backup(directory)? {
-        std::fs::rename(legacy_baseline, &pending)?;
-    }
+    let Some(legacy_baseline) = newest_verified_preparation_baseline(directory)? else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no verified pre-preparation telemetry backup is available",
+        ));
+    };
+    std::fs::rename(legacy_baseline, &pending)?;
     Ok(pending)
 }
 
@@ -606,6 +626,80 @@ mod tests {
             .expect("the interrupted legacy retention should complete after retry");
         assert!(!pending.exists());
         assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn legacy_adoption_selects_preparation_baseline_over_newer_retry_snapshot() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let baseline = backup_directory.join("state.db.telemetry-100-1.backup");
+        let retry = backup_directory.join("state.db.telemetry-200-1.backup");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let now = Utc::now();
+        let old = (now - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        let cutoff =
+            wardian_core::telemetry::retention_cutoff(now, TELEMETRY_RAW_RETENTION_DAYS).unwrap();
+        let cutoff_epoch = chrono::DateTime::parse_from_rfc3339(&cutoff)
+            .unwrap()
+            .timestamp();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&backup_directory).unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![baseline.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_meta(key, value) VALUES ('telemetry_maintenance_prepared_cutoff', ?1),
+                ('telemetry_maintenance_prepared_retain_days', ?2)",
+            rusqlite::params![cutoff_epoch, TELEMETRY_RAW_RETENTION_DAYS],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_turn_facts WHERE event_key = 'old'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![retry.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+        let report = maintain_if_due_at(&conn, directory.path())
+            .unwrap()
+            .expect("legacy prepared retention should resume");
+
+        assert_eq!(report.turns_deleted, 0);
+        assert!(!baseline.exists());
+        assert!(retry.exists());
+        let recovered = std::fs::read_dir(&backup_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| is_automatic_backup(path))
+            .find(|path| {
+                rusqlite::Connection::open(path)
+                    .unwrap()
+                    .query_row::<i64, _, _>(
+                        "SELECT count(*) FROM telemetry_turns WHERE event_key = 'old'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap()
+                    == 1
+            })
+            .expect("the pre-preparation baseline must remain recoverable");
+        assert_ne!(recovered, retry);
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 2);
     }
 
     #[test]

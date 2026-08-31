@@ -35,10 +35,13 @@ attempt. The scheduler uses one stable pending backup path for that attempt,
 so failures before the prepared cutoff are retried against the same baseline
 instead of creating one full database copy per retry. Once the cutoff is
 prepared, the pending baseline is reused until the phase completes. A legacy
-verified automatic baseline is moved into that pending slot before association
-so it follows the same retry path; only then is the pending file promoted and
-normal two-file rotation run. An unassociated pending file is never reused for
-a later attempt because it may predate newly ingested telemetry.
+prepared run first reuses a valid pending file left by an interrupted adoption;
+otherwise the scheduler selects the newest verified automatic baseline that
+predates the prepared-cutoff marker and moves it into that pending slot before
+association. If no such baseline exists, it fails closed without rotating
+automatic backups. Only then is the pending file promoted and normal two-file
+rotation run. For a fresh attempt, an unassociated pending file is removed
+instead of reused because it may predate newly ingested telemetry.
 
 The CLI remains read-only. The desktop scheduler remains the owner of the
 retention policy and invokes the core operation only at a provider-runtime
