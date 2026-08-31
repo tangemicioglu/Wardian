@@ -1,9 +1,9 @@
 //! `wardian telemetry` — read the habitat telemetry store from a shell.
 //!
-//! Read-only by design. Ingest belongs to the running app, which owns the
-//! cursors; a CLI that advanced them too would let two writers race for the same
-//! source with no shared lock between them. This reads what the app has already
-//! recorded and says so when that is nothing.
+//! Ingest belongs to the running app, which owns the cursors; a CLI that
+//! advanced them too would let two writers race for the same source. The CLI
+//! remains read-only; destructive telemetry maintenance is owned by the core
+//! application service.
 
 use crate::args::{TelemetryArgs, TelemetryCommand};
 use crate::errors::CliError;

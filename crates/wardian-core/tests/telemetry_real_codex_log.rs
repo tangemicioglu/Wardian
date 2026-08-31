@@ -201,8 +201,8 @@ fn the_fixture_counts_only_patches_that_applied() {
 
 #[test]
 fn the_fixture_records_rate_limits_without_summing_them() {
-    // Rate limits are an account-level gauge: four observations of one account,
-    // stored as four readings, never accumulated into 86%.
+    // Rate limits are an account-level gauge: four observations of one account
+    // collapse to the newest reading, never accumulate into 86%.
     let store = ingest(&fixture_log());
     let (count, max): (i64, f64) = store
         .query_row(
@@ -211,7 +211,7 @@ fn the_fixture_records_rate_limits_without_summing_them() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(count, 4);
+    assert_eq!(count, 1);
     assert_eq!(max, 31.75);
 }
 
@@ -221,12 +221,21 @@ fn summed_deltas_reproduce_the_providers_cumulative_gauge() {
         eprintln!("skipped: no codex rollout log on this machine");
         return;
     };
-    let Some(declared) = declared_totals(&path) else {
+    // The newest rollout may be the active Codex session running the test
+    // itself. Snapshot it first so the provider totals and the bytes ingested
+    // are one immutable input rather than two reads racing an append.
+    let snapshot_dir = tempfile::tempdir().expect("create real-log snapshot directory");
+    let snapshot_path = snapshot_dir.path().join("rollout.jsonl");
+    if let Err(error) = std::fs::copy(&path, &snapshot_path) {
+        eprintln!("skipped: could not snapshot {}: {error}", path.display());
+        return;
+    }
+    let Some(declared) = declared_totals(&snapshot_path) else {
         eprintln!("skipped: {} carries no token_count records", path.display());
         return;
     };
 
-    let store = ingest(&path);
+    let store = ingest(&snapshot_path);
     let (input, cached, output, reasoning) = ingested_totals(&store);
 
     // Guard against a vacuous pass: an empty log would satisfy equality while
@@ -234,7 +243,7 @@ fn summed_deltas_reproduce_the_providers_cumulative_gauge() {
     assert!(
         declared.0 > 0,
         "{} declares no input tokens, so this assertion would be vacuous",
-        path.display()
+        snapshot_path.display()
     );
     // Cache reads must be a strict part of the prompt total on a real log, not
     // a separate series added beside it. This is the provider-semantics claim
@@ -243,7 +252,7 @@ fn summed_deltas_reproduce_the_providers_cumulative_gauge() {
     assert!(
         declared.1 < declared.0,
         "codex should report cached input as part of its prompt total in {}",
-        path.display()
+        snapshot_path.display()
     );
     eprintln!(
         "real codex log {}: input={} cached={} output={} reasoning={}",
@@ -258,7 +267,7 @@ fn summed_deltas_reproduce_the_providers_cumulative_gauge() {
         (input + cached, cached, output, reasoning),
         declared,
         "summed last_token_usage must reconstruct the final total_token_usage in {}",
-        path.display()
+        snapshot_path.display()
     );
 }
 

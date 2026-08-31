@@ -351,6 +351,9 @@ pub fn run() {
             // tick: that tick drives live status and readiness, and ingest reads
             // whole log deltas while holding the state database's write lock.
             state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
+            // Keep raw telemetry bounded without running retention while a
+            // provider runtime is active.
+            state::telemetry_maintenance::start_telemetry_maintenance(app.handle().clone());
 
             if let Some(runs_dir) = wardian_core::paths::automation_runs_dir() {
                 let interrupted = crate::automation::runs::fail_interrupted_runs(&runs_dir);

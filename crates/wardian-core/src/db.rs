@@ -96,6 +96,10 @@ where
 }
 
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
+    // Startup can race another app/CLI connection while it enables WAL or
+    // reaches the telemetry migration lease. Wait briefly for that owner
+    // rather than turning a normal concurrent launch into SQLITE_BUSY.
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS agents (

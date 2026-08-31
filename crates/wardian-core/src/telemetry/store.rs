@@ -1,21 +1,27 @@
 //! Fact persistence and cursor bookkeeping.
 //!
-//! Every write path here is idempotent by construction. Re-ingest happens
-//! routinely — after a rotation, a parser version bump, a crash between fact
-//! write and cursor advance, or the deliberate lag window the database sources
-//! read behind their high-water mark — so `INSERT OR IGNORE` against the
-//! uniqueness constraints is the correctness mechanism, not an optimisation.
+//! Every write path here is idempotent by construction. Byte-offset provider
+//! logs are stored as five-minute source-owned aggregates because no interface
+//! reads individual callbacks. Timestamp-cursor sources retain their event
+//! identities because their overlap reread needs them to avoid double counts.
 
+use crate::telemetry::identity::compact_fact_key;
+pub use crate::telemetry::identity::source_key;
 use crate::telemetry::models::{
     ActivityMethod, Cursor, CursorKind, EditFact, IntervalFact, LimitObservation, ParsedFacts,
     SourceCarry, SourceKind, TurnFact,
 };
+use crate::telemetry::schema::{
+    ensure_source_ref, ensure_string_id, STRING_EFFORT, STRING_MODEL, STRING_PROVIDER,
+    STRING_SESSION,
+};
+use chrono::Timelike;
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Bookkeeping for one source's ingest position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceState {
-    /// Identity of this source *for this agent*, from [`source_key`].
+    /// Identity of this provider source, from [`source_key`].
     pub source_key: String,
     pub source_path: String,
     pub session_id: String,
@@ -33,14 +39,9 @@ pub struct SourceState {
 
 /// The identity a cursor belongs to.
 ///
-/// Provider and agent session are part of the key because a source file is not
-/// necessarily a source *stream*: opencode keeps one database for every agent on
-/// the machine, so a cursor keyed on the path alone would be shared by agents
-/// whose histories have nothing to do with each other.
-pub fn source_key(provider: &str, session_id: &str, source_path: &str) -> String {
-    format!("{provider}|{session_id}|{source_path}")
-}
-
+/// OpenCode keeps one database for every agent on the machine, so its agent
+/// session remains part of the key. File-backed Codex and Claude sources are
+/// already one source per physical path and intentionally omit that agent id.
 pub fn load_source_state(
     conn: &Connection,
     source_key: &str,
@@ -153,14 +154,31 @@ pub(crate) fn write_facts(
     intervals: &[IntervalFact],
     state: &SourceState,
 ) -> rusqlite::Result<DirtyBuckets> {
+    // Byte-offset sources advance atomically with their facts, so a repeated
+    // write at the same cursor is the only duplicate case left after facts are
+    // aggregated. OpenCode and archive sources deliberately do not take this
+    // shortcut: their timestamp cursors reread an overlap and still require
+    // event-level uniqueness.
+    if compact_source(state)
+        && (!facts.turns.is_empty() || !facts.edits.is_empty())
+        && load_source_state(conn, &state.source_key)?.is_some_and(|previous| {
+            previous.cursor == state.cursor
+                && previous.parser_version == state.parser_version
+                && previous.fingerprint == state.fingerprint
+        })
+    {
+        return Ok(DirtyBuckets::new());
+    }
+
     let mut dirty = DirtyBuckets::new();
+    let source_ref = ensure_source_ref(conn, &state.source_key, &state.source_path)?;
 
     for turn in &facts.turns {
-        insert_turn(conn, state, turn)?;
+        insert_turn(conn, source_ref, turn, compact_source(state))?;
         mark_dirty(&mut dirty, &turn.session_id, &turn.ended_at);
     }
     for edit in &facts.edits {
-        insert_edit(conn, state, edit)?;
+        insert_edit(conn, source_ref, edit, compact_source(state))?;
         mark_dirty(&mut dirty, &edit.session_id, &edit.occurred_at);
     }
     for interval in intervals {
@@ -232,7 +250,19 @@ pub(crate) fn purge_source_facts(
             mark_dirty_span(&mut dirty, &session_id, &start, &end);
         }
         conn.execute(
-            &format!("DELETE FROM {table} WHERE source_key = ?1"),
+            match table {
+                "telemetry_turns" => {
+                    "DELETE FROM telemetry_turn_facts
+                    WHERE source_ref = (SELECT string_id FROM telemetry_strings
+                                        WHERE kind = 'source_key' AND value = ?1)"
+                }
+                "telemetry_edits" => {
+                    "DELETE FROM telemetry_edit_facts
+                    WHERE source_ref = (SELECT string_id FROM telemetry_strings
+                                        WHERE kind = 'source_key' AND value = ?1)"
+                }
+                _ => "DELETE FROM telemetry_activity WHERE source_key = ?1",
+            },
             params![source_key],
         )?;
     }
@@ -242,64 +272,347 @@ pub(crate) fn purge_source_facts(
 
 fn insert_turn(
     conn: &rusqlite::Connection,
-    state: &SourceState,
+    source_ref: i64,
     turn: &TurnFact,
+    compact: bool,
 ) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO telemetry_turns (
-             event_key, session_id, provider, turn_id, model, effort, started_at, ended_at,
-             input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
-             reasoning_tokens, context_window, cost_usd, source_key, source_path
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-        params![
-            turn.event_key,
-            turn.session_id,
-            turn.provider,
-            turn.turn_id,
-            turn.model,
-            turn.effort,
-            turn.started_at,
-            turn.ended_at,
-            turn.input_tokens,
-            turn.cached_input_tokens,
-            turn.cache_write_tokens,
-            turn.output_tokens,
-            turn.reasoning_tokens,
-            turn.context_window,
-            turn.cost_usd,
-            state.source_key,
-            state.source_path,
-        ],
-    )?;
+    let session_ref = ensure_string_id(conn, STRING_SESSION, &turn.session_id)?;
+    let provider_ref = ensure_string_id(conn, STRING_PROVIDER, &turn.provider)?;
+    let model_ref = turn
+        .model
+        .as_deref()
+        .map(|value| ensure_string_id(conn, STRING_MODEL, value))
+        .transpose()?;
+    let effort_ref = turn
+        .effort
+        .as_deref()
+        .map(|value| ensure_string_id(conn, STRING_EFFORT, value))
+        .transpose()?;
+    let bucket = compact
+        .then(|| five_minute_bucket(&turn.ended_at))
+        .flatten();
+    let event_key = bucket.as_deref().map_or_else(
+        || turn.event_key.clone(),
+        |bucket| {
+            let turn_key = turn.turn_id.as_deref().unwrap_or(&turn.event_key);
+            compact_fact_key(
+                "turn",
+                &[
+                    bucket,
+                    turn_key,
+                    turn.model.as_deref().unwrap_or(""),
+                    turn.effort.as_deref().unwrap_or(""),
+                ],
+            )
+        },
+    );
+    let ended_at = bucket.as_deref().unwrap_or(&turn.ended_at);
+    if !compact || bucket.is_none() {
+        conn.execute(
+            "INSERT OR IGNORE INTO telemetry_turn_facts (
+                 event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+                 started_at, ended_at,
+                 input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+                 reasoning_tokens, context_window, cost_usd, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                turn.turn_id,
+                model_ref,
+                effort_ref,
+                turn.started_at,
+                ended_at,
+                turn.input_tokens,
+                turn.cached_input_tokens,
+                turn.cache_write_tokens,
+                turn.output_tokens,
+                turn.reasoning_tokens,
+                turn.context_window,
+                turn.cost_usd,
+                source_ref,
+            ],
+        )?;
+    } else if let (Some(bucket), Some(turn_id)) = (bucket.as_deref(), turn.turn_id.as_deref()) {
+        let updated = conn.execute(
+            "UPDATE telemetry_turn_facts
+             SET started_at = COALESCE(started_at, ?1),
+                 input_tokens = CASE WHEN input_tokens IS NULL THEN ?2
+                                     WHEN ?2 IS NULL THEN input_tokens
+                                     ELSE input_tokens + ?2 END,
+                 cached_input_tokens = CASE WHEN cached_input_tokens IS NULL THEN ?3
+                                            WHEN ?3 IS NULL THEN cached_input_tokens
+                                            ELSE cached_input_tokens + ?3 END,
+                 cache_write_tokens = CASE WHEN cache_write_tokens IS NULL THEN ?4
+                                            WHEN ?4 IS NULL THEN cache_write_tokens
+                                            ELSE cache_write_tokens + ?4 END,
+                 output_tokens = CASE WHEN output_tokens IS NULL THEN ?5
+                                      WHEN ?5 IS NULL THEN output_tokens
+                                      ELSE output_tokens + ?5 END,
+                 reasoning_tokens = CASE WHEN reasoning_tokens IS NULL THEN ?6
+                                         WHEN ?6 IS NULL THEN reasoning_tokens
+                                         ELSE reasoning_tokens + ?6 END,
+                 context_window = COALESCE(?7, context_window),
+                 cost_usd = CASE WHEN cost_usd IS NULL THEN ?8
+                                 WHEN ?8 IS NULL THEN cost_usd
+                                 ELSE cost_usd + ?8 END
+             WHERE source_ref = ?9 AND ended_at = ?10 AND turn_id = ?11
+               AND model_ref IS ?12 AND effort_ref IS ?13",
+            params![
+                turn.started_at,
+                turn.input_tokens,
+                turn.cached_input_tokens,
+                turn.cache_write_tokens,
+                turn.output_tokens,
+                turn.reasoning_tokens,
+                turn.context_window,
+                turn.cost_usd,
+                source_ref,
+                bucket,
+                turn_id,
+                model_ref,
+                effort_ref,
+            ],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO telemetry_turn_facts (
+                 event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+                 started_at, ended_at,
+                 input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+                 reasoning_tokens, context_window, cost_usd, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+             ON CONFLICT(source_ref, event_key) DO UPDATE SET
+                 started_at = COALESCE(telemetry_turn_facts.started_at, excluded.started_at),
+                 input_tokens = CASE WHEN telemetry_turn_facts.input_tokens IS NULL THEN excluded.input_tokens
+                                     WHEN excluded.input_tokens IS NULL THEN telemetry_turn_facts.input_tokens
+                                     ELSE telemetry_turn_facts.input_tokens + excluded.input_tokens END,
+                 cached_input_tokens = CASE WHEN telemetry_turn_facts.cached_input_tokens IS NULL THEN excluded.cached_input_tokens
+                                            WHEN excluded.cached_input_tokens IS NULL THEN telemetry_turn_facts.cached_input_tokens
+                                            ELSE telemetry_turn_facts.cached_input_tokens + excluded.cached_input_tokens END,
+                 cache_write_tokens = CASE WHEN telemetry_turn_facts.cache_write_tokens IS NULL THEN excluded.cache_write_tokens
+                                            WHEN excluded.cache_write_tokens IS NULL THEN telemetry_turn_facts.cache_write_tokens
+                                            ELSE telemetry_turn_facts.cache_write_tokens + excluded.cache_write_tokens END,
+                 output_tokens = CASE WHEN telemetry_turn_facts.output_tokens IS NULL THEN excluded.output_tokens
+                                      WHEN excluded.output_tokens IS NULL THEN telemetry_turn_facts.output_tokens
+                                      ELSE telemetry_turn_facts.output_tokens + excluded.output_tokens END,
+                 reasoning_tokens = CASE WHEN telemetry_turn_facts.reasoning_tokens IS NULL THEN excluded.reasoning_tokens
+                                         WHEN excluded.reasoning_tokens IS NULL THEN telemetry_turn_facts.reasoning_tokens
+                                         ELSE telemetry_turn_facts.reasoning_tokens + excluded.reasoning_tokens END,
+                 context_window = COALESCE(excluded.context_window, telemetry_turn_facts.context_window),
+                 cost_usd = CASE WHEN telemetry_turn_facts.cost_usd IS NULL THEN excluded.cost_usd
+                                 WHEN excluded.cost_usd IS NULL THEN telemetry_turn_facts.cost_usd
+                                 ELSE telemetry_turn_facts.cost_usd + excluded.cost_usd END",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                turn.turn_id,
+                model_ref,
+                effort_ref,
+                turn.started_at,
+                ended_at,
+                turn.input_tokens,
+                turn.cached_input_tokens,
+                turn.cache_write_tokens,
+                turn.output_tokens,
+                turn.reasoning_tokens,
+                turn.context_window,
+                turn.cost_usd,
+                source_ref,
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO telemetry_turn_facts (
+                 event_key, session_ref, provider_ref, turn_id, model_ref, effort_ref,
+                 started_at, ended_at,
+                 input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+                 reasoning_tokens, context_window, cost_usd, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+             ON CONFLICT(source_ref, event_key) DO UPDATE SET
+                 input_tokens = CASE WHEN telemetry_turn_facts.input_tokens IS NULL THEN excluded.input_tokens
+                                     WHEN excluded.input_tokens IS NULL THEN telemetry_turn_facts.input_tokens
+                                     ELSE telemetry_turn_facts.input_tokens + excluded.input_tokens END,
+                 cached_input_tokens = CASE WHEN telemetry_turn_facts.cached_input_tokens IS NULL THEN excluded.cached_input_tokens
+                                            WHEN excluded.cached_input_tokens IS NULL THEN telemetry_turn_facts.cached_input_tokens
+                                            ELSE telemetry_turn_facts.cached_input_tokens + excluded.cached_input_tokens END,
+                 cache_write_tokens = CASE WHEN telemetry_turn_facts.cache_write_tokens IS NULL THEN excluded.cache_write_tokens
+                                            WHEN excluded.cache_write_tokens IS NULL THEN telemetry_turn_facts.cache_write_tokens
+                                            ELSE telemetry_turn_facts.cache_write_tokens + excluded.cache_write_tokens END,
+                 output_tokens = CASE WHEN telemetry_turn_facts.output_tokens IS NULL THEN excluded.output_tokens
+                                      WHEN excluded.output_tokens IS NULL THEN telemetry_turn_facts.output_tokens
+                                      ELSE telemetry_turn_facts.output_tokens + excluded.output_tokens END,
+                 reasoning_tokens = CASE WHEN telemetry_turn_facts.reasoning_tokens IS NULL THEN excluded.reasoning_tokens
+                                         WHEN excluded.reasoning_tokens IS NULL THEN telemetry_turn_facts.reasoning_tokens
+                                         ELSE telemetry_turn_facts.reasoning_tokens + excluded.reasoning_tokens END,
+                 context_window = COALESCE(excluded.context_window, telemetry_turn_facts.context_window),
+                 cost_usd = CASE WHEN telemetry_turn_facts.cost_usd IS NULL THEN excluded.cost_usd
+                                 WHEN excluded.cost_usd IS NULL THEN telemetry_turn_facts.cost_usd
+                                 ELSE telemetry_turn_facts.cost_usd + excluded.cost_usd END",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                turn.turn_id,
+                model_ref,
+                effort_ref,
+                turn.started_at,
+                ended_at,
+                turn.input_tokens,
+                turn.cached_input_tokens,
+                turn.cache_write_tokens,
+                turn.output_tokens,
+                turn.reasoning_tokens,
+                turn.context_window,
+                turn.cost_usd,
+                source_ref,
+            ],
+        )?;
+    }
     Ok(())
 }
 
 fn insert_edit(
     conn: &rusqlite::Connection,
-    state: &SourceState,
+    source_ref: i64,
     edit: &EditFact,
+    compact: bool,
 ) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO telemetry_edits (
-             event_key, session_id, provider, turn_id, occurred_at, workspace, path, op,
-             lines_added, lines_removed, source_key, source_path
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-        params![
-            edit.event_key,
-            edit.session_id,
-            edit.provider,
-            edit.turn_id,
-            edit.occurred_at,
-            edit.workspace,
-            edit.path,
-            edit.op.as_str(),
-            edit.lines_added,
-            edit.lines_removed,
-            state.source_key,
-            state.source_path,
-        ],
-    )?;
+    let session_ref = ensure_string_id(conn, STRING_SESSION, &edit.session_id)?;
+    let provider_ref = ensure_string_id(conn, STRING_PROVIDER, &edit.provider)?;
+    let bucket = compact
+        .then(|| five_minute_bucket(&edit.occurred_at))
+        .flatten();
+    let event_key = bucket.as_deref().map_or_else(
+        || edit.event_key.clone(),
+        |bucket| {
+            let turn_key = edit.turn_id.as_deref().unwrap_or(&edit.event_key);
+            compact_fact_key("edit", &[bucket, turn_key, &edit.path, edit.op.as_str()])
+        },
+    );
+    let occurred_at = bucket.as_deref().unwrap_or(&edit.occurred_at);
+    if !compact || bucket.is_none() {
+        conn.execute(
+            "INSERT OR IGNORE INTO telemetry_edit_facts (
+                 event_key, session_ref, provider_ref, turn_id, occurred_at, workspace, path, op,
+                 lines_added, lines_removed, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                edit.turn_id,
+                occurred_at,
+                edit.workspace,
+                edit.path,
+                edit.op.as_str(),
+                edit.lines_added,
+                edit.lines_removed,
+                source_ref,
+            ],
+        )?;
+    } else if let (Some(bucket), Some(turn_id)) = (bucket.as_deref(), edit.turn_id.as_deref()) {
+        let updated = conn.execute(
+            "UPDATE telemetry_edit_facts
+             SET lines_added = CASE WHEN lines_added IS NULL THEN ?1
+                                    WHEN ?1 IS NULL THEN lines_added
+                                    ELSE lines_added + ?1 END,
+                 lines_removed = CASE WHEN lines_removed IS NULL THEN ?2
+                                      WHEN ?2 IS NULL THEN lines_removed
+                                      ELSE lines_removed + ?2 END
+             WHERE source_ref = ?3 AND occurred_at = ?4 AND turn_id = ?5
+               AND workspace IS ?6 AND path = ?7 AND op = ?8",
+            params![
+                edit.lines_added,
+                edit.lines_removed,
+                source_ref,
+                bucket,
+                turn_id,
+                edit.workspace,
+                edit.path,
+                edit.op.as_str(),
+            ],
+        )?;
+        if updated > 0 {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO telemetry_edit_facts (
+                 event_key, session_ref, provider_ref, turn_id, occurred_at, workspace, path, op,
+                 lines_added, lines_removed, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(source_ref, event_key) DO UPDATE SET
+                 lines_added = CASE WHEN telemetry_edit_facts.lines_added IS NULL THEN excluded.lines_added
+                                    WHEN excluded.lines_added IS NULL THEN telemetry_edit_facts.lines_added
+                                    ELSE telemetry_edit_facts.lines_added + excluded.lines_added END,
+                 lines_removed = CASE WHEN telemetry_edit_facts.lines_removed IS NULL THEN excluded.lines_removed
+                                      WHEN excluded.lines_removed IS NULL THEN telemetry_edit_facts.lines_removed
+                                      ELSE telemetry_edit_facts.lines_removed + excluded.lines_removed END",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                edit.turn_id,
+                occurred_at,
+                edit.workspace,
+                edit.path,
+                edit.op.as_str(),
+                edit.lines_added,
+                edit.lines_removed,
+                source_ref,
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO telemetry_edit_facts (
+                 event_key, session_ref, provider_ref, turn_id, occurred_at, workspace, path, op,
+                 lines_added, lines_removed, source_ref
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(source_ref, event_key) DO UPDATE SET
+                 lines_added = CASE WHEN telemetry_edit_facts.lines_added IS NULL THEN excluded.lines_added
+                                    WHEN excluded.lines_added IS NULL THEN telemetry_edit_facts.lines_added
+                                    ELSE telemetry_edit_facts.lines_added + excluded.lines_added END,
+                 lines_removed = CASE WHEN telemetry_edit_facts.lines_removed IS NULL THEN excluded.lines_removed
+                                      WHEN excluded.lines_removed IS NULL THEN telemetry_edit_facts.lines_removed
+                                      ELSE telemetry_edit_facts.lines_removed + excluded.lines_removed END",
+            params![
+                event_key,
+                session_ref,
+                provider_ref,
+                edit.turn_id,
+                occurred_at,
+                edit.workspace,
+                edit.path,
+                edit.op.as_str(),
+                edit.lines_added,
+                edit.lines_removed,
+                source_ref,
+            ],
+        )?;
+    }
     Ok(())
+}
+
+/// Providers with byte-offset cursors can replay only bytes after the stored
+/// offset. Their fact write and cursor advance share one transaction, so a
+/// compact upsert is safe without retaining every provider event key.
+fn compact_source(state: &SourceState) -> bool {
+    state.cursor.kind == CursorKind::ByteOffset
+        && matches!(state.provider.as_str(), "codex" | "claude" | "pi")
+}
+
+/// Floor an RFC 3339 instant to the finest bucket rendered by Analytics.
+fn five_minute_bucket(timestamp: &str) -> Option<String> {
+    let instant = crate::telemetry::activity::parse_timestamp(timestamp)?;
+    instant
+        .with_minute((instant.minute() / 5) * 5)
+        .and_then(|value| value.with_second(0))
+        .and_then(|value| value.with_nanosecond(0))
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn insert_interval(
@@ -376,8 +689,34 @@ fn replace_overlapping_clustered(
 }
 
 fn insert_limit(conn: &rusqlite::Connection, limit: &LimitObservation) -> rusqlite::Result<()> {
+    // The UI exposes this as a current account gauge, not a historical chart.
+    // Keep one observation per provider so a frequent provider heartbeat cannot
+    // become another unbounded append-only table. Older observations from a
+    // parser re-read are ignored by timestamp rather than replacing the gauge
+    // with stale data.
+    let newest: Option<String> = conn
+        .query_row(
+            "SELECT observed_at FROM telemetry_limits
+             WHERE provider = ?1
+             ORDER BY observed_at DESC, id DESC
+             LIMIT 1",
+            params![limit.provider],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if newest
+        .as_deref()
+        .is_some_and(|observed_at| observed_at >= limit.observed_at.as_str())
+    {
+        return Ok(());
+    }
+
     conn.execute(
-        "INSERT OR IGNORE INTO telemetry_limits (
+        "DELETE FROM telemetry_limits WHERE provider = ?1",
+        params![limit.provider],
+    )?;
+    conn.execute(
+        "INSERT INTO telemetry_limits (
              provider, limit_id, observed_at, used_percent, window_minutes, resets_at, plan_type
          ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![
@@ -428,7 +767,7 @@ pub(crate) fn last_clustered_interval(
     .optional()
 }
 
-fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
+pub(crate) fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
     if let Some(bucket) = hour_bucket(timestamp) {
         dirty.insert((bucket, session_id.to_string()));
     }
@@ -437,7 +776,12 @@ fn mark_dirty(dirty: &mut DirtyBuckets, session_id: &str, timestamp: &str) {
 /// Guards against a malformed interval producing an unbounded bucket walk.
 const MAX_SPAN_BUCKETS: usize = 24 * 40;
 
-fn mark_dirty_span(dirty: &mut DirtyBuckets, session_id: &str, started_at: &str, ended_at: &str) {
+pub(crate) fn mark_dirty_span(
+    dirty: &mut DirtyBuckets,
+    session_id: &str,
+    started_at: &str,
+    ended_at: &str,
+) {
     let (Some(start), Some(end)) = (hour_bucket(started_at), hour_bucket(ended_at)) else {
         return;
     };
@@ -642,6 +986,88 @@ mod tests {
             .unwrap();
         assert_eq!(turns, 1);
         assert_eq!(edits, 1);
+    }
+
+    #[test]
+    fn byte_offset_turns_coalesce_inside_the_five_minute_interface_cell() {
+        let conn = db();
+        let first = turn("2026-08-13T18:42:00.000Z", "t1");
+        let second = turn("2026-08-13T18:44:00.000Z", "t1");
+        write_facts(
+            &conn,
+            &ParsedFacts {
+                turns: vec![first],
+                ..Default::default()
+            },
+            &[],
+            &state(),
+        )
+        .unwrap();
+
+        let mut next_state = state();
+        next_state.cursor.value = 256;
+        write_facts(
+            &conn,
+            &ParsedFacts {
+                turns: vec![second],
+                ..Default::default()
+            },
+            &[],
+            &next_state,
+        )
+        .unwrap();
+
+        let (rows, input, output): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT count(*), SUM(input_tokens), SUM(output_tokens)
+                 FROM telemetry_turns",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(input, 200);
+        assert_eq!(output, 20);
+    }
+
+    #[test]
+    fn limit_observations_are_kept_as_one_current_gauge_per_provider() {
+        let conn = db();
+        let write = |observed_at: &str, used_percent: f64| {
+            write_facts(
+                &conn,
+                &ParsedFacts {
+                    limits: vec![LimitObservation {
+                        provider: "codex".into(),
+                        limit_id: Some("primary".into()),
+                        observed_at: observed_at.into(),
+                        used_percent: Some(used_percent),
+                        window_minutes: Some(300),
+                        resets_at: None,
+                        plan_type: Some("pro".into()),
+                    }],
+                    ..Default::default()
+                },
+                &[],
+                &state(),
+            )
+            .unwrap();
+        };
+
+        write("2026-08-30T10:00:00.000Z", 21.0);
+        write("2026-08-30T10:01:00.000Z", 43.0);
+        write("2026-08-30T09:59:00.000Z", 7.0);
+
+        let (count, used): (i64, f64) = conn
+            .query_row(
+                "SELECT count(*), used_percent FROM telemetry_limits
+                 WHERE provider = 'codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(used, 43.0);
     }
 
     #[test]

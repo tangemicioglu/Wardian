@@ -10,8 +10,10 @@
 //! commit.
 
 use crate::telemetry::activity::cluster_events;
+use crate::telemetry::identity::canonical_path;
 use crate::telemetry::models::{ActivityMethod, Cursor, IntervalFact, ParsedFacts};
 use crate::telemetry::rollup::recompute_buckets;
+use crate::telemetry::schema::acquire_telemetry_lock;
 use crate::telemetry::sources::{source_for, SourceContext, SourceError};
 use crate::telemetry::store::{
     last_clustered_interval, load_source_state, purge_source_facts, source_key, write_facts,
@@ -62,8 +64,16 @@ impl From<rusqlite::Error> for IngestError {
 pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOutcome, IngestError> {
     let source = source_for(&ctx.provider)
         .ok_or_else(|| IngestError::UnsupportedProvider(ctx.provider.clone()))?;
+    // Migration and maintenance release their SQLite transaction between
+    // batches. The adjacent lease keeps a current app writer from entering
+    // that gap; legacy binaries are fenced by the migration's exclusive
+    // locking mode instead.
+    let _telemetry_lock = acquire_telemetry_lock(conn)?;
 
-    let source_path = ctx.path.to_string_lossy().to_string();
+    // A projected habitat may reach the same provider log through a junction
+    // or symlink. Persist the physical path so those spellings share one
+    // cursor and one `(source, event)` uniqueness domain.
+    let source_path = canonical_path(&ctx.path).to_string_lossy().to_string();
     let key = source_key(&ctx.provider, &ctx.session_id, &source_path);
     let existing = load_source_state(conn, &key)?;
 
@@ -726,7 +736,15 @@ mod tests {
 
         // Corrupt the stored fact the way a parser defect would have.
         conn.execute(
-            "UPDATE telemetry_turns SET input_tokens = 999999, model = 'wrong-model'",
+            "INSERT OR IGNORE INTO telemetry_strings(kind, value) VALUES ('model', 'wrong-model')",
+            params![],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE telemetry_turn_facts
+             SET input_tokens = 999999,
+                 model_ref = (SELECT string_id FROM telemetry_strings
+                              WHERE kind = 'model' AND value = 'wrong-model')",
             params![],
         )
         .unwrap();

@@ -26,6 +26,43 @@ building repeatable automation around Wardian.
 4. Run `wardian agent list` to confirm the CLI sees your neighbors, or `wardian agent list --scope all` to see all agents.
 5. Use live-control commands only while the desktop app is running for that same home.
 
+## Telemetry Read Path
+
+Read telemetry without changing the app-owned source cursors:
+
+```bash
+wardian telemetry summary --horizon week --dimension provider
+```
+
+Telemetry retention and compaction are application-owned operations, not CLI
+commands. Wardian applies a documented 90-day detail policy once per day when
+no provider runtime is active. Codex, Claude, and Pi callback facts are
+coalesced at five-minute interface grain as they arrive; timestamp-cursor
+sources retain event identities for safe overlap rereads. Wardian creates and
+verifies a backup under `<wardian-home>/backups/telemetry`, keeps the two newest
+automatic backups, recomputes affected hourly rollups, removes expired detail
+facts in bounded batches, keeps only the newest rate-limit gauge per provider,
+checkpoints the WAL, and vacuums to reclaim released pages. The CLI remains
+read-only. The application associates a verified recovery baseline with each
+attempt before preparing the destructive phase. Retries before that phase use
+one stable pending backup path; retries after it starts reuse the pinned
+baseline, resume even if no expired raw row remains, and clean abandoned
+temporary files. A pending baseline is promoted into the two-file rotation
+only after successful completion.
+
+On startup, a v4-to-v5 schema migration first switches a file-backed database
+from WAL to SQLite's rollback journal and then holds exclusive locking mode
+across its resumable copy batches. This is why all older app/CLI binaries and
+offline writers must be stopped before the first upgraded startup: exclusive
+locking mode alone does not fence writers in WAL mode. Once the migration
+completes or is interrupted, the connection restores its prior journal and
+locking modes, and the next run resumes from its last committed marker. The
+database keeps `schema_version=4` as the legacy write-ABI marker and records
+`normalized_schema_version=5` separately. This forward-only marker prevents an
+older v4 client from entering its destructive reset path; its legacy index
+setup fails closed against the compatibility views, so upgrade older clients
+before using this database again.
+
 ## Inbox Read and Write Paths
 
 Agents can read the same Inbox projection that the desktop and remote surfaces
