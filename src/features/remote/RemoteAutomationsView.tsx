@@ -23,6 +23,11 @@ import { remoteClient, RemoteRequestError } from "./remoteClient";
 type Filter = "overview" | "attention" | "soon" | "history";
 type Detail = { kind: "run"; value: RemoteAutomationMonitorRun } | { kind: "schedule"; value: RemoteAutomationMonitorSchedule };
 type PageKind = "active" | "recent" | "schedules";
+type RetainedPageIds = {
+  active: Set<string>;
+  recent: Set<string>;
+  schedules: Set<string>;
+};
 
 const filters: ReadonlyArray<{ id: Filter; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -37,6 +42,42 @@ function uniqueBy<T>(left: T[], right: T[], key: (value: T) => string) {
   const merged = new Map(left.map((value) => [key(value), value]));
   for (const value of right) merged.set(key(value), value);
   return [...merged.values()];
+}
+
+function reconcileRefreshedItems<T>(
+  fresh: T[],
+  current: T[],
+  retainedIds: Set<string>,
+  key: (value: T) => string,
+) {
+  const reconciled = new Map(fresh.map((value) => [key(value), value]));
+  for (const value of current) {
+    const id = key(value);
+    if (retainedIds.has(id) && !reconciled.has(id)) reconciled.set(id, value);
+  }
+  return [...reconciled.values()];
+}
+
+function reconcileRefresh(
+  fresh: RemoteAutomationMonitorSnapshot,
+  current: RemoteAutomationMonitorSnapshot,
+  retained: RetainedPageIds,
+): RemoteAutomationMonitorSnapshot {
+  const retainedActive = retained.active.size > 0;
+  const retainedRecent = retained.recent.size > 0;
+  const retainedSchedules = retained.schedules.size > 0;
+  return {
+    ...fresh,
+    active_runs: reconcileRefreshedItems(fresh.active_runs, current.active_runs, retained.active, (run) => run.run_id),
+    active_runs_truncated: retainedActive ? current.active_runs_truncated : fresh.active_runs_truncated,
+    active_runs_next_offset: retainedActive ? current.active_runs_next_offset : fresh.active_runs_next_offset,
+    recent_runs: reconcileRefreshedItems(fresh.recent_runs, current.recent_runs, retained.recent, (run) => run.run_id),
+    recent_runs_truncated: retainedRecent ? current.recent_runs_truncated : fresh.recent_runs_truncated,
+    recent_runs_next_offset: retainedRecent ? current.recent_runs_next_offset : fresh.recent_runs_next_offset,
+    schedules: reconcileRefreshedItems(fresh.schedules, current.schedules, retained.schedules, (schedule) => schedule.id),
+    schedules_truncated: retainedSchedules ? current.schedules_truncated : fresh.schedules_truncated,
+    schedules_next_offset: retainedSchedules ? current.schedules_next_offset : fresh.schedules_next_offset,
+  };
 }
 
 function relativeTime(value: string | number | null) {
@@ -73,6 +114,11 @@ export const RemoteAutomationsView: React.FC = () => {
   const [pageAnnouncement, setPageAnnouncement] = useState("");
   const pageRequestRef = useRef<PageKind | null>(null);
   const snapshotRef = useRef<RemoteAutomationMonitorSnapshot | null>(null);
+  const retainedPageIdsRef = useRef<RetainedPageIds>({
+    active: new Set(),
+    recent: new Set(),
+    schedules: new Set(),
+  });
   const detailOriginRef = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -83,8 +129,11 @@ export const RemoteAutomationsView: React.FC = () => {
     setError("");
     try {
       const next = await remoteClient.loadAutomationMonitor();
-      snapshotRef.current = next;
-      setSnapshot(next);
+      const reconciled = snapshotRef.current
+        ? reconcileRefresh(next, snapshotRef.current, retainedPageIdsRef.current)
+        : next;
+      snapshotRef.current = reconciled;
+      setSnapshot(reconciled);
       setUnsupported(false);
       setStale(false);
     } catch (cause) {
@@ -137,6 +186,13 @@ export const RemoteAutomationsView: React.FC = () => {
         ...(kind === "recent" ? { recent_offset: offset } : {}),
         ...(kind === "schedules" ? { schedule_offset: offset } : {}),
       });
+      if (kind === "active") {
+        for (const run of page.active_runs) retainedPageIdsRef.current.active.add(run.run_id);
+      } else if (kind === "recent") {
+        for (const run of page.recent_runs) retainedPageIdsRef.current.recent.add(run.run_id);
+      } else {
+        for (const schedule of page.schedules) retainedPageIdsRef.current.schedules.add(schedule.id);
+      }
       setSnapshot((current) => {
         if (!current) return current;
         const activeRuns = uniqueBy(current.active_runs, page.active_runs, (run) => run.run_id);
@@ -149,7 +205,7 @@ export const RemoteAutomationsView: React.FC = () => {
             : schedules.length - current.schedules.length;
         const label = kind === "active" ? "active runs" : kind === "recent" ? "outcomes" : "schedules";
         setPageAnnouncement(`${added} ${label} loaded.`);
-        return {
+        const reconciled = {
           ...current,
           generated_at: page.generated_at,
           active_runs: activeRuns,
@@ -162,6 +218,8 @@ export const RemoteAutomationsView: React.FC = () => {
           schedules_truncated: kind === "schedules" ? page.schedules_truncated : current.schedules_truncated,
           schedules_next_offset: kind === "schedules" ? page.schedules_next_offset : current.schedules_next_offset,
         };
+        snapshotRef.current = reconciled;
+        return reconciled;
       });
     } catch (cause) {
       setStale(true);

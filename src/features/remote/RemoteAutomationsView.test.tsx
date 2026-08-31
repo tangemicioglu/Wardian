@@ -161,6 +161,34 @@ describe("RemoteAutomationsView", () => {
     await waitFor(() => expect(loadMore).not.toBeDisabled());
   });
 
+  it("retains loaded history pages when a resume refresh replaces the first page", async () => {
+    const olderPage = snapshot();
+    olderPage.recent_runs = [
+      { ...snapshot().recent_runs[0], run_id: "completed-2", automation_name: "Weekly report" },
+    ];
+    olderPage.recent_runs_truncated = false;
+    olderPage.recent_runs_next_offset = null;
+    const refreshed = snapshot();
+    refreshed.recent_runs = [
+      { ...snapshot().recent_runs[0], automation_name: "Dependency refresh updated" },
+    ];
+    vi.mocked(remoteClient.loadAutomationMonitor)
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValueOnce(olderPage)
+      .mockResolvedValueOnce(refreshed);
+    render(<RemoteAutomationsView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "History" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show older outcomes" }));
+    expect(await screen.findByText("Weekly report")).toBeVisible();
+
+    fireEvent(window, new Event("pageshow"));
+
+    expect(await screen.findByText("Dependency refresh updated")).toBeVisible();
+    expect(screen.getByText("Weekly report")).toBeVisible();
+    expect(remoteClient.loadAutomationMonitor).toHaveBeenCalledTimes(3);
+  });
+
   it("distinguishes an unsupported older desktop from a retryable failure", async () => {
     vi.mocked(remoteClient.loadAutomationMonitor).mockRejectedValue(
       new RemoteRequestError("missing", 404),

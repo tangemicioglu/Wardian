@@ -153,7 +153,8 @@ last-run time descending, then automation name and schedule id ascending.
 
 `completed_node_count` MAY be null when progress cannot be derived reliably.
 The PWA MUST omit progress rather than manufacture it. `failure` and
-`last_run_error` MUST be bounded and safe for text rendering. The response MUST
+`last_run_error` MUST be stable remote-safe summaries, never persisted provider
+or filesystem error text, and MUST be bounded and safe for rendering. The response MUST
 NOT include node outputs, event logs, automation input payloads, raw bindings,
 provider transcripts, PTY content, local filesystem paths, or reusable
 credentials.

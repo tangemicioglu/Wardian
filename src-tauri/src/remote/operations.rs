@@ -14,7 +14,8 @@ use wardian_core::models::chat::AgentChatEvent;
 use wardian_core::models::AgentConfig;
 
 const REMOTE_AUTOMATION_MONITOR_PAGE_SIZE: usize = 25;
-const REMOTE_AUTOMATION_TEXT_LIMIT: usize = 512;
+const REMOTE_RUN_FAILURE_SUMMARY: &str = "Run failed. Open Wardian desktop for details.";
+const REMOTE_SCHEDULE_FAILURE_SUMMARY: &str = "Last run failed. Open Wardian desktop for details.";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RemoteAgentChatPage {
@@ -252,9 +253,7 @@ fn remote_automation_monitor_snapshot_from(
                     status: run_status_label(state.status).to_string(),
                     node_count: state.nodes.len(),
                     completed_node_count: None,
-                    failure: state
-                        .failure
-                        .map(|value| bounded_remote_text(&value, REMOTE_AUTOMATION_TEXT_LIMIT)),
+                    failure: project_remote_failure(state.failure, REMOTE_RUN_FAILURE_SUMMARY),
                     started_at,
                     updated_at,
                     completed_at,
@@ -399,9 +398,10 @@ fn project_remote_schedule(
                 "running" | "awaiting_approval" | "completed" | "failed"
             )
         }),
-        last_run_error: schedule
-            .last_run_error
-            .map(|value| bounded_remote_text(&value, REMOTE_AUTOMATION_TEXT_LIMIT)),
+        last_run_error: project_remote_failure(
+            schedule.last_run_error,
+            REMOTE_SCHEDULE_FAILURE_SUMMARY,
+        ),
         last_run_epoch_ms: schedule.last_run_epoch_ms,
         target_labels,
     }
@@ -430,6 +430,13 @@ fn bounded_remote_text(value: &str, max_chars: usize) -> String {
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
         .take(max_chars)
         .collect()
+}
+
+/// Failure payloads can contain provider output and local paths. The remote
+/// trust boundary exposes only a stable outcome summary; full diagnostics stay
+/// on the desktop.
+fn project_remote_failure(raw_failure: Option<String>, summary: &str) -> Option<String> {
+    raw_failure.map(|_| summary.to_string())
 }
 
 /// Builds the same Inbox projection as the desktop queue store.
@@ -1570,6 +1577,18 @@ mod tests {
     }
 
     #[test]
+    fn remote_failure_projection_never_emits_raw_provider_or_path_details() {
+        let raw = "provider failed at C:\\Users\\private\\workspace and /Users/private/workspace\u{1b}[31m\u{1b}]8;;file:///secret\u{7}";
+        let projected = project_remote_failure(Some(raw.to_string()), REMOTE_RUN_FAILURE_SUMMARY)
+            .expect("failure summary");
+
+        assert_eq!(projected, REMOTE_RUN_FAILURE_SUMMARY);
+        assert!(!projected.contains("private"));
+        assert!(!projected.contains("provider"));
+        assert!(!projected.contains('\u{1b}'));
+    }
+
+    #[test]
     fn remote_schedule_projection_omits_sensitive_invocation_state() {
         let mut assignments = wardian_core::models::AutomationAssignments::new();
         assignments.insert(
@@ -1598,8 +1617,11 @@ mod tests {
             next_run_epoch_ms: Some(42),
             paused_remaining_ms: None,
             is_paused: false,
-            last_run_status: Some("completed".to_string()),
-            last_run_error: None,
+            last_run_status: Some("failed".to_string()),
+            last_run_error: Some(
+                "failed at C:\\Users\\private and /Users/private\u{1b}]8;;file:///secret\u{7}"
+                    .to_string(),
+            ),
             last_run_epoch_ms: Some(10),
         };
 
@@ -1615,6 +1637,9 @@ mod tests {
         assert!(!text.contains("absolute-workspace-path"));
         assert!(!text.contains("agent-secret"));
         assert!(!text.contains("secret-model"));
+        assert!(!text.contains("Users"));
+        assert!(!text.contains("file:///"));
+        assert_eq!(json["last_run_error"], REMOTE_SCHEDULE_FAILURE_SUMMARY);
         assert_eq!(
             json["target_labels"],
             serde_json::json!(["reviewer · Temporary codex", "writer · Assigned"])

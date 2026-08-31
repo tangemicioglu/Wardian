@@ -267,7 +267,8 @@ nodes:
       schedule: { schedule_type: "daily", time_of_day: "09:00", repeat_every: 1, end_condition: "never", occurrence_count: 0, active: true },
       next_run_epoch_ms: Date.parse("2099-09-01T13:00:00.000Z"),
       is_paused: false,
-      last_run_status: "completed",
+      last_run_status: "failed",
+      last_run_error: "provider failed at C:\\Users\\private and /Users/private\u001b]8;;file:///secret\u0007",
       last_run_epoch_ms: Date.parse("2026-08-31T12:01:00.000Z"),
     }],
   }, null, 2));
@@ -458,6 +459,12 @@ test("remote automation monitor returns persisted schedule and run state through
   assert.equal(snapshot.schedules.some((schedule) => schedule.id === seededAutomation.scheduleId), true);
   assert.equal(JSON.stringify(snapshot).includes("must-not-leak"), false);
   assert.equal(JSON.stringify(snapshot).includes("agent-private-id"), false);
+  assert.equal(JSON.stringify(snapshot).includes("Users/private"), false);
+  assert.equal(JSON.stringify(snapshot).includes("file:///secret"), false);
+  assert.equal(
+    snapshot.schedules.find((schedule) => schedule.id === seededAutomation.scheduleId)?.last_run_error,
+    "Last run failed. Open Wardian desktop for details.",
+  );
   assert.equal(
     readRemoteAuditRecords(harness).some(
       (record) => record.event_type === "automation_read"
@@ -466,6 +473,22 @@ test("remote automation monitor returns persisted schedule and run state through
     ),
     true,
     "automation monitor read was not written to the remote audit log",
+  );
+
+  const malformed = await fetch(`${baseUrl}/remote/api/automations/monitor?active_offset=-1`, {
+    headers: { Cookie: cookie },
+  });
+  await assertStatus(malformed, 400, "malformed automation monitor query");
+  assert.equal((await malformed.json()).code, "invalid_automation_monitor_query");
+  assert.equal(
+    readRemoteAuditRecords(harness).some(
+      (record) => record.event_type === "automation_read"
+        && record.action === "load_automation_monitor"
+        && record.outcome === "rejected"
+        && record.error_code === "invalid_automation_monitor_query",
+    ),
+    true,
+    "malformed automation monitor query was not written to the remote audit log",
   );
 });
 
