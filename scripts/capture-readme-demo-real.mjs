@@ -736,16 +736,16 @@ async function main() {
     }), minSeconds);
   };
 
-  const sendRawTerminalInput = async (sessionId, input, minSeconds = 0.5) => {
-    await captureWhile(() => invokeTauri(session.driver, "send_input_to_agent", {
+  const injectProviderStartupInput = async (sessionId, text, minSeconds = 0.5) => {
+    await captureWhile(() => invokeTauri(session.driver, "inject_session_input", {
       sessionId,
-      input,
+      text,
     }), minSeconds);
   };
 
   const confirmProviderStartupPrompt = async (sessionId, settleMs = 5000) => {
     await wait(settleMs);
-    await sendRawTerminalInput(sessionId, "\r\n", 0.4);
+    await injectProviderStartupInput(sessionId, "\r\n", 0.4);
     await wait(2500);
   };
 
@@ -817,7 +817,7 @@ async function main() {
     await openWorkbenchSurface("library");
     await waitForCss(session.driver, '[data-testid="library-view"]');
     await captureFor(1.7);
-    await clickXpath("//button[normalize-space(.)='Skills']", 0.18);
+    await clickCss('[data-testid="library-section-skills"]', 0.18);
     await waitForXpath(session.driver, "//*[contains(normalize-space(.), 'readme-auditor') or contains(normalize-space(.), 'diff-reviewer')]", 20000);
     await captureFor(1.8);
 
@@ -832,6 +832,8 @@ async function main() {
       select.dispatchEvent(new Event("input", { bubbles: true }));
       select.dispatchEvent(new Event("change", { bubbles: true }));
     }), 0.6);
+    await clickXpath("//div[@data-testid='automations-view']//button[normalize-space(.)='edit']", 0.18);
+    await waitForCss(session.driver, '[data-testid="automations-edit-mode"]', 20000);
     await waitForCss(session.driver, '[data-testid="builder-node-inspect-workspace"]', 20000);
     await captureFor(3.5);
 
@@ -855,7 +857,7 @@ async function main() {
     "drawbox=x=460:y=145:w=440:h=32:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
     "drawbox=x=460:y=235:w=440:h=30:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
     "drawbox=x=460:y=300:w=440:h=30:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
-    "drawbox=x=960:y=245:w=520:h=36:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
+    "drawbox=x=950:y=272:w=600:h=32:color=0xfffdf8:t=fill:enable='between(n,45,230)'",
   ].join(",");
   const outputFilter = `${privacyMaskFilter},fps=${fps},scale=${outputWidth}:-1:flags=lanczos`;
   run("ffmpeg", [
