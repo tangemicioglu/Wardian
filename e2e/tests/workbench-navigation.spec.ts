@@ -1628,6 +1628,9 @@ test("cancelling one dirty close guard leaves the complete group unchanged", asy
   });
   await bootWorkbench(page, document);
 
+  await page.getByTestId("automations-view")
+    .getByRole("button", { name: "edit", exact: true })
+    .click();
   await page.getByRole("textbox", { name: "Automation name" }).fill("Edited automation");
   const group = activeWorkbenchGroup(page);
   await choosePaneAction(page, group, "Close pane");
