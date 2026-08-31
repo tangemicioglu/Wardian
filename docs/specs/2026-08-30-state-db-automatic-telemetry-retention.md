@@ -94,7 +94,9 @@ cutoff into the pending slot before association. If no such pre-preparation
 baseline exists, the scheduler fails closed without rotating the automatic
 backups. Failed temporary outputs and unassociated pending files are removed
 before a new attempt, so later telemetry is not recovered from an old baseline.
-A pending baseline is promoted only after successful
+Once a baseline is durably associated, a missing or corrupt pending file also
+fails closed; it is never replaced with a post-deletion snapshot. A pending
+baseline is promoted only after successful
 completion. After success, the application keeps the two newest automatic backups in
 `<wardian-home>/backups/telemetry` and rotates only files with its exact backup
 prefix.

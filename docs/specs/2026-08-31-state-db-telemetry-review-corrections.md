@@ -42,6 +42,8 @@ association. If no such baseline exists, it fails closed without rotating
 automatic backups. Only then is the pending file promoted and normal two-file
 rotation run. For a fresh attempt, an unassociated pending file is removed
 instead of reused because it may predate newly ingested telemetry.
+After association, a missing or corrupt pending file fails closed without
+creating a replacement snapshot or rotating backups.
 
 The CLI remains read-only. The desktop scheduler remains the owner of the
 retention policy and invokes the core operation only at a provider-runtime

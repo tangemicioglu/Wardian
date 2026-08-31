@@ -112,6 +112,19 @@ fn verified_pending_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
     Ok(None)
 }
 
+fn require_verified_pending_backup(directory: &Path) -> io::Result<PathBuf> {
+    let path = pending_backup_path(directory);
+    if !path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "associated telemetry retention backup is missing",
+        ));
+    }
+    wardian_core::telemetry::verify_backup(&path)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(path)
+}
+
 fn backup_contains_prepared_cutoff(path: &Path) -> io::Result<bool> {
     let backup =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -228,7 +241,9 @@ fn maintain_if_due_at(
     remove_incomplete_backup_temps(&backup_directory)?;
     let pending = pending_backup_path(&backup_directory);
     let backup_path = if backup_prepared {
-        verified_pending_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
+        // Once the association is durable, a missing or corrupt baseline is
+        // unrecoverable. Never replace it with a post-deletion snapshot.
+        require_verified_pending_backup(&backup_directory)?
     } else if retention_prepared {
         adopt_legacy_baseline(&backup_directory)?
     } else {
@@ -784,5 +799,62 @@ mod tests {
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
             .count();
         assert_eq!(files, 1);
+    }
+
+    #[test]
+    fn missing_associated_backup_fails_closed_after_a_committed_deletion_batch() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let old =
+            (Utc::now() - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
+             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
+                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_limit_cleanup
+             BEFORE DELETE ON telemetry_limits
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected retry failure');
+             END;",
+        )
+        .unwrap();
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        let pending = pending_backup_path(&backup_directory);
+        assert!(pending.exists());
+        assert!(wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
+        assert!(wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
+        std::fs::remove_file(&pending).unwrap();
+        assert!(!pending.exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 0);
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        assert!(wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
+        assert!(wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
+        assert!(!pending.exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 0);
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turn_facts WHERE event_key = 'old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
     }
 }
