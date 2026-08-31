@@ -60,9 +60,8 @@ the original retention window. It then checkpoints the WAL and clears the phase
 marker. The
 Rate limits are account-level gauges. The write path keeps only the newest
 observation per provider, and maintenance removes older observations already
-present in an installed database. `VACUUM` is opt-in and runs only when the
-software maintenance policy requests it through the serialized application
-maintenance path.
+present in an installed database. `VACUUM` remains an explicit core option; the
+automatic 90-day application retention policy does not request it.
 
 The desktop application currently supplies a 90-day product policy. Choosing a
 shorter or longer window remains a product decision and requires updating the

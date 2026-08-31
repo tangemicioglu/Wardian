@@ -362,7 +362,7 @@ pub fn run() {
             // tick: that tick drives live status and readiness, and ingest reads
             // whole log deltas while holding the state database's write lock.
             state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
-            // Keep raw telemetry bounded automatically. The maintenance pass
+            // Keep aged raw telemetry bounded automatically. The retention pass
             // serializes with live ingest through the app-owned database lock.
             state::telemetry_maintenance::start_telemetry_maintenance();
 

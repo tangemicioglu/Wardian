@@ -260,6 +260,7 @@ test("unified Automations view edits, launches, observes, and returns to edit", 
     useSettingsStore.setState({ default_provider: "codex" });
   });
   await expect(page.getByTestId("automations-view")).toBeVisible();
+  await page.getByTestId("automations-view").getByRole("button", { name: /^edit$/i }).click();
   await expect(page.getByTestId("automations-edit-mode")).toBeVisible();
 
   const blueprintSelect = page.getByTestId("blueprint-selector").getByRole("combobox");

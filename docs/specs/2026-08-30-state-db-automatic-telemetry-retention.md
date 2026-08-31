@@ -24,8 +24,9 @@ source key allowed each alias to ingest a second copy. Second, after removing
 those aliases, the remaining rows are provider token-delta observations rather
 than transcripts. The telemetry design had hourly rollups but no production
 retention caller, so both genuine raw facts and alias copies accumulated
-indefinitely. Rate-limit observations were also being stored as heartbeat
-history even though the UI only reads the newest provider gauge.
+indefinitely. Before the subsequent ingest correction, rate-limit observations
+were also stored as heartbeat history even though the UI only reads the newest
+provider gauge.
 
 ## Policy
 
@@ -85,8 +86,8 @@ command.
 Before deleting any raw fact, the core operation creates and integrity-checks a
 full SQLite backup through a temporary sibling path, then atomically promotes
 it. It recomputes affected hourly buckets, records a durable prepared cutoff,
-deletes in bounded transactions, checkpoints the WAL, and vacuum-compacts the
-database. Interrupted deletion resumes at the recorded cutoff and reuses the
+deletes in bounded transactions, and checkpoints the WAL. Interrupted deletion
+resumes at the recorded cutoff and reuses the
 verified baseline associated with the attempt rather than creating another
 full copy for each retry. Before the cutoff is prepared, the application-owned
 scheduler uses one stable pending backup path; after the cutoff is prepared,
@@ -108,7 +109,7 @@ completion. After success, the application keeps the two newest automatic backup
 `<wardian-home>/backups/telemetry` and rotates only files with its exact backup
 prefix.
 
-The first upgraded run may require temporary space for the verified backup and
-vacuum. If the backup or maintenance fails, no cleanup is claimed and the
+The first upgraded run may require temporary space for the verified backup. If
+the backup or maintenance fails, no cleanup is claimed and the
 application retries after 15 minutes; the source database is not partially
 purged before backup verification.

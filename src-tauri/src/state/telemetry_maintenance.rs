@@ -206,7 +206,7 @@ fn maintain_if_due_at(
     let backup_directory = telemetry_backup_directory(home);
     // A prepared marker is the durable indication that raw rows may already
     // have been deleted. Resume it even when the final expired row is gone;
-    // otherwise a checkpoint/vacuum failure after deletion would strand the
+    // otherwise a checkpoint failure after deletion would strand the
     // marker and leave the verified recovery baseline unrotated forever.
     let retention_prepared = wardian_core::telemetry::retention_is_prepared(conn)?;
     let backup_pending = wardian_core::telemetry::retention_backup_is_pending(conn)?;
@@ -247,7 +247,7 @@ fn maintain_if_due_at(
         pending.clone()
     };
     let report =
-        wardian_core::telemetry::maintain(conn, TELEMETRY_RAW_RETENTION_DAYS, &backup_path, true)?;
+        wardian_core::telemetry::maintain(conn, TELEMETRY_RAW_RETENTION_DAYS, &backup_path, false)?;
 
     if backup_path == pending {
         if let Err(error) = promote_pending_backup(&backup_directory) {
@@ -274,10 +274,11 @@ fn run_telemetry_maintenance_if_due() -> Result<Option<MaintenanceReport>, Strin
 
 /// Start the once-daily application-owned retention loop.
 ///
-/// The core database mutex holds this complete backup, retention, checkpoint,
-/// and optional VACUUM pass apart from provider ingest. The core telemetry
-/// lease separately excludes a concurrent schema migration. Provider processes
-/// may remain live because they do not bypass either database boundary.
+/// The core database mutex holds this complete backup, retention, and checkpoint
+/// pass apart from provider ingest. The core telemetry lease separately excludes
+/// a concurrent schema migration. Provider processes may remain live because
+/// they do not bypass either database boundary. Periodic VACUUM is deliberately
+/// not part of this path because SQLite reuses released pages after retention.
 pub fn start_telemetry_maintenance() {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
@@ -415,14 +416,6 @@ mod tests {
             [&old],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
-             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
-                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
-            [],
-        )
-        .unwrap();
-
         let report = maintain_if_due_at(&conn, directory.path())
             .unwrap()
             .expect("expired raw telemetry should trigger maintenance");
@@ -430,9 +423,7 @@ mod tests {
         assert_eq!(report.turns_deleted, 1);
         assert_eq!(report.edits_deleted, 1);
         assert_eq!(report.activity_deleted, 1);
-        assert_eq!(report.limits_deleted, 1);
-        assert_eq!(report.limits_retained, 1);
-        assert!(report.vacuumed);
+        assert!(!report.vacuumed);
         assert_eq!(
             conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
                 row.get(0)

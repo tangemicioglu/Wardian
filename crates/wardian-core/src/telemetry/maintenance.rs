@@ -1,9 +1,9 @@
 //! Core-owned telemetry retention and compaction.
 //!
 //! Raw turns, edits, and completed activity intervals are safe to remove only
-//! after their hourly buckets have been recomputed. Rate-limit observations are
-//! account gauges rather than history, so only the newest row per provider is
-//! retained.
+//! after their hourly buckets have been recomputed. The ingest path keeps one
+//! current rate-limit gauge per provider; maintenance can clean legacy rows
+//! from installed databases.
 //!
 //! The application maintenance service supplies the retention window and a new
 //! backup destination. No age policy is silently chosen, and compaction is
@@ -46,8 +46,8 @@ pub struct MaintenanceReport {
 /// Retain the requested number of days of raw telemetry and optionally compact
 /// the database after creating and verifying a backup.
 ///
-/// The application maintenance service calls this only at a quiescent
-/// lifecycle boundary. The backup is verified before any source row is
+/// The application maintenance service calls this through its database
+/// serialization boundary. The backup is verified before any source row is
 /// deleted; callers resuming a prepared retention phase may pass its existing
 /// verified baseline. `vacuum` must be opted into because it rewrites the
 /// whole database.

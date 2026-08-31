@@ -29,6 +29,7 @@ test.describe("Critical browser flows", () => {
     await openAutomationEditor(page);
     const automations = surfacePanel(page, "automations");
     await expect(automations.getByTestId("automations-view")).toBeVisible();
+    await automations.getByRole("button", { name: /^edit$/i }).click();
     await expect(automations.getByTestId("automations-edit-mode")).toBeVisible();
 
     await automations.getByTestId("automations-view").getByRole("button", { name: "Add node" }).click();

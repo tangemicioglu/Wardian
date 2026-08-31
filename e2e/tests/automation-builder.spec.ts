@@ -144,6 +144,7 @@ async function openAutomationBuilder(page: Page) {
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
   await openAutomationEditor(page);
   await expect(page.getByTestId("automations-view")).toBeVisible();
+  await page.getByTestId("automations-view").getByRole("button", { name: /^edit$/i }).click();
   await expect(page.getByTestId("automations-edit-mode")).toBeVisible();
   await page.evaluate(async () => {
     const { useBuilderStore } = await import("/src/store/useBuilderStore.ts");
