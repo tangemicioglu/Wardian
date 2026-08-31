@@ -288,7 +288,16 @@ let lastActiveAgentRefreshKey: string | null = null;
 let terminalRefreshRequestSerial = 0;
 let chatRefreshRequestSerial = 0;
 let queueRefreshRequestSerial = 0;
-let suppressNextStatusStreamReconnect = false;
+
+interface StatusStreamAttempt {
+  generation: number;
+  id: number;
+}
+
+let statusStreamLifecycleGeneration = 0;
+let statusStreamAttemptId = 0;
+let statusStreamOpenInFlight: StatusStreamAttempt | null = null;
+let statusStreamActiveAttempt: StatusStreamAttempt | null = null;
 
 const refreshRemoteQueue = async (set: RemoteSet): Promise<boolean> => {
   const requestSerial = ++queueRefreshRequestSerial;
@@ -323,13 +332,14 @@ const clearStatusStreamReconnect = () => {
 };
 
 const closeStatusStream = () => {
-  if (statusStreamSocket) {
-    suppressNextStatusStreamReconnect = true;
-    statusStreamSocket.close();
-  }
+  const socket = statusStreamSocket;
   statusStreamSocket = null;
+  statusStreamActiveAttempt = null;
+  statusStreamOpenInFlight = null;
+  statusStreamLifecycleGeneration += 1;
   clearStatusStreamReconnect();
   clearBackgroundChatRefresh();
+  socket?.close();
 };
 
 const runBackgroundActiveChatRefresh = async (set: RemoteSet, get: RemoteGet) => {
@@ -379,7 +389,12 @@ const pruneActiveAgentViewModes = (
 ) => Object.fromEntries(Object.entries(modesById).filter(([agentId]) => liveAgentIds.has(agentId)));
 
 const scheduleStatusStreamReconnect = (set: RemoteSet, get: RemoteGet) => {
-  if (statusStreamReconnectTimer !== null || statusStreamSocket || get().status === "session_expired") return;
+  if (
+    statusStreamReconnectTimer !== null ||
+    statusStreamSocket ||
+    statusStreamOpenInFlight ||
+    get().status === "session_expired"
+  ) return;
   const delay = Math.min(
     STATUS_STREAM_RECONNECT_MAX_DELAY_MS,
     STATUS_STREAM_RECONNECT_BASE_DELAY_MS * 2 ** statusStreamReconnectAttempts,
@@ -392,72 +407,97 @@ const scheduleStatusStreamReconnect = (set: RemoteSet, get: RemoteGet) => {
 };
 
 const retryStatusStreamAfterError = (set: RemoteSet, get: RemoteGet) => {
-  const socket = statusStreamSocket;
-  statusStreamSocket = null;
-  suppressNextStatusStreamReconnect = false;
-  clearBackgroundChatRefresh();
-  socket?.close();
+  closeStatusStream();
   scheduleStatusStreamReconnect(set, get);
 };
 
+const isMatchingStatusStreamAttempt = (current: StatusStreamAttempt | null, expected: StatusStreamAttempt) =>
+  current?.generation === expected.generation && current.id === expected.id;
+
+const isCurrentStatusStreamAttempt = (attempt: StatusStreamAttempt) =>
+  attempt.generation === statusStreamLifecycleGeneration &&
+  (isMatchingStatusStreamAttempt(statusStreamOpenInFlight, attempt) || isMatchingStatusStreamAttempt(statusStreamActiveAttempt, attempt));
+
 const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
-  if (statusStreamSocket) return;
+  if (statusStreamSocket || statusStreamOpenInFlight) return;
   clearStatusStreamReconnect();
-  suppressNextStatusStreamReconnect = false;
-  statusStreamSocket = await remoteClient.openStatusStream({
-    onAgents: (agents) => {
-      const activeAgentId = get().activeAgentId;
-      const liveAgentIds = new Set(agents.map((agent) => agent.session_id));
-      const activeAgent = activeAgentId ? agents.find((agent) => agent.session_id === activeAgentId) : null;
-      set((state) => ({
-        agents,
-        status: "ready",
-        activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
-        ...(activeAgent
-          ? {}
-          : {
-              activeAgentId: null,
-              activeAgentViewMode: "terminal",
-              terminalSnapshot: null,
-              terminalLoading: false,
-              terminalError: "",
-              chatEvents: [],
-              chatLoading: false,
-              chatLoadingOlder: false,
-              chatHasOlder: false,
-              chatNextBefore: null,
-              chatError: "",
-            }),
-      }));
-      void refreshRemoteQueue(set);
-      if (activeAgent) {
-        const nextRefreshKey = activeAgentRefreshKey(activeAgent);
-        const refreshKeyChanged = nextRefreshKey !== lastActiveAgentRefreshKey;
-        lastActiveAgentRefreshKey = nextRefreshKey;
-        if ((refreshKeyChanged || activeAgentStatusShouldRefreshChat(activeAgent.status)) && get().activeAgentViewMode === "chat") {
-          scheduleBackgroundActiveChatRefresh(set, get);
+  const attempt: StatusStreamAttempt = {
+    generation: statusStreamLifecycleGeneration,
+    id: ++statusStreamAttemptId,
+  };
+  statusStreamOpenInFlight = attempt;
+
+  try {
+    const socket = await remoteClient.openStatusStream({
+      onAgents: (agents) => {
+        if (!isCurrentStatusStreamAttempt(attempt)) return;
+        statusStreamReconnectAttempts = 0;
+        const activeAgentId = get().activeAgentId;
+        const liveAgentIds = new Set(agents.map((agent) => agent.session_id));
+        const activeAgent = activeAgentId ? agents.find((agent) => agent.session_id === activeAgentId) : null;
+        set((state) => ({
+          agents,
+          status: "ready",
+          activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
+          ...(activeAgent
+            ? {}
+            : {
+                activeAgentId: null,
+                activeAgentViewMode: "terminal",
+                terminalSnapshot: null,
+                terminalLoading: false,
+                terminalError: "",
+                chatEvents: [],
+                chatLoading: false,
+                chatLoadingOlder: false,
+                chatHasOlder: false,
+                chatNextBefore: null,
+                chatError: "",
+              }),
+        }));
+        void refreshRemoteQueue(set);
+        if (activeAgent) {
+          const nextRefreshKey = activeAgentRefreshKey(activeAgent);
+          const refreshKeyChanged = nextRefreshKey !== lastActiveAgentRefreshKey;
+          lastActiveAgentRefreshKey = nextRefreshKey;
+          if ((refreshKeyChanged || activeAgentStatusShouldRefreshChat(activeAgent.status)) && get().activeAgentViewMode === "chat") {
+            scheduleBackgroundActiveChatRefresh(set, get);
+          }
+        } else {
+          lastActiveAgentRefreshKey = null;
         }
-      } else {
-        lastActiveAgentRefreshKey = null;
-      }
-    },
-    onSessionExpired: () => {
-      closeStatusStream();
-      set({ status: "session_expired" });
-    },
-    onError: () => {
-      retryStatusStreamAfterError(set, get);
-    },
-    onClose: () => {
-      statusStreamSocket = null;
-      if (suppressNextStatusStreamReconnect) {
-        suppressNextStatusStreamReconnect = false;
-        return;
-      }
-      scheduleStatusStreamReconnect(set, get);
-    },
-  });
-  statusStreamReconnectAttempts = 0;
+      },
+      onSessionExpired: () => {
+        if (!isCurrentStatusStreamAttempt(attempt)) return;
+        closeStatusStream();
+        set({ status: "session_expired" });
+      },
+      onError: () => {
+        if (!isCurrentStatusStreamAttempt(attempt)) return;
+        retryStatusStreamAfterError(set, get);
+      },
+      onClose: () => {
+        if (!isCurrentStatusStreamAttempt(attempt)) return;
+        statusStreamSocket = null;
+        statusStreamActiveAttempt = null;
+        statusStreamOpenInFlight = null;
+        statusStreamLifecycleGeneration += 1;
+        clearBackgroundChatRefresh();
+        scheduleStatusStreamReconnect(set, get);
+      },
+    });
+
+    if (!isCurrentStatusStreamAttempt(attempt)) {
+      socket.close();
+      return;
+    }
+    statusStreamSocket = socket;
+    statusStreamActiveAttempt = attempt;
+  } catch (error) {
+    if (isCurrentStatusStreamAttempt(attempt)) throw error;
+  } finally {
+    if (statusStreamOpenInFlight?.id === attempt.id) statusStreamOpenInFlight = null;
+  }
 };
 
 const handleStatusStreamOpenFailure = (set: RemoteSet, get: RemoteGet, error: unknown) => {
@@ -767,6 +807,7 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
   },
   disconnectStatusStream() {
     closeStatusStream();
+    statusStreamReconnectAttempts = 0;
   },
   setActiveWatchlistId(id) {
     set((state) => ({
