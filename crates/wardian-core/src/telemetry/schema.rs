@@ -992,6 +992,32 @@ fn canonicalize_legacy_sources(conn: &Connection, force_reset: bool) -> rusqlite
     install_source_alias_plans(&tx, &plans)?;
 
     for table in ["telemetry_turns", "telemetry_edits"] {
+        // The same provider record was often written once for every projected
+        // path. Event keys are stable across those aliases, so the canonical
+        // `(source, event)` pair is the exact identity to retain.
+        //
+        // Retire the losing rows before the rewrite, not after. Both legacy
+        // tables declare `UNIQUE(source_key, event_key)` and SQLite enforces it
+        // per row as an `UPDATE` proceeds, so collapsing an alias group is the
+        // very operation that makes two rows collide. Grouping by the key each
+        // row is about to receive selects the same survivors a post-rewrite
+        // pass would, and leaves nothing for the rewrite to trip over.
+        tx.execute(
+            &format!(
+                "DELETE FROM {table}
+                 WHERE id NOT IN (
+                     SELECT MIN(id) FROM {table}
+                     GROUP BY COALESCE(
+                                  (SELECT canonical_source_key
+                                   FROM telemetry_source_aliases
+                                   WHERE old_source_key = {table}.source_key),
+                                  source_key
+                              ),
+                              event_key
+                 )"
+            ),
+            [],
+        )?;
         tx.execute(
             &format!(
                 "UPDATE {table}
@@ -1002,18 +1028,6 @@ fn canonicalize_legacy_sources(conn: &Connection, force_reset: bool) -> rusqlite
                                     FROM telemetry_source_aliases
                                     WHERE old_source_key = {table}.source_key)
                  WHERE source_key IN (SELECT old_source_key FROM telemetry_source_aliases)"
-            ),
-            [],
-        )?;
-        // The same provider record was often written once for every projected
-        // path. Event keys are stable across those aliases, so the canonical
-        // `(source, event)` pair is the exact identity to retain.
-        tx.execute(
-            &format!(
-                "DELETE FROM {table}
-                 WHERE id NOT IN (
-                     SELECT MIN(id) FROM {table} GROUP BY source_key, event_key
-                 )"
             ),
             [],
         )?;
@@ -1979,7 +1993,8 @@ mod tests {
                  context_window INTEGER,
                  cost_usd REAL,
                  source_key TEXT NOT NULL,
-                 source_path TEXT NOT NULL
+                 source_path TEXT NOT NULL,
+                 UNIQUE(source_key, event_key)
              );
              CREATE TABLE telemetry_edits (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1994,7 +2009,8 @@ mod tests {
                  lines_added INTEGER,
                  lines_removed INTEGER,
                  source_key TEXT NOT NULL,
-                 source_path TEXT NOT NULL
+                 source_path TEXT NOT NULL,
+                 UNIQUE(source_key, event_key)
              );
              INSERT INTO telemetry_sources(source_key, source_path, session_id, provider)
                  VALUES ('source-a', 'session.log', 'session-a', 'codex');",
@@ -2389,6 +2405,27 @@ mod tests {
             )
             .unwrap();
         }
+        // Edits carry the same `(source_key, event_key)` uniqueness and are
+        // rewritten by the same statement, so one alias pair belongs here too.
+        for source_key in ["source-a".to_string(), alias_key.clone()] {
+            conn.execute(
+                "INSERT INTO telemetry_edits
+                    (event_key, session_id, provider, turn_id, occurred_at, workspace,
+                     path, op, lines_added, lines_removed, source_key, source_path)
+                 VALUES ('same-edit', 'session-a', 'codex', 'turn-a',
+                         '2026-08-30T00:00:00Z', 'workspace-a', 'src/lib.rs',
+                         'modify', 4, 1, ?1, ?2)",
+                params![
+                    source_key,
+                    if source_key == "source-a" {
+                        physical.to_string_lossy().to_string()
+                    } else {
+                        alias.to_string_lossy().to_string()
+                    }
+                ],
+            )
+            .unwrap();
+        }
         conn.execute(
             "INSERT INTO telemetry_rollup_hourly
                 (bucket_start, session_id, provider, model, turns, input_tokens)
@@ -2398,6 +2435,14 @@ mod tests {
         .unwrap();
 
         run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_edits", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
 
         assert_eq!(
             conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
@@ -2929,7 +2974,8 @@ mod tests {
                  context_window INTEGER,
                  cost_usd REAL,
                  source_key TEXT NOT NULL,
-                 source_path TEXT NOT NULL
+                 source_path TEXT NOT NULL,
+                 UNIQUE(source_key, event_key)
              );
              CREATE TABLE telemetry_edits (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2944,7 +2990,8 @@ mod tests {
                  lines_added INTEGER,
                  lines_removed INTEGER,
                  source_key TEXT NOT NULL,
-                 source_path TEXT NOT NULL
+                 source_path TEXT NOT NULL,
+                 UNIQUE(source_key, event_key)
              );
              INSERT INTO telemetry_sources(source_key, source_path, session_id, provider)
                  VALUES ('source-a', 'session.log', 'session-a', 'codex');
