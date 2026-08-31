@@ -1,16 +1,14 @@
 //! Application-owned telemetry retention scheduling.
 //!
 //! The core maintenance function owns the recovery protocol. This module owns
-//! the product policy and the lifecycle boundary that makes invoking it safe:
-//! run once a day, only when no Wardian provider runtime is active, and keep a
-//! small rotating set of verified backups.
+//! the product policy and scheduling boundary that makes invoking it safe:
+//! run once a day under the application's database serialization, even while
+//! providers are live, and keep a small rotating set of verified backups.
 
-use crate::state::{ActiveAgent, AppState};
 use crate::utils::fs::get_wardian_home;
 use chrono::Utc;
 use std::io;
 use std::path::{Path, PathBuf};
-use tauri::Manager;
 use wardian_core::telemetry::MaintenanceReport;
 
 /// Raw provider facts remain available for this long; hourly rollups remain
@@ -201,18 +199,6 @@ fn adopt_legacy_baseline(directory: &Path) -> io::Result<PathBuf> {
     Ok(pending)
 }
 
-fn agent_runtime_is_active(agent: &ActiveAgent) -> bool {
-    agent.runtime_generation.is_some()
-        || agent.process_id.is_some()
-        || agent.child_process.is_some()
-        || !agent.background_processes.is_empty()
-}
-
-async fn provider_runtimes_are_quiescent(state: &AppState) -> bool {
-    let agents = state.agents.lock().await;
-    !agents.values().any(agent_runtime_is_active)
-}
-
 fn maintain_if_due_at(
     conn: &rusqlite::Connection,
     home: &Path,
@@ -287,16 +273,15 @@ fn run_telemetry_maintenance_if_due() -> Result<Option<MaintenanceReport>, Strin
 }
 
 /// Start the once-daily application-owned retention loop.
-pub fn start_telemetry_maintenance(app_handle: tauri::AppHandle) {
+///
+/// The core database mutex holds this complete backup, retention, checkpoint,
+/// and optional VACUUM pass apart from provider ingest. The core telemetry
+/// lease separately excludes a concurrent schema migration. Provider processes
+/// may remain live because they do not bypass either database boundary.
+pub fn start_telemetry_maintenance() {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            let state = app_handle.state::<AppState>();
-            if !provider_runtimes_are_quiescent(&state).await {
-                tokio::time::sleep(RETRY_DELAY).await;
-                continue;
-            }
-
             let result = tokio::task::spawn_blocking(run_telemetry_maintenance_if_due).await;
             let retry = match result {
                 Ok(Ok(Some(report))) => {
@@ -416,12 +401,38 @@ mod tests {
             [&old],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_edits
+                (event_key, session_id, provider, occurred_at, path, op, source_key, source_path)
+             VALUES ('old-edit', 'session-a', 'codex', ?1, 'src/lib.rs', 'modify', 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_activity
+                (session_id, provider, started_at, ended_at, last_event_at, event_count, method, source_key)
+             VALUES ('session-a', 'codex', ?1, ?1, ?1, 1, 'measured', 'source-a')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
+             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
+                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
+            [],
+        )
+        .unwrap();
 
         let report = maintain_if_due_at(&conn, directory.path())
             .unwrap()
             .expect("expired raw telemetry should trigger maintenance");
 
         assert_eq!(report.turns_deleted, 1);
+        assert_eq!(report.edits_deleted, 1);
+        assert_eq!(report.activity_deleted, 1);
+        assert_eq!(report.limits_deleted, 1);
+        assert_eq!(report.limits_retained, 1);
+        assert!(report.vacuumed);
         assert_eq!(
             conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turns", [], |row| {
                 row.get(0)
@@ -429,10 +440,22 @@ mod tests {
             .unwrap(),
             0
         );
+        for table in ["telemetry_edits", "telemetry_activity"] {
+            assert_eq!(
+                conn.query_row::<i64, _, _>(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap(),
+                0
+            );
+        }
         let backups = std::fs::read_dir(telemetry_backup_directory(directory.path()))
             .unwrap()
-            .count();
-        assert_eq!(backups, 1);
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        wardian_core::telemetry::verify_backup(&backups[0]).unwrap();
     }
 
     #[test]

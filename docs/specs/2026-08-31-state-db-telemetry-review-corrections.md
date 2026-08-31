@@ -55,8 +55,10 @@ After association, a missing or corrupt pending file fails closed without
 creating a replacement snapshot or rotating backups.
 
 The CLI remains read-only. The desktop scheduler remains the owner of the
-retention policy and invokes the core operation only at a provider-runtime
-quiescent boundary.
+retention policy and invokes the core operation through the serialized
+application maintenance path. The former provider-runtime quiescence condition
+is superseded by
+[`2026-08-31-live-fleet-telemetry-maintenance.md`](./2026-08-31-live-fleet-telemetry-maintenance.md).
 
 ## Evidence
 

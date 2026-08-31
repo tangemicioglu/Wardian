@@ -72,10 +72,13 @@ timestamp-cursor providers, hourly rollups, activity intervals, latest gauges,
 and source cursors. Raw callback rows are no longer required for the main
 providers.
 
-Maintenance runs once per day from the desktop application and only after its
-managed provider runtimes are quiescent. A due check avoids creating a full
-backup when there is nothing to prune. The CLI has no destructive telemetry
-maintenance command.
+Maintenance runs once per day from the desktop application. The original
+provider-runtime quiescence condition was superseded by
+[`2026-08-31-live-fleet-telemetry-maintenance.md`](./2026-08-31-live-fleet-telemetry-maintenance.md):
+the application now serializes maintenance with live ingest rather than waiting
+for provider processes to disappear. A due check avoids creating a full backup
+when there is nothing to prune. The CLI has no destructive telemetry maintenance
+command.
 
 ## Recovery and disk behavior
 
