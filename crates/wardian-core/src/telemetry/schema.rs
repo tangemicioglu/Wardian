@@ -783,12 +783,23 @@ fn source_states_are_compatible(sources: &[MigrationSource]) -> bool {
     let Some(first) = sources.first() else {
         return true;
     };
+    let has_persisted_cursor_state = sources
+        .iter()
+        .any(|source| source.source_kind.is_some() || source.cursor_kind.is_some());
+    if sources.len() > 1
+        && has_persisted_cursor_state
+        && sources.iter().any(|source| source.fingerprint.is_none())
+    {
+        return false;
+    }
     sources.iter().all(|source| {
         source.source_kind == first.source_kind
             && source.cursor_kind == first.cursor_kind
             && source.parser_version == first.parser_version
             && match (&first.fingerprint, &source.fingerprint) {
                 (Some(left), Some(right)) => left == right,
+                // The guard above makes this the singleton-source case: it
+                // has no second cursor whose generation could be confused.
                 (None, None) => true,
                 // A missing fingerprint is not evidence that two cursors can
                 // safely be merged. Reset the alias group so the next ingest
@@ -2756,6 +2767,112 @@ mod tests {
             )
             .unwrap(),
             (0, 0, None)
+        );
+    }
+
+    #[test]
+    fn normalized_aliases_with_only_unknown_fingerprints_reset_source_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let physical = directory.path().join("rollout.jsonl");
+        std::fs::write(&physical, "session\n").unwrap();
+        let canonical = std::fs::canonicalize(&physical)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let physical_text = physical.to_string_lossy().to_string();
+        let alias_text = nested
+            .join("..")
+            .join("rollout.jsonl")
+            .to_string_lossy()
+            .to_string();
+
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        )
+        .unwrap();
+        for (path, cursor, carry, event_key, started_at) in [
+            (
+                physical_text,
+                100_i64,
+                "carry-a",
+                "event-100",
+                "2026-08-30T00:01:00Z",
+            ),
+            (
+                alias_text,
+                200_i64,
+                "carry-b",
+                "event-200",
+                "2026-08-30T00:02:00Z",
+            ),
+        ] {
+            let old_key = format!("codex|agent-a|{path}");
+            conn.execute(
+                "INSERT INTO telemetry_sources
+                    (source_key, source_path, session_id, provider, source_kind,
+                     cursor_kind, cursor_value, parser_version, carry_turn_id)
+                 VALUES (?1, ?2, 'agent-a', 'codex', 'jsonl', 'byte_offset',
+                         ?3, 1, ?4)",
+                params![old_key, path, cursor, carry],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, ended_at,
+                     input_tokens, source_key, source_path)
+                 VALUES (?1, 'agent-a', 'codex', 'turn-a',
+                         '2026-08-30T00:00:00Z', 7, ?2, ?3)",
+                params![event_key, old_key, path],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_activity
+                    (session_id, provider, started_at, ended_at, last_event_at,
+                     event_count, method, source_key)
+                 VALUES ('agent-a', 'codex', ?1, '2026-08-30T00:03:00Z',
+                         '2026-08-30T00:03:00Z', 1, 'measured', ?2)",
+                params![started_at, old_key],
+            )
+            .unwrap();
+        }
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turn_facts", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64, Option<String>, Option<String>), _, _>(
+                "SELECT cursor_value, parser_version, fingerprint, carry_turn_id
+                 FROM telemetry_sources WHERE source_key = ?1",
+                params![format!("codex|{canonical}")],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap(),
+            (0, 0, None, None)
         );
     }
 

@@ -248,9 +248,11 @@ fn maintain_if_due_at(
     } else if retention_prepared {
         adopt_legacy_baseline(&backup_directory)?
     } else if backup_pending {
-        // A valid pending file from an attempt whose backup association was
-        // interrupted is the recovery baseline for that same attempt.
-        verified_pending_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
+        // No deletion has begun before backup association. Refresh the
+        // stable pending snapshot so telemetry ingested since an interrupted
+        // association is included in the eventual recovery baseline.
+        remove_pending_backup(&backup_directory)?;
+        pending.clone()
     } else {
         // A pending file without an active attempt marker belongs to a
         // completed or abandoned attempt. Do not reuse a baseline that may
@@ -807,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn unprepared_retry_reuses_verified_pending_backup_across_retries() {
+    fn unprepared_retry_refreshes_pending_backup_across_retries() {
         let directory = tempdir().unwrap();
         let database = directory.path().join("state.db");
         let backup_directory = telemetry_backup_directory(directory.path());
@@ -823,29 +825,6 @@ mod tests {
             [&old],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
-             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
-                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
-            [],
-        )
-        .unwrap();
-        std::fs::create_dir_all(&backup_directory).unwrap();
-        conn.execute(
-            "VACUUM INTO ?1",
-            rusqlite::params![pending.to_string_lossy().as_ref()],
-        )
-        .unwrap();
-        {
-            let backup = rusqlite::Connection::open(&pending).unwrap();
-            backup
-                .execute(
-                    "INSERT INTO telemetry_meta(key, value)
-                     VALUES ('test_preassociation_baseline', '1')",
-                    [],
-                )
-                .unwrap();
-        }
         conn.execute_batch(
             "CREATE TRIGGER reject_backup_association
              BEFORE INSERT ON telemetry_meta
@@ -856,19 +835,8 @@ mod tests {
         )
         .unwrap();
 
-        // Model termination after the verified pending backup was created but
-        // before the durable backup association marker was committed.
-        conn.execute(
-            "INSERT INTO telemetry_meta(key, value)
-             VALUES ('telemetry_maintenance_backup_pending', 1)",
-            [],
-        )
-        .unwrap();
-        assert!(
-            !wardian_core::telemetry::retention_is_prepared(&conn).unwrap()
-                && wardian_core::telemetry::retention_backup_is_pending(&conn).unwrap()
-                && !wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap()
-        );
+        // The first run creates and verifies the pending backup, then fails
+        // before its association marker is committed.
         assert!(maintain_if_due_at(&conn, directory.path()).is_err());
         assert!(!wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
         assert!(wardian_core::telemetry::retention_backup_is_pending(&conn).unwrap());
@@ -877,8 +845,8 @@ mod tests {
             rusqlite::Connection::open(&pending)
                 .unwrap()
                 .query_row::<i64, _, _>(
-                    "SELECT value FROM telemetry_meta
-                     WHERE key = 'test_preassociation_baseline'",
+                    "SELECT count(*) FROM telemetry_turns
+                     WHERE event_key = 'old'",
                     [],
                     |row| row.get(0),
                 )
@@ -886,6 +854,17 @@ mod tests {
             1
         );
 
+        // Telemetry can arrive while the association is pending. The retry
+        // must refresh the baseline before any deletion begins.
+        let newer =
+            (Utc::now() - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('new', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&newer],
+        )
+        .unwrap();
         assert!(maintain_if_due_at(&conn, directory.path()).is_err());
         assert!(!wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
         assert!(wardian_core::telemetry::retention_backup_is_pending(&conn).unwrap());
@@ -895,13 +874,13 @@ mod tests {
             rusqlite::Connection::open(&pending)
                 .unwrap()
                 .query_row::<i64, _, _>(
-                    "SELECT value FROM telemetry_meta
-                     WHERE key = 'test_preassociation_baseline'",
+                    "SELECT count(*) FROM telemetry_turns
+                     WHERE event_key IN ('old', 'new')",
                     [],
                     |row| row.get(0),
                 )
                 .unwrap(),
-            1
+            2
         );
 
         conn.execute_batch("DROP TRIGGER reject_backup_association;")
@@ -916,18 +895,18 @@ mod tests {
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .find(|path| is_automatic_backup(path))
-            .expect("the reused baseline should be promoted after recovery");
+            .expect("the refreshed baseline should be promoted after recovery");
         let recovered_conn = rusqlite::Connection::open(recovered).unwrap();
         assert_eq!(
             recovered_conn
                 .query_row::<i64, _, _>(
-                    "SELECT value FROM telemetry_meta
-                     WHERE key = 'test_preassociation_baseline'",
+                    "SELECT count(*) FROM telemetry_turns
+                     WHERE event_key IN ('old', 'new')",
                     [],
                     |row| row.get(0),
                 )
                 .unwrap(),
-            1
+            2
         );
     }
 

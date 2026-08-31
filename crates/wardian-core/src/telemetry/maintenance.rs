@@ -252,9 +252,9 @@ pub fn retention_backup_is_prepared(conn: &Connection) -> rusqlite::Result<bool>
     .map(|value| value != 0)
 }
 
-/// Return whether a retention attempt has started backup creation but has not
-/// yet durably associated its verified baseline. This distinguishes a pending
-/// file left by an interrupted attempt from one left after a completed run.
+/// Return whether a retention attempt has started backup work but has not yet
+/// durably associated its verified baseline. This distinguishes a pending file
+/// left by an interrupted attempt from one left after a completed run.
 pub fn retention_backup_is_pending(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(
