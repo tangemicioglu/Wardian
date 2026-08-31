@@ -270,7 +270,7 @@ fn query_timestamp_from_log_record(provider: &str, value: &serde_json::Value) ->
     query_timestamp_from_value(timestamp)
 }
 
-fn latest_query_timestamp_from_log_suffix(
+pub(crate) fn latest_query_timestamp_from_log_suffix(
     path: &std::path::Path,
     provider: &str,
 ) -> Option<String> {

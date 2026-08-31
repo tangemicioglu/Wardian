@@ -727,6 +727,51 @@ SET dp0=%~dp0
     }
 
     #[test]
+    fn latest_query_timestamp_ignores_claude_interruptions_after_a_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("conversation.jsonl");
+        let prompt = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:00:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": { "role": "user", "content": "hello" },
+        });
+        let short_interruption = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:01:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": {
+                "role": "user",
+                "content": "[Request interrupted by user]",
+            },
+        });
+        let long_interruption = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:02:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": {
+                "role": "user",
+                "content": "[Request interrupted by user for tool use]",
+            },
+        });
+        std::fs::write(
+            &log,
+            [prompt, short_interruption, long_interruption]
+                .into_iter()
+                .map(|record| serde_json::to_string(&record).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::manager::telemetry::latest_query_timestamp_from_log_suffix(&log, "claude")
+                .as_deref(),
+            Some("2026-08-31T12:00:00.000Z")
+        );
+    }
+
+    #[test]
     fn classify_claude_interruption_records_as_provider_internal() {
         for content in [
             "[Request interrupted by user]",
