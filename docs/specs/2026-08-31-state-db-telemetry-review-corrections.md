@@ -30,9 +30,10 @@ returned creation or verification failure removes the temporary output. The
 application also removes abandoned temporary outputs left by a terminated
 process before retrying.
 
-The application first records that its verified backup is associated with the
-attempt. The scheduler uses one stable pending backup path for that attempt,
-so failures before the prepared cutoff are retried against the same baseline
+The core first records a durable pending-attempt marker before creating the
+backup. After verification, it records that the backup is associated with the
+attempt. The scheduler uses one stable pending backup path for that attempt, so
+failures before the prepared cutoff are retried against the same baseline
 instead of creating one full database copy per retry. Once the cutoff is
 prepared, the pending baseline is reused until the phase completes. A legacy
 prepared run first reuses a valid pending file left by an interrupted adoption;
@@ -40,8 +41,13 @@ otherwise the scheduler selects the newest verified automatic baseline that
 predates the prepared-cutoff marker and moves it into that pending slot before
 association. If no such baseline exists, it fails closed without rotating
 automatic backups. Only then is the pending file promoted and normal two-file
-rotation run. For a fresh attempt, an unassociated pending file is removed
-instead of reused because it may predate newly ingested telemetry.
+rotation run. If a process ends after verifying the pending file but before
+recording its durable association, the pending-attempt marker causes a valid
+pending file to be reused on the next attempt; invalid or missing pending files
+are replaced at the same stable path. If no pending-attempt marker exists, an
+unassociated pending file is removed before a fresh attempt so it cannot omit
+telemetry written after the prior attempt. This keeps pre-association retries
+bounded while retaining a verified recovery baseline.
 After association, a missing or corrupt pending file fails closed without
 creating a replacement snapshot or rotating backups.
 

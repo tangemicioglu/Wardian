@@ -92,8 +92,11 @@ run first reuses a valid pending file left by an interrupted adoption; otherwise
 it moves the newest verified automatic baseline that predates the prepared
 cutoff into the pending slot before association. If no such pre-preparation
 baseline exists, the scheduler fails closed without rotating the automatic
-backups. Failed temporary outputs and unassociated pending files are removed
-before a new attempt, so later telemetry is not recovered from an old baseline.
+backups. The core records a durable pending-attempt marker before backup
+creation. If the process stops after verification but before backup association,
+the scheduler reuses a valid pending file while that marker remains; invalid
+pending files and failed temporary outputs are removed before a new backup is
+created. This bounds retries while preserving the verified recovery baseline.
 Once a baseline is durably associated, a missing or corrupt pending file also
 fails closed; it is never replaced with a post-deletion snapshot. A pending
 baseline is promoted only after successful

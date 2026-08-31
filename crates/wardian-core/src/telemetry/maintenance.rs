@@ -25,6 +25,7 @@ const DELETE_BATCH_SIZE: i64 = 2_000;
 pub const MAX_RETENTION_DAYS: u32 = 90_000_000;
 const RETENTION_PREPARED_KEY: &str = "telemetry_maintenance_prepared_cutoff";
 const RETENTION_WINDOW_KEY: &str = "telemetry_maintenance_prepared_retain_days";
+const RETENTION_BACKUP_PENDING_KEY: &str = "telemetry_maintenance_backup_pending";
 const RETENTION_BACKUP_KEY: &str = "telemetry_maintenance_backup_prepared";
 const BACKUP_TEMP_SUFFIX: &str = ".tmp";
 
@@ -84,6 +85,7 @@ fn maintain_at_with_hook(
     let requested_cutoff = retention_cutoff(now, retain_days)?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     let _telemetry_lock = acquire_telemetry_lock(conn)?;
+    mark_backup_pending(conn)?;
     create_verified_backup(conn, backup_path)?;
     mark_backup_prepared(conn)?;
 
@@ -250,6 +252,30 @@ pub fn retention_backup_is_prepared(conn: &Connection) -> rusqlite::Result<bool>
     .map(|value| value != 0)
 }
 
+/// Return whether a retention attempt has started backup creation but has not
+/// yet durably associated its verified baseline. This distinguishes a pending
+/// file left by an interrupted attempt from one left after a completed run.
+pub fn retention_backup_is_pending(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM telemetry_meta
+             WHERE key = ?1 AND value = 1
+         )",
+        params![RETENTION_BACKUP_PENDING_KEY],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+}
+
+fn mark_backup_pending(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![RETENTION_BACKUP_PENDING_KEY],
+    )?;
+    Ok(())
+}
+
 fn mark_backup_prepared(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO telemetry_meta (key, value) VALUES (?1, 1)
@@ -379,6 +405,10 @@ fn clear_retention_marker(conn: &Connection, cutoff: &str) -> rusqlite::Result<(
     tx.execute(
         "DELETE FROM telemetry_meta WHERE key = ?1 AND value = 1",
         params![RETENTION_BACKUP_KEY],
+    )?;
+    tx.execute(
+        "DELETE FROM telemetry_meta WHERE key = ?1 AND value = 1",
+        params![RETENTION_BACKUP_PENDING_KEY],
     )?;
     tx.commit()
 }
