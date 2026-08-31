@@ -6,7 +6,7 @@ use wardian_core::models::chat::{
 };
 
 use crate::providers::claude::{
-    classify_claude_user_event, claude_context_causal_ref, claude_context_purpose,
+    classify_claude_user_event, claude_context_purpose, claude_provider_causal_ref,
     ClaudeUserEventKind,
 };
 
@@ -623,6 +623,9 @@ fn normalize_claude(
                     turn_id_from(message).or_else(|| turn_id_from(parsed)),
                     msg_type,
                 )?;
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
+                    set_metadata_string(&mut event.metadata, "causal_ref", &causal_ref);
+                }
                 set_metadata_string(
                     &mut event.metadata,
                     "context_observation",
@@ -638,7 +641,7 @@ fn normalize_claude(
                     "input_purpose": claude_context_purpose(parsed),
                     "context_observation": "provider_native",
                 });
-                if let Some(causal_ref) = claude_context_causal_ref(parsed) {
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
                     set_metadata_string(&mut metadata, "causal_ref", &causal_ref);
                 }
                 message_event_with_metadata(
@@ -654,12 +657,15 @@ fn normalize_claude(
             }
             ClaudeUserEventKind::ProviderInternal => {
                 let message = parsed.get("message").unwrap_or(parsed);
-                let metadata = json!({
+                let mut metadata = json!({
                     "raw_type": msg_type,
                     "input_origin": "provider_internal",
                     "input_purpose": "internal",
                     "context_observation": "provider_native",
                 });
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
+                    set_metadata_string(&mut metadata, "causal_ref", &causal_ref);
+                }
                 message_event_with_metadata(
                     session_id,
                     provider,
@@ -2536,7 +2542,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_parent_uuid_query_does_not_create_normalized_causal_ref() {
+    fn claude_parent_uuid_query_retains_normalized_causal_ref() {
         let event = one(
             "claude",
             r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"Inspect the archive."}}"#,
@@ -2544,7 +2550,7 @@ mod tests {
 
         assert_eq!(event.metadata["input_origin"], "human_input");
         assert_eq!(event.metadata["input_purpose"], "request");
-        assert!(event.metadata["causal_ref"].is_null());
+        assert_eq!(event.metadata["causal_ref"], "provider:uuid:assistant-1");
     }
 
     #[test]
@@ -2561,6 +2567,7 @@ mod tests {
                 && event.role == Some(AgentChatRole::User)
                 && event.metadata["input_origin"] == "provider_internal"
                 && event.metadata["input_purpose"] == "internal"
+                && event.metadata["causal_ref"] == "provider:uuid:assistant-1"
         }));
         assert_eq!(
             events[0].text.as_deref(),
