@@ -281,7 +281,7 @@ fn run_summary_from_state(
     })
 }
 
-fn event_log_timestamp_bounds(dir: &Path) -> (Option<String>, Option<String>) {
+pub(crate) fn event_log_timestamp_bounds(dir: &Path) -> (Option<String>, Option<String>) {
     let path = dir.join(AUTOMATION_EVENTS_FILE);
     if !path.exists() {
         return (None, None);

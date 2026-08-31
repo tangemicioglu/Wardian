@@ -5,10 +5,10 @@ import { useAutomationsView } from './useAutomationsView';
 describe('useAutomationsView', () => {
   beforeEach(() => useAutomationsView.getState().reset());
 
-  it('defaults to edit mode with nothing selected', () => {
+  it('defaults to monitor mode with nothing selected', () => {
     const s = useAutomationsView.getState();
 
-    expect(s.mode).toBe('edit');
+    expect(s.mode).toBe('monitor');
     expect(s.blueprintPath).toBeNull();
     expect(s.selectedRunId).toBeNull();
     expect(s.observedBlueprintId).toBeNull();

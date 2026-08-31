@@ -299,3 +299,47 @@ pub struct RemoteWebSocketTicketResponse {
     pub ticket: String,
     pub expires_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteAutomationMonitorRun {
+    pub run_id: String,
+    pub blueprint_id: String,
+    pub automation_name: String,
+    pub schedule_id: Option<String>,
+    pub status: String,
+    pub node_count: usize,
+    pub completed_node_count: Option<usize>,
+    pub failure: Option<String>,
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAutomationMonitorSchedule {
+    pub id: String,
+    pub blueprint_id: String,
+    pub automation_name: String,
+    pub schedule: wardian_core::models::ScheduleDefinition,
+    pub next_run_epoch_ms: Option<u64>,
+    pub is_paused: bool,
+    pub last_run_status: Option<String>,
+    pub last_run_error: Option<String>,
+    pub last_run_epoch_ms: Option<u64>,
+    pub target_labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAutomationMonitorSnapshot {
+    pub schema_version: u8,
+    pub generated_at: String,
+    pub active_runs: Vec<RemoteAutomationMonitorRun>,
+    pub active_runs_truncated: bool,
+    pub active_runs_next_offset: Option<usize>,
+    pub recent_runs: Vec<RemoteAutomationMonitorRun>,
+    pub recent_runs_truncated: bool,
+    pub recent_runs_next_offset: Option<usize>,
+    pub schedules: Vec<RemoteAutomationMonitorSchedule>,
+    pub schedules_truncated: bool,
+    pub schedules_next_offset: Option<usize>,
+}

@@ -326,6 +326,21 @@ remaining sized for a phone screen.
 
 ![Mobile PWA Inbox showing a recent agent completion summary](../assets/screenshots/remote-control/mobile-pwa-queue-summary.png)
 
+The mobile **Automations** tab is a read-only operational tracker. **Overview**
+opens first and orders activity by urgency: items needing attention, runs in
+progress, upcoming schedules, and recent outcomes. Use the large summary
+shortcuts or the **Attention**, **Soon**, and **History** filters to narrow the
+list. Tap any card for exact timing, recurrence, assignment labels, and bounded
+failure detail.
+
+Wardian keeps the last successful automation snapshot visible if a refresh
+fails and labels it as stale. Retry when the desktop becomes reachable. If the
+tab says automation monitoring is unavailable, update the paired desktop app;
+older desktop builds do not expose the bounded monitor endpoint.
+
+The tracker does not start, stop, pause, resume, or retry automation work. Use
+the desktop Automations workbench for those controls.
+
 The service worker caches only the remote app shell and static assets. It does
 not queue agent, automation, PTY, or revocation actions while offline. If the
 desktop is unreachable, reconnect before sending commands.

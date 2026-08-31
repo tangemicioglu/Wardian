@@ -169,7 +169,7 @@ describe('AutomationMonitor', () => {
     expect(screen.getByTestId('automation-monitor-stats')).toHaveTextContent('2 Scheduled');
     expect(screen.getByTestId('automation-monitor-stats')).not.toHaveTextContent('due soon');
     expect(screen.getByRole('heading', { name: /activity/i })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: /needs attention/i })).toBeNull();
+    expect(screen.getByRole('heading', { name: /needs attention/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /running now/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^scheduled$/i })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /^history$/i })).toBeNull();
@@ -212,8 +212,8 @@ describe('AutomationMonitor', () => {
     render(<AutomationMonitor onOpenRun={vi.fn()} onEditSchedule={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: /needs attention/i }));
-    expect(screen.queryByText('Audit')).toBeNull();
-    expect(screen.queryByText('crashed')).toBeNull();
+    expect(screen.getByText('Audit')).toBeInTheDocument();
+    expect(screen.getAllByText('crashed')).not.toHaveLength(0);
     expect(screen.queryByText('Routine Check')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /running/i }));
@@ -1032,7 +1032,7 @@ describe('AutomationMonitor', () => {
     });
   });
 
-  it('keeps completed failed runs out of the needs-attention activity section', () => {
+  it('keeps unsuperseded failed runs in the needs-attention activity section', () => {
     const model = buildMonitorModel([
       {
         run_id: 'run-failed',
@@ -1055,7 +1055,7 @@ describe('AutomationMonitor', () => {
 
     expect(model.stats.failedCount).toBe(1);
     expect(model.activities.find((activity) => activity.blueprintId === 'audit')).toMatchObject({
-      section: 'history',
+      section: 'attention',
       statusLabel: 'Failed',
       tone: 'error',
       issue: 'Provider crashed',
@@ -1066,7 +1066,7 @@ describe('AutomationMonitor', () => {
     });
   });
 
-  it('keeps failed scheduled runs in the schedule flow instead of needs attention', () => {
+  it('moves failed scheduled launches into needs attention', () => {
     const model = buildMonitorModel([], [
       {
         id: 'schedule-failed',
@@ -1084,9 +1084,9 @@ describe('AutomationMonitor', () => {
 
     expect(model.stats.failedCount).toBe(1);
     expect(model.activities[0]).toMatchObject({
-      section: 'scheduled',
-      statusLabel: 'Scheduled',
-      tone: 'accent',
+      section: 'attention',
+      statusLabel: 'Failed',
+      tone: 'error',
       issue: 'Provider crashed',
     });
   });
@@ -1117,7 +1117,7 @@ describe('AutomationMonitor', () => {
 
     expect(model.stats.failedCount).toBe(1);
     expect(model.activities[0]).toMatchObject({
-      section: 'history',
+      section: 'attention',
       statusLabel: 'Failed',
       tone: 'error',
       issue: 'parse failed: io error: The system cannot find the file specified.',

@@ -12,6 +12,9 @@ const RemoteAgentDetailView = lazy(() =>
 const RemoteInboxView = lazy(() =>
   import("./RemoteInboxView").then((module) => ({ default: module.RemoteInboxView }))
 );
+const RemoteAutomationsView = lazy(() =>
+  import("./RemoteAutomationsView").then((module) => ({ default: module.RemoteAutomationsView }))
+);
 const RemotePairingView = lazy(() =>
   import("./RemotePairingView").then((module) => ({ default: module.RemotePairingView }))
 );
@@ -200,6 +203,10 @@ export const RemoteMobileApp: React.FC = () => {
     <main className="flex h-dvh flex-col overflow-hidden bg-wardian-bg text-primary" data-testid="remote-mobile-app">
       {activeRemoteTab === "watchlist" ? (
         <RemoteWatchlistView onOpenSettings={openSettings} />
+      ) : activeRemoteTab === "automations" ? (
+        <Suspense fallback={<RemoteSurfaceFallback />}>
+          <RemoteAutomationsView />
+        </Suspense>
       ) : activeRemoteTab === "queue" ? (
         <Suspense fallback={<RemoteSurfaceFallback />}>
           <RemoteInboxView />

@@ -267,6 +267,49 @@ export interface RemoteAutomationSummary {
   node_count: number;
 }
 
+export type RemoteAutomationRunStatus = "running" | "awaiting_approval" | "completed" | "failed";
+
+export interface RemoteAutomationMonitorRun {
+  run_id: string;
+  blueprint_id: string;
+  automation_name: string;
+  schedule_id: string | null;
+  status: RemoteAutomationRunStatus;
+  node_count: number;
+  completed_node_count: number | null;
+  failure: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface RemoteAutomationMonitorSchedule {
+  id: string;
+  blueprint_id: string;
+  automation_name: string;
+  schedule: import("./automation").ScheduleDefinition;
+  next_run_epoch_ms: number | null;
+  is_paused: boolean;
+  last_run_status: RemoteAutomationRunStatus | null;
+  last_run_error: string | null;
+  last_run_epoch_ms: number | null;
+  target_labels: string[];
+}
+
+export interface RemoteAutomationMonitorSnapshot {
+  schema_version: 1;
+  generated_at: string;
+  active_runs: RemoteAutomationMonitorRun[];
+  active_runs_truncated: boolean;
+  active_runs_next_offset: number | null;
+  recent_runs: RemoteAutomationMonitorRun[];
+  recent_runs_truncated: boolean;
+  recent_runs_next_offset: number | null;
+  schedules: RemoteAutomationMonitorSchedule[];
+  schedules_truncated: boolean;
+  schedules_next_offset: number | null;
+}
+
 export interface RemoteWatchlistResponse {
   watchlists: Watchlist[];
   teams: AgentTeam[];

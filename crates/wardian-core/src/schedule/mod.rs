@@ -402,18 +402,28 @@ fn default_schema() -> u8 {
     1
 }
 
+/// Read all schedules while preserving storage and parse failures for callers
+/// that cannot safely treat unavailable authoritative state as empty.
+pub fn try_load_schedules() -> Result<Vec<AutomationSchedule>, String> {
+    let Some(path) = crate::paths::schedules_path() else {
+        return Err("no wardian home".to_string());
+    };
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    serde_json::from_str::<ScheduleFile>(&content)
+        .map(|file| file.schedules)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))
+}
+
 /// Read all schedules. Missing or malformed file -> empty (logged to stderr), never panics.
 pub fn load_schedules() -> Vec<AutomationSchedule> {
-    let Some(path) = crate::paths::schedules_path() else {
-        return Vec::new();
-    };
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-    match serde_json::from_str::<ScheduleFile>(&content) {
-        Ok(file) => file.schedules,
-        Err(err) => {
-            eprintln!("[wardian-core] malformed schedules.json: {err}");
+    match try_load_schedules() {
+        Ok(schedules) => schedules,
+        Err(error) => {
+            eprintln!("[wardian-core] {error}");
             Vec::new()
         }
     }
@@ -658,6 +668,25 @@ mod tests {
         let _guard = crate::tests::env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("WARDIAN_HOME", dir.path());
+        assert!(load_schedules().is_empty());
+        std::env::remove_var("WARDIAN_HOME");
+    }
+
+    #[test]
+    fn strict_schedule_load_preserves_malformed_storage_failure() {
+        let _guard = crate::tests::env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WARDIAN_HOME", dir.path());
+        std::fs::create_dir_all(dir.path().join("library")).unwrap();
+        std::fs::write(
+            dir.path().join("library").join("schedules.json"),
+            "not json",
+        )
+        .unwrap();
+
+        assert!(try_load_schedules()
+            .unwrap_err()
+            .contains("failed to parse"));
         assert!(load_schedules().is_empty());
         std::env::remove_var("WARDIAN_HOME");
     }
