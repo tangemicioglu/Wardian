@@ -51,7 +51,8 @@ const normalizeHeaders = (headers?: HeadersInit): Record<string, string> => {
   return { ...headers };
 };
 
-const isMutatingRequest = (method: string) => method !== "GET" && method !== "HEAD";
+const isReadOnlyRequest = (method: string) => method === "GET" || method === "HEAD";
+const isMutatingRequest = (method: string) => !isReadOnlyRequest(method);
 
 async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -61,7 +62,9 @@ async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...(csrfNonce && isMutatingRequest(method) ? { [REMOTE_CSRF_HEADER_NAME]: csrfNonce } : {}),
   };
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REMOTE_REQUEST_TIMEOUT_MS);
+  const timeout = isReadOnlyRequest(method)
+    ? setTimeout(() => controller.abort(), REMOTE_REQUEST_TIMEOUT_MS)
+    : undefined;
   const requestSignal = init?.signal;
   const abortRequest = () => controller.abort(requestSignal?.reason);
   if (requestSignal) {
@@ -99,7 +102,7 @@ async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return response.json() as Promise<T>;
   } finally {
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
     requestSignal?.removeEventListener("abort", abortRequest);
   }
 }

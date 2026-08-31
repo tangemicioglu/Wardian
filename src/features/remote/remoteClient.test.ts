@@ -91,4 +91,32 @@ describe("remoteClient error propagation", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not abort a mutating request at the read timeout boundary", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFetch: ((response: Response) => void) | undefined;
+      const fetchMock = vi.fn((_path: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          resolveFetch = resolve;
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+          }, { once: true });
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const request = remoteClient.sendPrompt("agent-1", "hello");
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      const signal = vi.mocked(fetchMock).mock.calls[0]?.[1]?.signal;
+      expect(signal?.aborted).toBe(false);
+
+      resolveFetch?.(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await expect(request).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

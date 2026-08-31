@@ -8,7 +8,7 @@ function requestKey(request: Request | string): string {
   return typeof request === "string" ? new URL(request, "https://wardian.tailnet.ts.net").href : request.url;
 }
 
-function createCaches() {
+function createCaches(shouldFailAdd: (url: string) => boolean = () => false) {
   const stores = new Map<string, Map<string, Response>>();
   return {
     open: vi.fn(async (name: string) => {
@@ -19,6 +19,7 @@ function createCaches() {
       }
       return {
         add: vi.fn(async (url: string) => {
+          if (shouldFailAdd(url)) throw new Error(`failed to cache ${url}`);
           store.set(requestKey(url), new Response(`cached:${url}`));
         }),
         addAll: vi.fn(async (urls: string[]) => {
@@ -66,7 +67,7 @@ function loadRemoteServiceWorker(
     Response,
   );
 
-  return { listeners, caches };
+  return { listeners, caches, selfScope };
 }
 
 async function dispatchFetch(listener: (event: unknown) => void, request: Request): Promise<Response | undefined> {
@@ -105,6 +106,26 @@ describe("remote service worker", () => {
     await activation;
 
     expect(await caches.keys()).toEqual([]);
+  });
+
+  it("keeps the previous shell when the replacement shell cannot be cached", async () => {
+    const caches = createCaches((url) => url === "/remote");
+    const oldCache = await caches.open("wardian-remote-app-shell-v1");
+    await oldCache.put("/remote", new Response("old-shell"));
+    const { listeners, selfScope } = loadRemoteServiceWorker(
+      vi.fn() as unknown as typeof fetch,
+      readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8")
+        .replace(/__WARDIAN_BUILD_VERSION__/g, "build-2"),
+      caches,
+    );
+    const install = listeners.get("install")?.[0];
+    expect(install).toBeDefined();
+    let installation: Promise<unknown> | undefined;
+    install!({ waitUntil: (promise: Promise<unknown>) => { installation = promise; } } as unknown);
+
+    await expect(installation).rejects.toThrow("failed to cache /remote");
+    expect(selfScope.skipWaiting).not.toHaveBeenCalled();
+    expect(await (await caches.open("wardian-remote-app-shell-v1")).match("/remote")).toBeDefined();
   });
 
   it("falls back to the cached shell when navigation fetch hangs", async () => {

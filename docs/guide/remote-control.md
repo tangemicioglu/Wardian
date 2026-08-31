@@ -211,6 +211,12 @@ available yet, it uses the atomic saved agent configuration and marks active
 entries as `Restoring`; the live status stream replaces those provisional
 statuses as soon as the runtime is ready.
 
+The fifteen-second startup request bound applies to read-only data such as the
+session and roster. Remote prompts and lifecycle, Inbox, and automation actions
+can legitimately take longer while the desktop or provider completes the
+operation, so the client does not abandon those mutations at the read timeout
+boundary.
+
 ## Troubleshooting Setup
 
 - **The phone cannot open `/remote`:** confirm Tailscale is connected on both
