@@ -154,6 +154,18 @@ fn remove_pending_backup(directory: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn adopt_legacy_baseline(directory: &Path) -> io::Result<PathBuf> {
+    let pending = pending_backup_path(directory);
+    // This branch is only for databases prepared before the pending-baseline
+    // protocol existed. Any pending file is therefore unassociated and must
+    // not be allowed to replace the legacy recovery snapshot.
+    remove_pending_backup(directory)?;
+    if let Some(legacy_baseline) = newest_verified_backup(directory)? {
+        std::fs::rename(legacy_baseline, &pending)?;
+    }
+    Ok(pending)
+}
+
 fn agent_runtime_is_active(agent: &ActiveAgent) -> bool {
     agent.runtime_generation.is_some()
         || agent.process_id.is_some()
@@ -196,7 +208,7 @@ fn maintain_if_due_at(
     let backup_path = if backup_prepared {
         verified_pending_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
     } else if retention_prepared {
-        newest_verified_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
+        adopt_legacy_baseline(&backup_directory)?
     } else {
         // A pending file without its durable association belongs to a
         // completed or abandoned attempt. Do not reuse a baseline that may
@@ -420,8 +432,104 @@ mod tests {
             .expect("prepared retention should resume");
 
         assert_eq!(report.turns_deleted, 1);
-        assert!(baseline.exists());
+        assert!(!baseline.exists());
+        assert!(!pending_backup_path(&backup_directory).exists());
         assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn legacy_prepared_baseline_stays_pinned_after_post_association_failure() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let baseline = backup_directory.join("state.db.telemetry-100-1.backup");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let now = Utc::now();
+        let old = (now - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        let cutoff =
+            wardian_core::telemetry::retention_cutoff(now, TELEMETRY_RAW_RETENTION_DAYS).unwrap();
+        let cutoff_epoch = chrono::DateTime::parse_from_rfc3339(&cutoff)
+            .unwrap()
+            .timestamp();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_limits(provider, limit_id, observed_at)
+             VALUES ('codex', 'limit-a', '2026-01-01T00:00:00.000Z'),
+                    ('codex', 'limit-a', '2026-01-01T00:01:00.000Z')",
+            [],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&backup_directory).unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![baseline.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_meta(key, value) VALUES ('telemetry_maintenance_prepared_cutoff', ?1),
+                ('telemetry_maintenance_prepared_retain_days', ?2)",
+            rusqlite::params![cutoff_epoch, TELEMETRY_RAW_RETENTION_DAYS],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_limit_cleanup
+             BEFORE DELETE ON telemetry_limits
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected post-association failure');
+             END;",
+        )
+        .unwrap();
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        let pending = pending_backup_path(&backup_directory);
+        let pending_size = std::fs::metadata(&pending).unwrap().len();
+        assert!(!baseline.exists());
+        assert_eq!(
+            conn.query_row::<i64, _, _>(
+                "SELECT count(*) FROM telemetry_turns WHERE event_key = 'old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+            0
+        );
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        assert_eq!(std::fs::metadata(&pending).unwrap().len(), pending_size);
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+
+        conn.execute_batch("DROP TRIGGER reject_limit_cleanup;")
+            .unwrap();
+        let report = maintain_if_due_at(&conn, directory.path())
+            .unwrap()
+            .expect("the prepared retention should complete after the injected failure is removed");
+        assert_eq!(report.limits_deleted, 1);
+        assert!(!pending.exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+        let recovered = std::fs::read_dir(&backup_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| is_automatic_backup(path))
+            .expect("the pinned legacy baseline should be promoted after recovery");
+        let recovered_conn = rusqlite::Connection::open(recovered).unwrap();
+        assert_eq!(
+            recovered_conn
+                .query_row::<i64, _, _>(
+                    "SELECT count(*) FROM telemetry_turns WHERE event_key = 'old'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -458,7 +566,9 @@ mod tests {
         assert_eq!(report.turns_deleted, 0);
         assert!(!wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
         assert!(!wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
-        assert!(baseline.exists());
+        assert!(!baseline.exists());
+        assert!(!pending_backup_path(&backup_directory).exists());
+        assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
     }
 
     #[test]

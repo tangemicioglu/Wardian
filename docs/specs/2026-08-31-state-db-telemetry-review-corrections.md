@@ -34,8 +34,9 @@ The application first records that its verified backup is associated with the
 attempt. The scheduler uses one stable pending backup path for that attempt,
 so failures before the prepared cutoff are retried against the same baseline
 instead of creating one full database copy per retry. Once the cutoff is
-prepared, the pending baseline (or a legacy verified automatic backup) is
-reused until the phase completes; only then is a pending file promoted and
+prepared, the pending baseline is reused until the phase completes. A legacy
+verified automatic baseline is moved into that pending slot before association
+so it follows the same retry path; only then is the pending file promoted and
 normal two-file rotation run. An unassociated pending file is never reused for
 a later attempt because it may predate newly ingested telemetry.
 
