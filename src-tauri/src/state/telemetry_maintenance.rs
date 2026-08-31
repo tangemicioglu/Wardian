@@ -20,6 +20,7 @@ pub const TELEMETRY_RAW_RETENTION_DAYS: u32 = 90;
 const AUTOMATIC_BACKUP_PREFIX: &str = "state.db.telemetry-";
 const AUTOMATIC_BACKUP_SUFFIX: &str = ".backup";
 const AUTOMATIC_BACKUP_TEMP_SUFFIX: &str = ".tmp";
+const PENDING_BACKUP_NAME: &str = "state.db.telemetry-pending.backup";
 const AUTOMATIC_BACKUP_COUNT: usize = 2;
 const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -37,11 +38,17 @@ fn new_backup_path(directory: &Path) -> PathBuf {
     ))
 }
 
+fn pending_backup_path(directory: &Path) -> PathBuf {
+    directory.join(PENDING_BACKUP_NAME)
+}
+
 fn is_automatic_backup(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
-            name.starts_with(AUTOMATIC_BACKUP_PREFIX) && name.ends_with(AUTOMATIC_BACKUP_SUFFIX)
+            name.starts_with(AUTOMATIC_BACKUP_PREFIX)
+                && name.ends_with(AUTOMATIC_BACKUP_SUFFIX)
+                && name != PENDING_BACKUP_NAME
         })
 }
 
@@ -117,6 +124,36 @@ fn newest_verified_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
     Ok(None)
 }
 
+fn verified_pending_backup(directory: &Path) -> io::Result<Option<PathBuf>> {
+    let path = pending_backup_path(directory);
+    if !path.exists() {
+        return Ok(None);
+    }
+    if wardian_core::telemetry::verify_backup(&path).is_ok() {
+        return Ok(Some(path));
+    }
+    // The pending file is scheduler-owned. It cannot be a recovery baseline
+    // if it no longer passes SQLite integrity checks, so allow the next run
+    // to create a fresh one at the same stable path.
+    std::fs::remove_file(path)?;
+    Ok(None)
+}
+
+fn promote_pending_backup(directory: &Path) -> io::Result<()> {
+    let Some(pending) = verified_pending_backup(directory)? else {
+        return Ok(());
+    };
+    std::fs::rename(pending, new_backup_path(directory))
+}
+
+fn remove_pending_backup(directory: &Path) -> io::Result<()> {
+    let path = pending_backup_path(directory);
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
 fn agent_runtime_is_active(agent: &ActiveAgent) -> bool {
     agent.runtime_generation.is_some()
         || agent.process_id.is_some()
@@ -134,21 +171,49 @@ fn maintain_if_due_at(
     home: &Path,
 ) -> Result<Option<MaintenanceReport>, Box<dyn std::error::Error>> {
     let backup_directory = telemetry_backup_directory(home);
-    if !wardian_core::telemetry::has_expired_raw_telemetry(conn, TELEMETRY_RAW_RETENTION_DAYS)? {
+    // A prepared marker is the durable indication that raw rows may already
+    // have been deleted. Resume it even when the final expired row is gone;
+    // otherwise a checkpoint/vacuum failure after deletion would strand the
+    // marker and leave the verified recovery baseline unrotated forever.
+    let retention_prepared = wardian_core::telemetry::retention_is_prepared(conn)?;
+    let backup_prepared = wardian_core::telemetry::retention_backup_is_prepared(conn)?;
+    let has_expired =
+        wardian_core::telemetry::has_expired_raw_telemetry(conn, TELEMETRY_RAW_RETENTION_DAYS)?;
+    if !retention_prepared && !backup_prepared && !has_expired {
+        if backup_directory.exists() {
+            // A crash after the core operation cleared its marker but before
+            // backup rotation completed leaves one stable pending baseline.
+            // Promote it now that there is no active retention phase.
+            promote_pending_backup(&backup_directory)?;
+            prune_automatic_backups(&backup_directory)?;
+        }
         return Ok(None);
     }
 
     std::fs::create_dir_all(&backup_directory)?;
     remove_incomplete_backup_temps(&backup_directory)?;
-    let backup_path = if wardian_core::telemetry::retention_is_prepared(conn)? {
-        newest_verified_backup(&backup_directory)?
-            .unwrap_or_else(|| new_backup_path(&backup_directory))
+    let pending = pending_backup_path(&backup_directory);
+    let backup_path = if backup_prepared {
+        verified_pending_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
+    } else if retention_prepared {
+        newest_verified_backup(&backup_directory)?.unwrap_or_else(|| pending.clone())
     } else {
-        new_backup_path(&backup_directory)
+        // A pending file without its durable association belongs to a
+        // completed or abandoned attempt. Do not reuse a baseline that may
+        // predate telemetry written since that attempt.
+        remove_pending_backup(&backup_directory)?;
+        pending.clone()
     };
     let report =
         wardian_core::telemetry::maintain(conn, TELEMETRY_RAW_RETENTION_DAYS, &backup_path, true)?;
 
+    if backup_path == pending {
+        if let Err(error) = promote_pending_backup(&backup_directory) {
+            crate::utils::logging::log_debug(&format!(
+                "[Wardian] Telemetry retention pending backup promotion failed after maintenance: {error}"
+            ));
+        }
+    }
     if let Err(error) = prune_automatic_backups(&backup_directory) {
         crate::utils::logging::log_debug(&format!(
             "[Wardian] Telemetry retention backup rotation failed after maintenance: {error}"
@@ -224,6 +289,7 @@ mod tests {
         assert!(!is_automatic_backup(Path::new(
             "state.db.telemetry-1756555200000-42.tmp"
         )));
+        assert!(!is_automatic_backup(Path::new(PENDING_BACKUP_NAME)));
     }
 
     #[test]
@@ -356,5 +422,87 @@ mod tests {
         assert_eq!(report.turns_deleted, 1);
         assert!(baseline.exists());
         assert_eq!(std::fs::read_dir(&backup_directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn due_check_resumes_prepared_retention_without_expired_rows() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let baseline = backup_directory.join("state.db.telemetry-100-1.backup");
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let now = Utc::now();
+        let cutoff =
+            wardian_core::telemetry::retention_cutoff(now, TELEMETRY_RAW_RETENTION_DAYS).unwrap();
+        let cutoff_epoch = chrono::DateTime::parse_from_rfc3339(&cutoff)
+            .unwrap()
+            .timestamp();
+        std::fs::create_dir_all(&backup_directory).unwrap();
+        conn.execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![baseline.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_meta(key, value) VALUES ('telemetry_maintenance_prepared_cutoff', ?1),
+                ('telemetry_maintenance_prepared_retain_days', ?2)",
+            rusqlite::params![cutoff_epoch, TELEMETRY_RAW_RETENTION_DAYS],
+        )
+        .unwrap();
+
+        let report = maintain_if_due_at(&conn, directory.path())
+            .unwrap()
+            .expect("prepared retention must resume even after its final deletion");
+
+        assert_eq!(report.turns_deleted, 0);
+        assert!(!wardian_core::telemetry::retention_is_prepared(&conn).unwrap());
+        assert!(!wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
+        assert!(baseline.exists());
+    }
+
+    #[test]
+    fn failed_preparation_reuses_one_pending_backup_across_retries() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("state.db");
+        let backup_directory = telemetry_backup_directory(directory.path());
+        let pending = pending_backup_path(&backup_directory);
+        let conn = rusqlite::Connection::open(&database).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        let old =
+            (Utc::now() - Duration::days(TELEMETRY_RAW_RETENTION_DAYS as i64 + 1)).to_rfc3339();
+        conn.execute(
+            "INSERT INTO telemetry_turns
+                (event_key, session_id, provider, ended_at, source_key, source_path)
+             VALUES ('old', 'session-a', 'codex', ?1, 'source-a', 'log')",
+            [&old],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_rollup_prepare
+             BEFORE INSERT ON telemetry_rollup_hourly
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected preparation failure');
+             END;",
+        )
+        .unwrap();
+
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+        assert!(maintain_if_due_at(&conn, directory.path()).is_err());
+
+        assert!(pending.exists());
+        assert!(wardian_core::telemetry::retention_backup_is_prepared(&conn).unwrap());
+        assert!(!PathBuf::from(format!(
+            "{}{}",
+            pending.to_string_lossy(),
+            AUTOMATIC_BACKUP_TEMP_SUFFIX
+        ))
+        .exists());
+        let files = std::fs::read_dir(&backup_directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .count();
+        assert_eq!(files, 1);
     }
 }

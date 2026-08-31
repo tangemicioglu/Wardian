@@ -789,7 +789,11 @@ fn source_states_are_compatible(sources: &[MigrationSource]) -> bool {
             && source.parser_version == first.parser_version
             && match (&first.fingerprint, &source.fingerprint) {
                 (Some(left), Some(right)) => left == right,
-                _ => true,
+                (None, None) => true,
+                // A missing fingerprint is not evidence that two cursors can
+                // safely be merged. Reset the alias group so the next ingest
+                // establishes one source state from the file itself.
+                _ => false,
             }
     })
 }
@@ -2661,6 +2665,97 @@ mod tests {
             )
             .unwrap(),
             SOURCE_KEY_FORMAT_VERSION
+        );
+    }
+
+    #[test]
+    fn normalized_aliases_with_incomplete_fingerprints_reset_source_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let physical = directory.path().join("rollout.jsonl");
+        std::fs::write(&physical, "session\n").unwrap();
+        let canonical = std::fs::canonicalize(&physical)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let physical_text = physical.to_string_lossy().to_string();
+        let alias_text = nested
+            .join("..")
+            .join("rollout.jsonl")
+            .to_string_lossy()
+            .to_string();
+
+        let conn = Connection::open_in_memory().unwrap();
+        run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM telemetry_meta WHERE key = ?1",
+            params![SOURCE_KEY_FORMAT_VERSION_KEY],
+        )
+        .unwrap();
+        for (index, (path, cursor, fingerprint)) in [
+            (physical_text, 100_i64, Some("known-fingerprint")),
+            (alias_text, 200_i64, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let old_key = format!("codex|agent-a|{path}");
+            let started_at = format!("2026-08-30T00:0{}:00Z", index + 1);
+            let ended_at = format!("2026-08-30T00:1{}:00Z", index + 1);
+            conn.execute(
+                "INSERT INTO telemetry_sources
+                    (source_key, source_path, session_id, provider, source_kind,
+                     cursor_kind, cursor_value, parser_version, fingerprint)
+                 VALUES (?1, ?2, 'agent-a', 'codex', 'jsonl', 'byte_offset',
+                         ?3, 1, ?4)",
+                params![old_key, path, cursor, fingerprint],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_turns
+                    (event_key, session_id, provider, turn_id, ended_at,
+                     input_tokens, source_key, source_path)
+                 VALUES (?1, 'agent-a', 'codex', 'turn-a',
+                         '2026-08-30T00:00:00Z', 7, ?2, ?3)",
+                params![format!("event-{cursor}"), old_key, path],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO telemetry_activity
+                    (session_id, provider, started_at, ended_at, last_event_at,
+                     event_count, method, source_key)
+                 VALUES ('agent-a', 'codex', ?1, ?2, ?2, 1, 'measured', ?3)",
+                params![started_at, ended_at, old_key],
+            )
+            .unwrap();
+        }
+
+        run_telemetry_migrations(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_turn_facts", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM telemetry_activity", [], |row| {
+                row.get(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row::<(i64, i64, Option<String>), _, _>(
+                "SELECT cursor_value, parser_version, fingerprint
+                 FROM telemetry_sources WHERE source_key = ?1",
+                params![format!("codex|{canonical}")],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap(),
+            (0, 0, None)
         );
     }
 
