@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -9,11 +11,29 @@ import { viteWatchIgnored } from "./src/config/viteWatchIgnored";
 const host = process.env.TAURI_DEV_HOST;
 const workspaceRoot = process.cwd();
 const realWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
+const buildVersion = process.env.VITE_BUILD_VERSION
+  ?? execFileSync("git", ["rev-parse", "--short=12", "HEAD"], { encoding: "utf8" }).trim();
+
+function remoteServiceWorkerVersionPlugin() {
+  return {
+    name: "remote-service-worker-version",
+    writeBundle(options: { dir?: string; file?: string }) {
+      const outputDirectory = options.dir ?? (options.file ? path.dirname(options.file) : "dist");
+      const serviceWorkerPath = path.join(outputDirectory, "remote-sw.js");
+      if (!fs.existsSync(serviceWorkerPath)) return;
+      const source = fs.readFileSync(serviceWorkerPath, "utf8");
+      fs.writeFileSync(serviceWorkerPath, source.replace(
+        "__WARDIAN_BUILD_VERSION__",
+        buildVersion,
+      ));
+    },
+  };
+}
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   root: workspaceRoot,
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), remoteServiceWorkerVersionPlugin()],
   resolve: {
     preserveSymlinks: true,
     alias: {

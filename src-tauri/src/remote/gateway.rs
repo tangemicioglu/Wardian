@@ -188,9 +188,10 @@ fn serve_tauri_asset(app: &AppHandle, asset_path: &str) -> Result<Response, Remo
         .asset_resolver()
         .get(asset_path.to_string())
         .ok_or_else(|| RemoteGatewayError::not_found("asset_not_found"))?;
+    let content_type = static_asset_content_type(asset_path, asset.mime_type().to_string());
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, asset.mime_type().to_string())
+        .header(header::CONTENT_TYPE, content_type)
         .header(
             header::CACHE_CONTROL,
             static_asset_cache_control(asset_path),
@@ -201,6 +202,14 @@ fn serve_tauri_asset(app: &AppHandle, asset_path: &str) -> Result<Response, Remo
     builder
         .body(Body::from(asset.bytes))
         .map_err(|_| RemoteGatewayError::bad_request("asset_response_failed"))
+}
+
+fn static_asset_content_type(asset_path: &str, detected_content_type: String) -> String {
+    if asset_path == "manifest.webmanifest" {
+        "application/manifest+json".to_string()
+    } else {
+        detected_content_type
+    }
 }
 
 fn static_asset_cache_control(asset_path: &str) -> &'static str {
@@ -2040,6 +2049,18 @@ mod tests {
         assert_eq!(
             static_asset_path_for_route("/assets/../secret").expect_err("traversal rejected"),
             "asset_path_forbidden"
+        );
+    }
+
+    #[test]
+    fn manifest_is_served_with_a_pwa_content_type() {
+        assert_eq!(
+            static_asset_content_type("manifest.webmanifest", "text/html".to_string()),
+            "application/manifest+json"
+        );
+        assert_eq!(
+            static_asset_content_type("remote-sw.js", "text/javascript".to_string()),
+            "text/javascript"
         );
     }
 

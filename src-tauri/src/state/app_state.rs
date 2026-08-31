@@ -1,3 +1,4 @@
+use crate::remote::models::RemoteAgentSummary;
 use crate::state::active_agent::ActiveAgent;
 use crate::state::artifact_runtime::ArtifactRuntime;
 use crate::state::browser_session::BrowserSessionBroker;
@@ -79,6 +80,9 @@ pub struct AppState {
     pub change_snapshots: ChangeSnapshotRuntime,
     // Live-only remote-control authentication and ticket records.
     pub remote_runtime: Mutex<crate::remote::models::RemoteRuntimeState>,
+    // Last complete remote roster. The gateway uses this while a provider or
+    // telemetry task temporarily owns a live agent snapshot lock.
+    pub remote_agent_roster_cache: RwLock<Option<Vec<RemoteAgentSummary>>>,
     // Last frontend-reported effective theme. The frontend resolves "system"
     // before updating this so native PTY fallbacks can answer light/dark probes.
     pub terminal_theme: RwLock<String>,
@@ -294,6 +298,21 @@ impl AppState {
             .map(|theme| theme.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
+
+    pub fn remote_agent_roster_snapshot(&self) -> Option<Vec<RemoteAgentSummary>> {
+        self.remote_agent_roster_cache
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    pub fn set_remote_agent_roster_snapshot(&self, snapshot: Vec<RemoteAgentSummary>) {
+        let mut cached = self
+            .remote_agent_roster_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cached = Some(snapshot);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +388,7 @@ impl Default for AppState {
             conversation_archive: ConversationArchiveState::default(),
             change_snapshots: ChangeSnapshotRuntime::new(),
             remote_runtime: Mutex::new(crate::remote::models::RemoteRuntimeState::default()),
+            remote_agent_roster_cache: RwLock::new(None),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
             // Profiles and downloads live under Wardian home so an isolated

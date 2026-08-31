@@ -1,9 +1,20 @@
-const CACHE_NAME = "wardian-remote-app-shell-v1";
+const CACHE_NAME = "wardian-remote-app-shell-__WARDIAN_BUILD_VERSION__";
 const APP_SHELL = ["/remote", "/manifest.webmanifest", "/icon.png", "/icon-maskable.png"];
 const ASSET_PREFIX = "/assets/";
+const NAVIGATION_TIMEOUT_MS = 5000;
+
+function fetchWithTimeout(request) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NAVIGATION_TIMEOUT_MS);
+  return fetch(request, { signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(APP_SHELL.map((url) => cache.add(url).catch(() => undefined))),
+    ),
+  );
   self.skipWaiting();
 });
 
@@ -25,7 +36,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
   if (event.request.mode === "navigate") {
-    event.respondWith(fetch(event.request).catch(() => caches.match("/remote")));
+    event.respondWith(fetchWithTimeout(event.request).catch(() => caches.match("/remote")));
     return;
   }
 

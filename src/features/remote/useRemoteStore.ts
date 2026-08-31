@@ -609,21 +609,12 @@ const ensureAuthenticatedSession = async (set: RemoteSet) => {
 };
 
 const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
-  const queueRequestSerial = ++queueRefreshRequestSerial;
-  const [agents, automations, remoteWatchlists, remoteQueueItems] = await Promise.all([
+  const [agents, remoteWatchlists] = await Promise.all([
     remoteClient.listAgents(),
-    remoteClient.listAutomations().catch((error: unknown) => {
-      if (error instanceof RemoteRequestError && error.status === 404) return [];
-      throw error;
-    }),
     remoteClient.loadWatchlists().catch((error: unknown) => {
       if (error instanceof RemoteRequestError && error.status === 404) {
         return { watchlists: [], teams: [], prefs: null };
       }
-      throw error;
-    }),
-    remoteClient.loadQueueItems().catch((error: unknown) => {
-      if (error instanceof RemoteRequestError && error.status === 404) return [];
       throw error;
     }),
   ]);
@@ -647,8 +638,6 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
     const activeAgentId = state.activeAgentId && liveAgentIds.has(state.activeAgentId) ? state.activeAgentId : null;
     return {
       agents,
-      automations,
-      ...(queueRequestSerial === queueRefreshRequestSerial ? { remoteQueueItems } : {}),
       remoteQueueError: "",
       activeAgentViewModesById: pruneActiveAgentViewModes(state.activeAgentViewModesById, liveAgentIds),
       watchlists: watchlistState.watchlists,
@@ -675,6 +664,14 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
           }),
     };
   });
+
+  // Neither surface is needed to render the watchlist. Keep a slow or
+  // temporarily unavailable optional endpoint from holding the whole remote
+  // shell in its initial loading state.
+  void remoteClient.listAutomations()
+    .catch(() => [])
+    .then((automations) => set({ automations }));
+  void refreshRemoteQueue(set);
   void ensureStatusStream(set, get).catch((error: unknown) => handleStatusStreamOpenFailure(set, error));
 };
 

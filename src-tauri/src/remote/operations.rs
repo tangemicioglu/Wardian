@@ -9,6 +9,7 @@ use wardian_core::control::{
     ControlRequest, InboxListResponse, InboxNotificationKind, InteractionStatus, MessageInputMode,
 };
 use wardian_core::models::chat::AgentChatEvent;
+use wardian_core::models::AgentConfig;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RemoteAgentChatPage {
@@ -18,31 +19,76 @@ pub struct RemoteAgentChatPage {
 }
 
 pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
-    let agents = state.agents.lock().await;
-    let order = state.agent_order.lock().await;
-    let mut summaries_by_id = agents
-        .values()
-        .filter_map(|agent| {
-            let config = agent.config.lock().ok()?.clone();
-            let status = agent.current_status.lock().ok()?.clone();
+    // `set_agent_status` persists observations while it owns the global agent
+    // map. Waiting here made the remote shell inherit provider/SQLite stalls.
+    // A remote read must never make the phone wait for that write to finish.
+    let (agent_snapshot_handles, order) = {
+        let Ok(agents) = state.agents.try_lock() else {
+            return remote_agent_roster_fallback(state);
+        };
+        let Ok(order) = state.agent_order.try_lock() else {
+            return remote_agent_roster_fallback(state);
+        };
+        (
+            agents
+                .values()
+                .map(|agent| (agent.config.clone(), agent.current_status.clone()))
+                .collect::<Vec<_>>(),
+            order.clone(),
+        )
+    };
 
-            Some((
-                config.session_id.clone(),
-                RemoteAgentSummary {
-                    session_id: config.session_id,
-                    session_name: config.session_name,
-                    agent_class: config.agent_class,
-                    provider: config.provider,
-                    workspace: config.folder,
-                    status,
-                    latest_text: None,
-                },
-            ))
+    // During asynchronous startup the live map can be empty for a short
+    // period even though the atomic persisted snapshot already has the full
+    // roster. Return that roster instead of declaring the desktop empty.
+    if agent_snapshot_handles.is_empty() {
+        if let Some(persisted) = persisted_remote_agent_roster() {
+            if !persisted.is_empty() {
+                return persisted;
+            }
+        }
+    }
+
+    let Some(summaries) = agent_snapshot_handles
+        .into_iter()
+        .map(|(config_lock, status_lock)| {
+            let config = config_lock.try_lock().ok()?.clone();
+            let status = status_lock.try_lock().ok()?.clone();
+            Some(remote_agent_summary(config, status))
         })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return remote_agent_roster_fallback(state);
+    };
+
+    let ordered = order_remote_agent_summaries(summaries, &order);
+    state.set_remote_agent_roster_snapshot(ordered.clone());
+    ordered
+}
+
+fn remote_agent_summary(config: AgentConfig, status: String) -> RemoteAgentSummary {
+    RemoteAgentSummary {
+        session_id: config.session_id,
+        session_name: config.session_name,
+        agent_class: config.agent_class,
+        provider: config.provider,
+        workspace: config.folder,
+        status,
+        latest_text: None,
+    }
+}
+
+fn order_remote_agent_summaries(
+    summaries: Vec<RemoteAgentSummary>,
+    order: &[String],
+) -> Vec<RemoteAgentSummary> {
+    let mut summaries_by_id = summaries
+        .into_iter()
+        .map(|summary| (summary.session_id.clone(), summary))
         .collect::<HashMap<_, _>>();
 
     let mut ordered = Vec::with_capacity(summaries_by_id.len());
-    for session_id in order.iter() {
+    for session_id in order {
         if let Some(summary) = summaries_by_id.remove(session_id) {
             ordered.push(summary);
         }
@@ -56,6 +102,28 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     });
     ordered.extend(remaining);
     ordered
+}
+
+fn remote_agent_roster_fallback(state: &AppState) -> Vec<RemoteAgentSummary> {
+    state
+        .remote_agent_roster_snapshot()
+        .or_else(persisted_remote_agent_roster)
+        .unwrap_or_default()
+}
+
+fn persisted_remote_agent_roster() -> Option<Vec<RemoteAgentSummary>> {
+    let home = crate::utils::fs::get_wardian_home()?;
+    let data = std::fs::read_to_string(home.join("settings").join("state.json")).ok()?;
+    let configs = serde_json::from_str::<Vec<AgentConfig>>(&data).ok()?;
+    Some(
+        configs
+            .into_iter()
+            .map(|config| {
+                let status = if config.is_off { "Off" } else { "Restoring" };
+                remote_agent_summary(config, status.to_string())
+            })
+            .collect(),
+    )
 }
 
 pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
@@ -1309,6 +1377,82 @@ mod tests {
         let roster = remote_agent_roster(&state).await;
 
         assert_eq!(roster[0].latest_text, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_returns_last_complete_snapshot_when_agent_state_is_busy() {
+        let state = Arc::new(AppState::new());
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Processing");
+        let config = agent.config.clone();
+        insert_agent(&state, agent).await;
+        let initial_roster = remote_agent_roster(&state).await;
+        let config_guard = config.lock().expect("config");
+
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("busy roster read should not wait for the config lock");
+
+        drop(config_guard);
+        assert_eq!(roster, initial_roster);
+
+        let agents_guard = state.agents.lock().await;
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("busy roster read should not wait for the global agent lock");
+        drop(agents_guard);
+        assert_eq!(roster, initial_roster);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_uses_persisted_config_without_waiting_for_live_state() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        let settings = temp.path().join("settings");
+        std::fs::create_dir_all(&settings).expect("settings dir");
+        let persisted_config = AgentConfig {
+            session_id: "agent-1".to_string(),
+            session_name: "CoderOne".to_string(),
+            agent_class: "Coder".to_string(),
+            provider: "mock".to_string(),
+            folder: "<absolute-workspace-path>".to_string(),
+            ..Default::default()
+        };
+        std::fs::write(
+            settings.join("state.json"),
+            serde_json::to_string(&vec![persisted_config]).expect("serialize config"),
+        )
+        .expect("persist config");
+
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        let state = Arc::new(AppState::new());
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Processing");
+        let config = agent.config.clone();
+        insert_agent(&state, agent).await;
+        let config_guard = config.lock().expect("config");
+
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("persisted roster read should not wait for the config lock");
+
+        drop(config_guard);
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("WARDIAN_HOME", value) },
+            None => unsafe { std::env::remove_var("WARDIAN_HOME") },
+        }
+
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].session_id, "agent-1");
+        assert_eq!(roster[0].status, "Restoring");
     }
 
     #[tokio::test]

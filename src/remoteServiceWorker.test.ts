@@ -18,6 +18,9 @@ function createCaches() {
         stores.set(name, store);
       }
       return {
+        add: vi.fn(async (url: string) => {
+          store.set(requestKey(url), new Response(`cached:${url}`));
+        }),
         addAll: vi.fn(async (urls: string[]) => {
           for (const url of urls) {
             store.set(requestKey(url), new Response(`cached:${url}`));
@@ -41,7 +44,11 @@ function createCaches() {
   };
 }
 
-function loadRemoteServiceWorker(fetchMock: typeof fetch) {
+function loadRemoteServiceWorker(
+  fetchMock: typeof fetch,
+  script = readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8"),
+  caches = createCaches(),
+) {
   const listeners: ListenerMap = new Map();
   const selfScope = {
     location: { origin: "https://wardian.tailnet.ts.net" },
@@ -51,9 +58,6 @@ function loadRemoteServiceWorker(fetchMock: typeof fetch) {
       listeners.set(type, [...(listeners.get(type) ?? []), listener]);
     }),
   };
-  const caches = createCaches();
-  const script = readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8");
-
   new Function("self", "caches", "fetch", "URL", "Response", script)(
     selfScope,
     caches,
@@ -82,6 +86,48 @@ describe("remote service worker", () => {
 
     expect(script).toContain('"/icon.png"');
     expect(script).toContain('"/icon-maskable.png"');
+  });
+
+  it("removes a poisoned v1 shell when a new build activates", async () => {
+    const caches = createCaches();
+    const oldCache = await caches.open("wardian-remote-app-shell-v1");
+    await oldCache.put("/remote", new Response("old-shell"));
+    const { listeners } = loadRemoteServiceWorker(
+      vi.fn() as unknown as typeof fetch,
+      readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8")
+        .replace(/__WARDIAN_BUILD_VERSION__/g, "build-2"),
+      caches,
+    );
+    const activate = listeners.get("activate")?.[0];
+    expect(activate).toBeDefined();
+    let activation: Promise<unknown> | undefined;
+    activate!({ waitUntil: (promise: Promise<unknown>) => { activation = promise; } } as unknown);
+    await activation;
+
+    expect(await caches.keys()).toEqual([]);
+  });
+
+  it("falls back to the cached shell when navigation fetch hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((_request: Request, options?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      ) as unknown as typeof fetch;
+      const { listeners, caches } = loadRemoteServiceWorker(fetchMock);
+      const shell = await caches.open("wardian-remote-app-shell-__WARDIAN_BUILD_VERSION__");
+      await shell.put("/remote", new Response("cached-shell"));
+      const fetchListener = listeners.get("fetch")?.[0];
+      const request = new Request("https://wardian.tailnet.ts.net/remote");
+      Object.defineProperty(request, "mode", { value: "navigate" });
+      const responsePromise = dispatchFetch(fetchListener!, request);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await (await responsePromise)?.text()).toBe("cached-shell");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runtime-caches successful remote asset responses for flaky network reuse", async () => {

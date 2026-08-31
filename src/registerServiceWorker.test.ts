@@ -24,22 +24,16 @@ describe("registerServiceWorker", () => {
     }
   });
 
-  it("registers the remote app-shell service worker on window load", async () => {
-    const register = vi.fn().mockResolvedValue(undefined);
+  it("starts remote app-shell service worker discovery before window load", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    const register = vi.fn().mockResolvedValue({ update });
     setServiceWorker({ register });
 
-    let loadHandler: EventListener | undefined;
-    vi.spyOn(window, "addEventListener").mockImplementation((type, listener) => {
-      if (type === "load" && typeof listener === "function") {
-        loadHandler = listener;
-      }
-    });
-
     registerServiceWorker();
-    loadHandler?.(new Event("load"));
 
     await vi.waitFor(() => {
       expect(register).toHaveBeenCalledWith("/remote-sw.js", { scope: "/remote" });
+      expect(update).toHaveBeenCalledOnce();
     });
   });
 
