@@ -387,13 +387,17 @@ const scheduleStatusStreamReconnect = (set: RemoteSet, get: RemoteGet) => {
   statusStreamReconnectAttempts += 1;
   statusStreamReconnectTimer = window.setTimeout(() => {
     statusStreamReconnectTimer = null;
-    void ensureStatusStream(set, get).catch((error) => {
-      handleStatusStreamOpenFailure(set, error);
-      if (!(error instanceof RemoteRequestError && error.status === 401)) {
-        scheduleStatusStreamReconnect(set, get);
-      }
-    });
+    void ensureStatusStream(set, get).catch((error) => handleStatusStreamOpenFailure(set, get, error));
   }, delay);
+};
+
+const retryStatusStreamAfterError = (set: RemoteSet, get: RemoteGet) => {
+  const socket = statusStreamSocket;
+  statusStreamSocket = null;
+  suppressNextStatusStreamReconnect = false;
+  clearBackgroundChatRefresh();
+  socket?.close();
+  scheduleStatusStreamReconnect(set, get);
 };
 
 const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
@@ -442,7 +446,7 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
       set({ status: "session_expired" });
     },
     onError: () => {
-      closeStatusStream();
+      retryStatusStreamAfterError(set, get);
     },
     onClose: () => {
       statusStreamSocket = null;
@@ -456,11 +460,13 @@ const ensureStatusStream = async (set: RemoteSet, get: RemoteGet) => {
   statusStreamReconnectAttempts = 0;
 };
 
-const handleStatusStreamOpenFailure = (set: RemoteSet, error: unknown) => {
+const handleStatusStreamOpenFailure = (set: RemoteSet, get: RemoteGet, error: unknown) => {
   closeStatusStream();
   if (error instanceof RemoteRequestError && error.status === 401) {
     set({ status: "session_expired" });
+    return;
   }
+  scheduleStatusStreamReconnect(set, get);
 };
 
 const pairingParamsFromLocation = () => {
@@ -672,7 +678,7 @@ const loadRemoteShellData = async (set: RemoteSet, get: RemoteGet) => {
     .catch(() => [])
     .then((automations) => set({ automations }));
   void refreshRemoteQueue(set);
-  void ensureStatusStream(set, get).catch((error: unknown) => handleStatusStreamOpenFailure(set, error));
+  void ensureStatusStream(set, get).catch((error: unknown) => handleStatusStreamOpenFailure(set, get, error));
 };
 
 export const useRemoteStore = create<RemoteState>((set, get) => ({

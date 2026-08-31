@@ -211,6 +211,12 @@ available yet, it uses the atomic saved agent configuration and marks active
 entries as `Restoring`; the live status stream replaces those provisional
 statuses as soon as the runtime is ready.
 
+The live status stream also refreshes the remote Inbox projection. If the
+stream encounters a transport error, the PWA closes that connection and
+reconnects with a bounded backoff. A failure while opening the initial stream
+uses the same retry path. A session-expired response requires re-authentication
+and does not retry until the session is restored.
+
 The fifteen-second startup request bound applies to read-only data such as the
 session and roster. Remote prompts and lifecycle, Inbox, and automation actions
 can legitimately take longer while the desktop or provider completes the
@@ -254,6 +260,11 @@ boundary.
 - **The installed PWA says the desktop is unreachable:** reopen Tailscale on
   the phone, confirm the desktop gateway is running, and retry. This state is
   reserved for transport or gateway failures rather than stale pairing state.
+- **The PWA stays on `Restoring` or Inbox does not show a desktop change:** keep
+  the gateway reachable while the status stream reconnects, then reload the
+  remote URL if the roster and Inbox remain unchanged. If the problem returns,
+  rebuild and fully restart Wardian so its embedded gateway serves the current
+  remote bundle, then verify the phone session again.
 
 ## Security Model
 

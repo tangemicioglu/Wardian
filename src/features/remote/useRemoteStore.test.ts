@@ -4,6 +4,8 @@ import type { AgentChatEvent, QueueItem } from "../../types";
 import { type RemoteAgentChatPage, RemoteRequestError, remoteClient } from "./remoteClient";
 import { useRemoteStore } from "./useRemoteStore";
 
+type StatusStreamHandlers = Parameters<typeof remoteClient.openStatusStream>[0];
+
 vi.mock("./remoteClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./remoteClient")>();
   return {
@@ -160,6 +162,68 @@ describe("useRemoteStore watchlists", () => {
     first.resolve(oldest);
     await initialLoad;
     expect(useRemoteStore.getState().remoteQueueItems).toEqual(newest);
+  });
+
+  it("reconnects the status stream so roster and Inbox updates resume after a socket error", async () => {
+    const handlers: StatusStreamHandlers[] = [];
+    const nextQueueItems: QueueItem[] = [{
+      id: "new-inbox-item",
+      type: "agent_update",
+      timestamp: 2,
+      read: false,
+      summary: "New desktop Inbox update",
+    }];
+    vi.mocked(remoteClient.listAgents).mockResolvedValue([{
+      session_id: "agent-1",
+      session_name: "Coder",
+      agent_class: "Coder",
+      provider: "codex",
+      workspace: "<absolute-workspace-path>",
+      status: "Restoring",
+      latest_text: null,
+    }]);
+    vi.mocked(remoteClient.loadQueueItems)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(nextQueueItems);
+    vi.mocked(remoteClient.openStatusStream).mockImplementation(async (nextHandlers) => {
+      handlers.push(nextHandlers);
+      return { close: vi.fn() } as unknown as WebSocket;
+    });
+
+    await useRemoteStore.getState().load();
+    expect(handlers).toHaveLength(1);
+
+    handlers[0]?.onError?.();
+    await vi.waitFor(() => expect(handlers).toHaveLength(2), { timeout: 1_000, interval: 20 });
+
+    handlers[1]?.onAgents?.([{
+      session_id: "agent-1",
+      session_name: "Coder",
+      agent_class: "Coder",
+      provider: "codex",
+      workspace: "<absolute-workspace-path>",
+      status: "Idle",
+      latest_text: "Ready",
+    }]);
+    await vi.waitFor(() => expect(useRemoteStore.getState().remoteQueueItems).toEqual(nextQueueItems));
+
+    expect(useRemoteStore.getState().agents[0]?.status).toBe("Idle");
+  });
+
+  it("retries an initial status-stream failure", async () => {
+    const handlers: StatusStreamHandlers[] = [];
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream)
+      .mockRejectedValueOnce(new Error("status stream unavailable"))
+      .mockImplementationOnce(async (nextHandlers) => {
+        handlers.push(nextHandlers);
+        return { close: vi.fn() } as unknown as WebSocket;
+      });
+
+    await useRemoteStore.getState().load();
+
+    await vi.waitFor(() => expect(handlers).toHaveLength(1), { timeout: 1_000, interval: 20 });
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
   });
 
   it("scopes collapsed team state to the active remote watchlist", () => {
