@@ -6,7 +6,7 @@ use wardian_core::models::chat::{
 };
 
 use crate::providers::claude::{
-    classify_claude_user_event, claude_context_causal_ref, claude_context_purpose,
+    classify_claude_user_event, claude_context_purpose, claude_provider_causal_ref,
     ClaudeUserEventKind,
 };
 
@@ -623,6 +623,9 @@ fn normalize_claude(
                     turn_id_from(message).or_else(|| turn_id_from(parsed)),
                     msg_type,
                 )?;
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
+                    set_metadata_string(&mut event.metadata, "causal_ref", &causal_ref);
+                }
                 set_metadata_string(
                     &mut event.metadata,
                     "context_observation",
@@ -638,7 +641,29 @@ fn normalize_claude(
                     "input_purpose": claude_context_purpose(parsed),
                     "context_observation": "provider_native",
                 });
-                if let Some(causal_ref) = claude_context_causal_ref(parsed) {
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
+                    set_metadata_string(&mut metadata, "causal_ref", &causal_ref);
+                }
+                message_event_with_metadata(
+                    session_id,
+                    provider,
+                    sequence,
+                    AgentChatRole::User,
+                    text_from_value(message)?,
+                    "stream_json".to_string(),
+                    turn_id_from(message).or_else(|| turn_id_from(parsed)),
+                    metadata,
+                )
+            }
+            ClaudeUserEventKind::ProviderInternal => {
+                let message = parsed.get("message").unwrap_or(parsed);
+                let mut metadata = json!({
+                    "raw_type": msg_type,
+                    "input_origin": "provider_internal",
+                    "input_purpose": "internal",
+                    "context_observation": "provider_native",
+                });
+                if let Some(causal_ref) = claude_provider_causal_ref(parsed) {
                     set_metadata_string(&mut metadata, "causal_ref", &causal_ref);
                 }
                 message_event_with_metadata(
@@ -2514,6 +2539,44 @@ mod tests {
         assert_eq!(event.metadata["input_origin"], "context_injection");
         assert_eq!(event.metadata["input_purpose"], "context");
         assert_eq!(event.metadata["causal_ref"], "provider:uuid:request-1");
+    }
+
+    #[test]
+    fn claude_parent_uuid_query_retains_normalized_causal_ref() {
+        let event = one(
+            "claude",
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"Inspect the archive."}}"#,
+        );
+
+        assert_eq!(event.metadata["input_origin"], "human_input");
+        assert_eq!(event.metadata["input_purpose"], "request");
+        assert_eq!(event.metadata["causal_ref"], "provider:uuid:assistant-1");
+    }
+
+    #[test]
+    fn claude_interruption_records_are_provider_internal_messages() {
+        let lines = [
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user]"}}"#,
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#,
+        ];
+
+        let events = normalize_chat_lines("agent-1", "claude", lines);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| {
+            event.kind == AgentChatEventKind::Message
+                && event.role == Some(AgentChatRole::User)
+                && event.metadata["input_origin"] == "provider_internal"
+                && event.metadata["input_purpose"] == "internal"
+                && event.metadata["causal_ref"] == "provider:uuid:assistant-1"
+        }));
+        assert_eq!(
+            events[0].text.as_deref(),
+            Some("[Request interrupted by user]")
+        );
+        assert_eq!(
+            events[1].text.as_deref(),
+            Some("[Request interrupted by user for tool use]")
+        );
     }
 
     #[test]

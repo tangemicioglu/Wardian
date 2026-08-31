@@ -515,6 +515,36 @@ fn provider_context_injections_stay_with_the_root_request_turn() {
 }
 
 #[test]
+fn claude_parent_lineage_survives_normalized_conversation_archive_capture() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let lines = [
+        r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"Inspect the archive."}}"#,
+        r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user]"}}"#,
+        r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#,
+    ];
+    let events = normalize_chat_lines("agent-1", "claude", lines);
+
+    assert_eq!(events.len(), 3);
+    archive
+        .append_chat_events("agent-1", &events)
+        .expect("append succeeds");
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+
+    assert_eq!(records.len(), 3);
+    assert!(records
+        .iter()
+        .all(|record| { record.causal_ref.as_deref() == Some("provider:uuid:assistant-1") }));
+}
+
+#[test]
 fn codex_context_before_and_after_request_does_not_create_fake_turns() {
     let lines = [
         r#"{"type":"response_item","payload":{"type":"message","id":"context-1","role":"user","content":[{"type":"input_text","text":"Host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
