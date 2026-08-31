@@ -40,7 +40,7 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
         if trimmed.is_empty() {
             return ClaudeUserEventKind::Ignored;
         }
-        if is_claude_local_command_content(trimmed) {
+        if is_claude_non_query_content(trimmed) {
             return ClaudeUserEventKind::LocalCommand;
         }
         return ClaudeUserEventKind::RealQuery;
@@ -109,6 +109,9 @@ pub(crate) fn claude_context_purpose(parsed: &serde_json::Value) -> &'static str
 }
 
 fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
+    // parentUuid is ordinary transcript lineage on normal Claude user
+    // records as well as context records. It is retained as a causal
+    // reference, but cannot identify context without an explicit marker.
     let message = parsed.get("message");
     [parsed, message.unwrap_or(&serde_json::Value::Null)]
         .into_iter()
@@ -118,7 +121,6 @@ fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
                 .any(|key| value.get(*key).and_then(|flag| flag.as_bool()) == Some(true))
                 || first_nonempty_string(value, &["parent_tool_use_id", "parentToolUseId"])
                     .is_some()
-                || first_nonempty_string(value, &["parent_uuid", "parentUuid"]).is_some()
         })
 }
 
@@ -132,12 +134,13 @@ fn first_nonempty_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Opt
     })
 }
 
-fn is_claude_local_command_content(content: &str) -> bool {
+fn is_claude_non_query_content(content: &str) -> bool {
     content.starts_with("<local-command-caveat>")
         || content.starts_with("<command-name>")
         || content.starts_with("<command-message>")
         || content.starts_with("<command-args>")
         || content.starts_with("<local-command-stdout>")
+        || content.starts_with("[Request interrupted by user for tool use]")
 }
 
 impl Default for ClaudeProvider {
@@ -664,6 +667,13 @@ SET dp0=%~dp0
     }
 
     #[test]
+    fn parse_output_user_with_transcript_parent_uuid_is_still_a_query() {
+        let p = make_provider();
+        let line = r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"hello"}}"#;
+        assert_eq!(p.parse_output(line).unwrap(), AgentEvent::UserQuery);
+    }
+
+    #[test]
     fn parse_output_user_tool_result_is_generating() {
         let p = make_provider();
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}"#;
@@ -688,6 +698,13 @@ SET dp0=%~dp0
     fn parse_output_user_local_command_stdout_is_not_query() {
         let p = make_provider();
         let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Opus 4.6</local-command-stdout>"}}"#;
+        assert_eq!(p.parse_output(line).unwrap(), AgentEvent::Unknown);
+    }
+
+    #[test]
+    fn parse_output_user_interruption_is_not_query() {
+        let p = make_provider();
+        let line = r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#;
         assert_eq!(p.parse_output(line).unwrap(), AgentEvent::Unknown);
     }
 

@@ -26,10 +26,12 @@ without a recoverable root is indexed as `context_injection` with
 
 ## Provider boundary
 
-Provider adapters own the evidence used for classification. Claude native
-metadata such as `isMeta`, `parent_tool_use_id`, and `parentUuid` identifies
-context records without inspecting their text. Claude `Skill` tool-use IDs
-provide the causal link for multiple skill injections in one request.
+Provider adapters own the evidence used for classification. Claude explicit
+metadata such as `isMeta`/`isContext` and `parent_tool_use_id` identifies
+context records without inspecting their text. `parentUuid` is retained as a
+transcript lineage and causal reference, but is not sufficient by itself to
+classify a record as context. Claude `Skill` tool-use IDs provide the causal
+link for multiple skill injections in one request.
 
 Providers that do not expose an equivalent context event retain their normal
 user-role input classification and do not fabricate a context boundary. Their

@@ -2171,6 +2171,22 @@ mod tests {
     }
 
     #[test]
+    fn claude_user_prompt_with_transcript_parent_uuid_updates_latest_query_timestamp() {
+        let prompt = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-30T12:34:56.789Z",
+            "parentUuid": "assistant-1",
+            "message": { "role": "user", "content": "Inspect the telemetry." },
+        });
+
+        assert!(super::is_user_query_log_record("claude", &prompt));
+        assert_eq!(
+            super::query_timestamp_from_log_record("claude", &prompt).as_deref(),
+            Some("2026-08-30T12:34:56.789Z")
+        );
+    }
+
+    #[test]
     fn antigravity_wal_activity_advances_the_telemetry_watermark() {
         let temp = tempfile::tempdir().expect("temp dir");
         let database = temp.path().join("conversation.db");
