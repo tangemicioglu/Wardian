@@ -6,7 +6,6 @@ import {
   Clock3,
   LoaderCircle,
   PauseCircle,
-  RefreshCw,
   X,
   XCircle,
 } from "lucide-react";
@@ -105,7 +104,6 @@ export const RemoteAutomationsView: React.FC = () => {
   const [snapshot, setSnapshot] = useState<RemoteAutomationMonitorSnapshot | null>(null);
   const [filter, setFilter] = useState<Filter>("overview");
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [loadingPage, setLoadingPage] = useState<PageKind | null>(null);
   const [error, setError] = useState("");
   const [unsupported, setUnsupported] = useState(false);
@@ -124,8 +122,7 @@ export const RemoteAutomationsView: React.FC = () => {
   const closeRef = useRef<HTMLButtonElement>(null);
 
   const refresh = useCallback(async () => {
-    if (snapshotRef.current) setRefreshing(true);
-    else setLoading(true);
+    if (!snapshotRef.current) setLoading(true);
     setError("");
     try {
       const next = await remoteClient.loadAutomationMonitor();
@@ -147,7 +144,6 @@ export const RemoteAutomationsView: React.FC = () => {
       }
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }, []);
 
@@ -285,28 +281,16 @@ export const RemoteAutomationsView: React.FC = () => {
 
   const attention = useMemo(() => snapshot ? attentionItems(snapshot) : [], [snapshot]);
   const running = useMemo(() => snapshot?.active_runs.filter((run) => run.status === "running") ?? [], [snapshot]);
-  const schedules = snapshot?.schedules ?? [];
+  const schedules = useMemo(() => snapshot?.schedules ?? [], [snapshot]);
+  const upcomingSchedules = useMemo(() => schedules.filter((schedule) => !schedule.is_paused), [schedules]);
+  const pausedSchedules = useMemo(() => schedules.filter((schedule) => schedule.is_paused), [schedules]);
   const recent = snapshot?.recent_runs ?? [];
   const lastUpdated = snapshot ? formatAutomationTime(snapshot.generated_at).primary : "Not updated";
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="remote-automations-view">
       <header className="shrink-0 border-b border-wardian-border bg-[var(--color-wardian-bg)] px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="truncate text-base font-semibold text-primary">Automations</h1>
-            <p className="truncate text-xs text-muted-neutral">Updated {lastUpdated.toLowerCase()}</p>
-          </div>
-          <button
-            type="button"
-            aria-label="Refresh automation monitor"
-            disabled={loading || refreshing}
-            onClick={() => void refresh()}
-            className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-wardian-border text-muted-neutral transition-colors active:bg-wardian-card-bg-muted disabled:opacity-50 ${focusRing}`}
-          >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
-          </button>
-        </div>
+        <h1 className="truncate text-base font-semibold text-primary">Automations</h1>
         <div className="mt-3 grid grid-cols-4 gap-1" aria-label="Automation monitor filters">
           {filters.map((item) => (
             <button
@@ -346,7 +330,7 @@ export const RemoteAutomationsView: React.FC = () => {
               <div className="grid grid-cols-3 gap-2" data-testid="automation-summary-shortcuts">
                 <SummaryShortcut label="Attention" value={attention.length} tone="warning" onClick={() => setFilter("attention")} />
                 <SummaryShortcut label="Running" value={running.length} tone="active" onClick={() => scrollToSection("remote-running-section")} />
-                <SummaryShortcut label="Soon" value={schedules.filter((schedule) => !schedule.is_paused).length} tone="accent" onClick={() => setFilter("soon")} />
+                <SummaryShortcut label="Soon" value={upcomingSchedules.length} tone="accent" onClick={() => setFilter("soon")} />
               </div>
             ) : null}
 
@@ -355,7 +339,7 @@ export const RemoteAutomationsView: React.FC = () => {
                 {attention.map((item) => (
                   item.kind === "run"
                     ? <RunCard key={`attention:${item.value.run_id}`} run={item.value} onOpen={openDetail} />
-                    : <ScheduleCard key={`attention:${item.value.id}`} schedule={item.value} onOpen={openDetail} />
+                    : <ScheduleCard key={`attention:${item.value.id}`} schedule={item.value} presentation="attention" onOpen={openDetail} />
                 ))}
               </MonitorSection>
             ) : null}
@@ -368,10 +352,15 @@ export const RemoteAutomationsView: React.FC = () => {
               </MonitorSection>
             ) : null}
 
-            {(filter === "overview" || filter === "soon") && schedules.length > 0 ? (
-              <MonitorSection title="Up next" count={schedules.length}>
-                {schedules.map((schedule) => <ScheduleCard key={schedule.id} schedule={schedule} onOpen={openDetail} />)}
+            {(filter === "overview" || filter === "soon") && (upcomingSchedules.length > 0 || snapshot.schedules_next_offset !== null) ? (
+              <MonitorSection title="Up next" count={upcomingSchedules.length}>
+                {upcomingSchedules.map((schedule) => <ScheduleCard key={schedule.id} schedule={schedule} presentation="pending" onOpen={openDetail} />)}
                 {snapshot.schedules_next_offset !== null ? <LoadMore label="Load more schedules" loading={loadingPage === "schedules"} onClick={() => void loadMore("schedules")} /> : null}
+              </MonitorSection>
+            ) : null}
+            {(filter === "overview" || filter === "soon") && pausedSchedules.length > 0 ? (
+              <MonitorSection title="Paused" count={pausedSchedules.length}>
+                {pausedSchedules.map((schedule) => <ScheduleCard key={schedule.id} schedule={schedule} presentation="paused" onOpen={openDetail} />)}
               </MonitorSection>
             ) : null}
             {filter === "soon" && schedules.length === 0 ? <EmptyState>No schedules are coming up.</EmptyState> : null}
@@ -422,13 +411,15 @@ function RunCard({ run, compact = false, onOpen }: { run: RemoteAutomationMonito
   return <button type="button" onClick={(event) => onOpen({ kind: "run", value: run }, event.currentTarget)} className={`relative flex w-full items-center gap-3 overflow-hidden rounded-md border border-wardian-border bg-wardian-card-bg px-3 text-left active:bg-wardian-card-bg-muted ${focusRing} ${compact ? "min-h-[72px] py-2" : "min-h-[88px] py-3"}`}><span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: color }} /><Icon className={`ml-1 h-5 w-5 shrink-0 ${active ? "animate-spin motion-reduce:animate-none" : ""}`} style={{ color }} aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-primary">{run.automation_name}</span><span className="mt-0.5 block truncate text-xs font-semibold" style={{ color }}>{label}</span><span className="mt-1 block truncate text-xs text-muted-neutral">{primary}</span></span><ChevronRight className="h-4 w-4 shrink-0 text-muted-neutral" aria-hidden="true" /></button>;
 }
 
-function ScheduleCard({ schedule, onOpen }: { schedule: RemoteAutomationMonitorSchedule; onOpen: (detail: Detail, origin: HTMLElement) => void }) {
-  const paused = schedule.is_paused;
-  const failed = schedule.last_run_status === "failed";
-  const Icon = paused ? PauseCircle : failed ? AlertTriangle : Clock3;
-  const color = failed ? "var(--color-wardian-error)" : paused ? "var(--color-wardian-warning)" : "var(--color-wardian-accent)";
+function ScheduleCard({ schedule, presentation, onOpen }: { schedule: RemoteAutomationMonitorSchedule; presentation: "attention" | "paused" | "pending"; onOpen: (detail: Detail, origin: HTMLElement) => void }) {
+  const failed = presentation === "attention";
+  const paused = presentation === "paused";
+  const Icon = failed ? XCircle : paused ? PauseCircle : Clock3;
+  const color = failed ? "var(--color-wardian-error)" : paused ? "var(--color-wardian-warning)" : "var(--color-wardian-text-muted-neutral)";
+  const label = failed ? "Failed" : paused ? "Paused" : "Pending";
   const exact = paused ? "Paused" : formatAutomationTime(schedule.next_run_epoch_ms, { emptyLabel: "Not scheduled" }).primary;
-  return <button type="button" onClick={(event) => onOpen({ kind: "schedule", value: schedule }, event.currentTarget)} className={`relative flex min-h-[88px] w-full items-center gap-3 overflow-hidden rounded-md border border-wardian-border bg-wardian-card-bg px-3 py-3 text-left active:bg-wardian-card-bg-muted ${focusRing}`}><span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: color }} /><Icon className="ml-1 h-5 w-5 shrink-0" style={{ color }} aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-primary">{schedule.automation_name}</span><span className="mt-0.5 block truncate text-xs font-semibold" style={{ color }}>{paused ? "Paused" : relativeTime(schedule.next_run_epoch_ms)}</span><span className="mt-1 block truncate text-xs text-muted-neutral">{exact} · {scheduleSummaryLabel(schedule.schedule)}</span></span><ChevronRight className="h-4 w-4 shrink-0 text-muted-neutral" aria-hidden="true" /></button>;
+  const timing = failed ? "Last run failed" : paused ? "Paused" : `Runs ${relativeTime(schedule.next_run_epoch_ms)}`;
+  return <button type="button" data-testid={`remote-schedule-card-${schedule.id}-${presentation}`} data-status-tone={presentation} onClick={(event) => onOpen({ kind: "schedule", value: schedule }, event.currentTarget)} className={`relative flex min-h-[88px] w-full items-center gap-3 overflow-hidden rounded-md border border-wardian-border bg-wardian-card-bg px-3 py-3 text-left active:bg-wardian-card-bg-muted ${focusRing}`}><span className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: color }} /><Icon className="ml-1 h-5 w-5 shrink-0" style={{ color }} aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-primary">{schedule.automation_name}</span><span className="mt-0.5 block truncate text-xs font-semibold" style={{ color }}>{label}</span><span className="mt-1 block truncate text-xs text-muted-neutral">{timing} · {exact} · {scheduleSummaryLabel(schedule.schedule)}</span></span><ChevronRight className="h-4 w-4 shrink-0 text-muted-neutral" aria-hidden="true" /></button>;
 }
 
 function LoadMore({ label, loading = false, onClick }: { label: string; loading?: boolean; onClick: () => void }) {

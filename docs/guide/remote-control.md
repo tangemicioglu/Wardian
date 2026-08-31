@@ -330,8 +330,10 @@ The mobile **Automations** tab is a read-only operational tracker. **Overview**
 opens first and orders activity by urgency: items needing attention, runs in
 progress, upcoming schedules, and recent outcomes. Use the large summary
 shortcuts or the **Attention**, **Soon**, and **History** filters to narrow the
-list. Tap any card for exact timing, recurrence, assignment labels, and bounded
-failure detail.
+list. Failed outcomes are red, paused schedules are amber, and upcoming
+schedules use neutral pending clock cues; paused schedules are listed separately
+from **Up next**. Tap any card for exact timing, recurrence, assignment labels,
+and bounded failure detail.
 
 Wardian keeps the last successful automation snapshot visible if a refresh
 fails and labels it as stale. Retry when the desktop becomes reachable. If the
