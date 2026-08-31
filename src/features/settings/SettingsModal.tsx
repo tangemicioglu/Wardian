@@ -237,6 +237,13 @@ const rowDefinitions: SettingsRowDefinition[] = [
     keywords: ["agent", "conversation", "logging", "archive", "transcript"],
   },
   {
+    id: "agent-memory",
+    category: "Agent Runtime",
+    label: "Agent memory",
+    detail: "Allows startup recall and durable retention for new provider processes. Off by default while memory matures.",
+    keywords: ["agent", "memory", "recall", "retention", "startup", "durable"],
+  },
+  {
     id: "codex-sandbox",
     category: "Agent Runtime",
     subgroup: "Codex",
@@ -418,6 +425,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setTheme,
     autoPatchGemini,
     setAutoPatchGemini,
+    memoryEnabled,
+    setMemoryEnabled,
     terminalFontSize,
     setTerminalFontSize,
     terminalFontFamily,
@@ -622,6 +631,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
 
   const handleConversationLoggingChange = (value: ConversationLoggingSetting) => {
     setConversationLogging(value);
+  };
+
+  const handleMemoryEnabledChange = async (enabled: boolean) => {
+    setMemoryEnabled(enabled);
+    await useSettingsStore.getState().saveAppSettings();
   };
 
   const handleSaveRuntime = async () => {
@@ -1080,6 +1094,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
             >
               <option value="enabled">Enabled</option>
               <option value="disabled">Disabled</option>
+            </select>
+          </SettingRow>
+        );
+      case "agent-memory":
+        return (
+          <SettingRow key={row.id} label={row.label} detail={row.detail}>
+            <select
+              aria-label="Agent memory"
+              value={memoryEnabled ? "enabled" : "disabled"}
+              onChange={(event) => void handleMemoryEnabledChange(event.target.value === "enabled")}
+              className={optionClass}
+            >
+              <option value="disabled">Disabled</option>
+              <option value="enabled">Enabled</option>
             </select>
           </SettingRow>
         );

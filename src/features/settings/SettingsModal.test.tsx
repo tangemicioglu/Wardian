@@ -47,6 +47,7 @@ describe("SettingsModal", () => {
     useSettingsStore.setState({
       theme: "dark",
       autoPatchGemini: false,
+      memoryEnabled: false,
       terminalFontSize: 14,
       terminalFontFamily: "",
       gridCardDisplayMode: "terminal",
@@ -457,6 +458,29 @@ describe("SettingsModal", () => {
       });
     });
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
+  });
+
+  it("keeps agent memory disabled until explicitly enabled", async () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+
+    const select = screen.getByLabelText("Agent memory");
+    expect(select).toHaveValue("disabled");
+
+    fireEvent.change(select, { target: { value: "enabled" } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_app_settings", {
+        settings: expect.objectContaining({
+          schema_version: 2,
+          overrides: expect.objectContaining({
+            memory_enabled: true,
+          }),
+        }),
+      });
+    });
+    expect(useSettingsStore.getState().memoryEnabled).toBe(true);
   });
 
   it("loads and saves the workbench new tab button preference", async () => {

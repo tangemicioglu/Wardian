@@ -403,38 +403,43 @@ pub async fn run_headless_with_options(
     let provider = ProviderFactory::resolve(provider_name)?;
     crate::providers::readiness::ensure_provider_available_for_launch(provider_name)?;
     let persisted_config = persisted_agent_config(wardian_session_id);
+    let memory_enabled = crate::utils::memory_feature_enabled();
     let memory_process_key = resume_session
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("fresh:{}:{}", wardian_session_id, uuid::Uuid::new_v4()));
     let memory_workspace = cwd.to_string_lossy().to_string();
-    let memory_setup = memory_agent_id.and_then(|memory_agent_id| {
-        match wardian_core::memory::MemoryStore::from_default_home() {
-            Ok(store) => match store.compile_brief(
-                &wardian_core::memory::MemoryActor::agent(memory_agent_id),
-                memory_agent_id,
-                Some(&memory_workspace),
-                provider_name,
-                &memory_process_key,
-                resume_session.is_some_and(|value| !value.trim().is_empty()),
-                12_000,
-            ) {
-                Ok(brief) => Some((store, brief)),
+    let memory_setup = if memory_enabled {
+        memory_agent_id.and_then(|memory_agent_id| {
+            match wardian_core::memory::MemoryStore::from_default_home() {
+                Ok(store) => match store.compile_brief(
+                    &wardian_core::memory::MemoryActor::agent(memory_agent_id),
+                    memory_agent_id,
+                    Some(&memory_workspace),
+                    provider_name,
+                    &memory_process_key,
+                    resume_session.is_some_and(|value| !value.trim().is_empty()),
+                    12_000,
+                ) {
+                    Ok(brief) => Some((store, brief)),
+                    Err(error) => {
+                        log_debug(&format!(
+                            "[Wardian] headless memory recall unavailable for {memory_agent_id}: {error}"
+                        ));
+                        None
+                    }
+                },
                 Err(error) => {
                     log_debug(&format!(
-                        "[Wardian] headless memory recall unavailable for {memory_agent_id}: {error}"
+                        "[Wardian] headless memory store unavailable for {memory_agent_id}: {error}"
                     ));
                     None
                 }
-            },
-            Err(error) => {
-                log_debug(&format!(
-                    "[Wardian] headless memory store unavailable for {memory_agent_id}: {error}"
-                ));
-                None
             }
-        }
-    });
+        })
+    } else {
+        None
+    };
     let provider_context = headless_provider_context(
         provider_name,
         cwd,
@@ -442,13 +447,15 @@ pub async fn run_headless_with_options(
         config_override,
         persisted_config.as_ref(),
     )?;
-    if let (Some(_), Some(root)) = (memory_agent_id, provider_context.habitat_root.as_ref()) {
-        append_habitat_memory_instructions(
-            root,
-            memory_setup
-                .as_ref()
-                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
-        )?;
+    if memory_enabled {
+        if let (Some(_), Some(root)) = (memory_agent_id, provider_context.habitat_root.as_ref()) {
+            append_habitat_memory_instructions(
+                root,
+                memory_setup.as_ref().and_then(|(_, brief)| {
+                    (!brief.is_empty).then_some(brief.context_text.as_str())
+                }),
+            )?;
+        }
     }
     let mut effective_provider_config = effective_headless_provider_config(
         provider_name,
@@ -471,14 +478,17 @@ pub async fn run_headless_with_options(
             }
         }
     }
-    let memory_runtime_instructions =
+    let memory_runtime_instructions = if memory_enabled {
         memory_agent_id
             .map(|_| {
                 wardian_memory_instructions(memory_setup.as_ref().and_then(|(_, brief)| {
                     (!brief.is_empty).then_some(brief.context_text.as_str())
                 }))
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let (bin, _) = provider.get_executable();
     let claude_hook = if provider_name == "claude" {
         ensure_claude_permission_hook(wardian_session_id).ok()
@@ -495,7 +505,7 @@ pub async fn run_headless_with_options(
         resume_session,
         effective_provider_config.as_ref(),
     );
-    if provider_name == "codex" && memory_agent_id.is_some() {
+    if provider_name == "codex" && memory_enabled && memory_agent_id.is_some() {
         CodexProvider::new()
             .insert_developer_instructions_arg(&mut provider_args, &memory_runtime_instructions);
     }
@@ -1381,6 +1391,9 @@ pub(crate) fn apply_headless_identity_env(
         cmd.env("WARDIAN_SESSION_ID", effective_session_id);
     }
     if let Some(memory_agent_id) = memory_agent_id {
+        if !crate::utils::memory_feature_enabled() {
+            return None;
+        }
         let capability = super::issue_memory_capability(memory_agent_id);
         if let Some(capability) = capability.as_ref() {
             cmd.env(
@@ -1413,6 +1426,12 @@ mod tests {
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
+            std::fs::create_dir_all(home.path().join("settings")).expect("settings directory");
+            std::fs::write(
+                home.path().join("settings/app.json"),
+                r#"{"schema_version":2,"overrides":{"memory_enabled":true}}"#,
+            )
+            .expect("enable memory for headless tests");
             Self {
                 _lock: lock,
                 previous_home,
@@ -2706,6 +2725,29 @@ mod tests {
                 .validate_capability("wardian-session-123", &capability)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn disabled_memory_setting_omits_headless_memory_capability() {
+        let test_home = TestWardianHome::new();
+        std::fs::write(
+            test_home._home.path().join("settings/app.json"),
+            r#"{"schema_version":2,"overrides":{}}"#,
+        )
+        .expect("disable memory for headless identity test");
+        let mut cmd = crate::utils::process::new_headless_command("node");
+
+        let capability = apply_headless_identity_env(
+            &mut cmd,
+            "automation-bg-run-node",
+            Some("wardian-session-123"),
+        );
+
+        assert!(capability.is_none());
+        assert!(!cmd.as_std().get_envs().any(|(key, _)| {
+            key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV
+        }));
+        assert!(!test_home._home.path().join("memory.db").exists());
     }
 
     #[test]

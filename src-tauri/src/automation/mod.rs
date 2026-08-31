@@ -651,6 +651,11 @@ impl StepExecutor for LiveStepExecutor {
         Self: 'async_trait,
     {
         Box::pin(async move {
+            if !crate::utils::memory_feature_enabled() {
+                return Err(StepError::new(
+                    "memory is disabled in Settings; enable Agent memory before running this node",
+                ));
+            }
             let principal = self.memory_principal.as_deref().ok_or_else(|| {
                 StepError::new(
                     "memory_commit requires an authenticated invocation memory principal",
@@ -768,6 +773,12 @@ mod tests {
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
+            std::fs::create_dir_all(home.path().join("settings")).expect("settings directory");
+            std::fs::write(
+                home.path().join("settings/app.json"),
+                r#"{"schema_version":2,"overrides":{"memory_enabled":true}}"#,
+            )
+            .expect("enable memory for automation tests");
             Self {
                 _lock: lock,
                 _home: home,

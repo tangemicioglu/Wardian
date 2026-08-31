@@ -28,6 +28,8 @@ pub struct AppSettings {
     pub theme: String,
     #[serde(default)]
     pub auto_patch_gemini: bool,
+    #[serde(default = "default_memory_enabled")]
+    pub memory_enabled: bool,
     #[serde(default = "default_terminal_font_size")]
     pub terminal_font_size: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +56,8 @@ pub struct AppSettingsOverrides {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_patch_gemini: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_font_size: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +99,7 @@ impl Default for AppSettings {
         Self {
             theme: "system".to_string(),
             auto_patch_gemini: false,
+            memory_enabled: default_memory_enabled(),
             terminal_font_size: default_terminal_font_size(),
             terminal_font_family: None,
             grid_card_display_mode: default_grid_card_display_mode(),
@@ -128,6 +133,10 @@ fn default_titlebar_telemetry_visible() -> bool {
     false
 }
 
+fn default_memory_enabled() -> bool {
+    false
+}
+
 fn default_external_editor() -> String {
     "system".to_string()
 }
@@ -139,6 +148,15 @@ fn default_workbench_new_tab_action() -> String {
 pub fn load_app_settings() -> Result<AppSettings, String> {
     let path = app_settings_path()?;
     load_app_settings_from_path(&path)
+}
+
+/// Return whether provider processes may use Wardian's memory integration.
+/// Missing or unreadable settings fail closed so startup never enables an
+/// experimental capability accidentally.
+pub fn memory_feature_enabled() -> bool {
+    load_app_settings()
+        .map(|settings| settings.memory_enabled)
+        .unwrap_or(false)
 }
 
 pub fn load_app_settings_document() -> Result<AppSettingsDocument, String> {
@@ -304,6 +322,7 @@ fn app_settings_from_overrides(overrides: &AppSettingsOverrides) -> AppSettings 
         auto_patch_gemini: overrides
             .auto_patch_gemini
             .unwrap_or(defaults.auto_patch_gemini),
+        memory_enabled: overrides.memory_enabled.unwrap_or(defaults.memory_enabled),
         terminal_font_size: overrides
             .terminal_font_size
             .unwrap_or(defaults.terminal_font_size),
@@ -377,6 +396,8 @@ fn app_overrides_from_settings(
         theme: (settings.theme != defaults.theme).then(|| settings.theme.clone()),
         auto_patch_gemini: (settings.auto_patch_gemini != defaults.auto_patch_gemini)
             .then_some(settings.auto_patch_gemini),
+        memory_enabled: (settings.memory_enabled != defaults.memory_enabled)
+            .then_some(settings.memory_enabled),
         terminal_font_size: (settings.terminal_font_size != defaults.terminal_font_size)
             .then_some(settings.terminal_font_size),
         terminal_font_family: (settings.terminal_font_family != defaults.terminal_font_family)
@@ -494,6 +515,7 @@ mod tests {
         assert!(!document.persisted);
         assert_eq!(settings.theme, "system");
         assert!(!settings.auto_patch_gemini);
+        assert!(!settings.memory_enabled);
         assert_eq!(settings.terminal_font_size, 14);
         assert_eq!(settings.terminal_font_family, None);
         assert_eq!(settings.grid_card_display_mode, "terminal");
@@ -592,6 +614,7 @@ mod tests {
         let settings = AppSettings {
             theme: "dark".to_string(),
             auto_patch_gemini: true,
+            memory_enabled: true,
             terminal_font_size: 16,
             terminal_font_family: Some("JetBrains Mono, monospace".to_string()),
             grid_card_display_mode: "chat".to_string(),
@@ -623,6 +646,7 @@ mod tests {
         let settings = AppSettings {
             theme: "dark".to_string(),
             auto_patch_gemini: false,
+            memory_enabled: false,
             terminal_font_size: default_terminal_font_size(),
             terminal_font_family: None,
             grid_card_display_mode: "terminal".to_string(),
@@ -641,6 +665,7 @@ mod tests {
         assert_eq!(json["schema_version"], 2);
         assert_eq!(json["overrides"]["theme"], "dark");
         assert!(json["overrides"].get("auto_patch_gemini").is_none());
+        assert!(json["overrides"].get("memory_enabled").is_none());
         assert!(json["overrides"].get("terminal_font_size").is_none());
         assert!(json["overrides"].get("grid_card_display_mode").is_none());
         assert!(json["overrides"]
@@ -696,6 +721,7 @@ mod tests {
 
         assert_eq!(loaded.theme, "system");
         assert!(!loaded.auto_patch_gemini);
+        assert!(!loaded.memory_enabled);
         assert_eq!(loaded.terminal_font_size, default_terminal_font_size());
         assert_eq!(
             loaded.terminal_font_family,

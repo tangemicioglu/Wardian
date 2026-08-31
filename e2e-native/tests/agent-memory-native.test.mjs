@@ -76,6 +76,15 @@ async function configureCodexNativeTestPolicy(harness) {
       },
     }),
   );
+  fs.writeFileSync(
+    path.join(settingsDir, "app.json"),
+    JSON.stringify({
+      schema_version: 2,
+      overrides: {
+        memory_enabled: true,
+      },
+    }),
+  );
 }
 
 function runMemoryProbe(cliPath, harness, automationPath, agentId, expected, forbidden) {

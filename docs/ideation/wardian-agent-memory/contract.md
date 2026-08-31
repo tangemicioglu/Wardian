@@ -10,7 +10,8 @@ Give every Wardian agent a provider-neutral, local-first memory that reliably ap
 
 ## Product contract
 
-- Direct retention and startup recall are enabled by default and require no curator model call.
+- Direct retention and startup recall are opt-in while the feature matures. They
+  remain deterministic and require no curator model call when enabled.
 - Memory belongs to one agent. A record is either agent-wide or bound to a workspace.
 - A saved revision contains normalized recall text, a durable evidence excerpt, an integrity hash, and optional source links. Conversation and memory retention remain independent.
 - Stable memories persist until superseded or removed. Current-state memories remain available, carry verification timestamps, and can be labeled stale; Wardian never silently expires them.

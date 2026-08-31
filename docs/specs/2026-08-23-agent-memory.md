@@ -11,9 +11,16 @@ and are either agent-wide or bound to a canonical workspace. Conversation
 archives and provider-native histories remain independent evidence/runtime
 systems; neither is the memory authority.
 
-Direct retention and startup recall are the default. They do not call a model.
-Automated consolidation is optional, disabled by default, and implemented as an
-ordinary bundled workflow with ordinary provider/model/effort assignments.
+Direct retention and startup recall are opt-in while the feature matures. They
+do not call a model when enabled. Automated consolidation is optional, disabled
+by default, and implemented as an ordinary bundled workflow with ordinary
+provider/model/effort assignments.
+
+The global **Agent memory** setting in **Settings > Agent Runtime** defaults to
+disabled. With it disabled, new interactive and headless provider processes
+receive no memory instructions, startup brief, or managed memory capability;
+existing records remain inspectable. The setting applies to future launches and
+restarts, not an already-running provider process.
 
 At the end of every user task, the provider independently checks whether the
 user established a clear durable preference, project convention, decision,
