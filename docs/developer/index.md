@@ -10,11 +10,14 @@ Use this index when implementing or debugging Wardian internals.
 - [PTY Lifecycle](./pty-lifecycle.md)
 - [Terminal Presentation Broker](./terminal-presentation-broker.md)
 - [Provider Runtime Notes](./provider-runtimes.md)
+- [Browser Surface](./browser-surface.md)
 
 ## Runtime Contracts
 
 - [IPC and Event Governance](./ipc-events.md)
 - [Tauri Command Reference](./tauri-command-reference.md)
+- [Native Orchestration and Delivery](./native-orchestration-delivery.md)
+- [Agent Memory](./agent-memory.md)
 
 ## Automation Internals
 
@@ -29,6 +32,7 @@ Use this index when implementing or debugging Wardian internals.
 ## Testing and Verification
 
 - [Developer Setup](./setup.md)
+- [CI Verification](./ci-verification.md)
 - [Release Updates](./release-updates.md)
 - [Package Manager Distribution](./package-manager-distribution.md)
 - [Documentation Maintenance](./docs-maintenance.md)
