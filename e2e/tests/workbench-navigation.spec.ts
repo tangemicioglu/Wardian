@@ -151,6 +151,18 @@ async function expectPersistedTopology(
   }).toBe(true);
 }
 
+async function visibleDockviewSashCount(page: Page): Promise<number> {
+  return page.locator(".dv-sash").evaluateAll((sashes) => sashes.filter((sash) => {
+    const rect = sash.getBoundingClientRect();
+    const style = getComputedStyle(sash);
+    return rect.width > 0
+      && rect.height > 0
+      && style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.backgroundColor !== "rgba(0, 0, 0, 0)";
+  }).length);
+}
+
 function noEmptyNonFinalGroup(document: WorkbenchDocumentV1): boolean {
   return Object.keys(document.groups).length === 1
     || Object.values(document.groups).every((group) => group.surface_ids.length > 0);
@@ -342,6 +354,45 @@ test("keeps Settings above a horizontally and vertically split Workbench", async
   await expect(dialog).toHaveCount(0);
   await paneActions.click();
   await expect(page.getByRole("menu", { name: "Pane actions", exact: true })).toBeVisible();
+});
+
+test("removes every nested split boundary while a pane is zoomed and restores the complete layout", async ({ page }, testInfo) => {
+  await bootWorkbench(page, splitSettingsDocument());
+  const groups = page.getByTestId("workbench-group");
+  const centerGroup = workbenchGroup(page, "settings-group-center");
+
+  await expect(groups).toHaveCount(3);
+  await expect(page.getByRole("separator")).toHaveCount(2);
+  await expect.poll(() => visibleDockviewSashCount(page)).toBeGreaterThan(0);
+
+  await choosePaneAction(page, centerGroup, "Zoom pane");
+  await expect(page.getByTestId("workbench-host")).toHaveAttribute(
+    "data-zoomed-group-id",
+    "settings-group-center",
+  );
+  await expect(groups).toHaveCount(3);
+  await expect(page.getByRole("separator")).toHaveCount(0);
+  await expect.poll(() => visibleDockviewSashCount(page)).toBe(0);
+  const screenshotPath = path.resolve(
+    "e2e/screenshots/workbench-zoom-boundaries/2026-08-30/zoomed-pane-without-boundaries.png",
+  );
+  mkdirSync(path.dirname(screenshotPath), { recursive: true });
+  await page.screenshot({ path: screenshotPath, animations: "disabled" });
+  await testInfo.attach("zoomed-pane-without-boundaries", {
+    path: screenshotPath,
+    contentType: "image/png",
+  });
+
+  await choosePaneAction(page, centerGroup, "Restore pane");
+  await expect(page.getByTestId("workbench-host")).toHaveAttribute(
+    "data-zoomed-group-id",
+    "none",
+  );
+  await expect(page.getByRole("separator")).toHaveCount(2);
+  await expect.poll(() => visibleDockviewSashCount(page)).toBeGreaterThan(0);
+  await expect(surfacePanel(page, "dashboard")).toBeVisible();
+  await expect(surfacePanel(page, "graph")).toBeVisible();
+  await expect(surfacePanel(page, "inbox")).toBeVisible();
 });
 
 test("retargets an adjoining Agent Session when Graph opens an agent", async ({ page }) => {
@@ -1409,11 +1460,15 @@ test("splits, moves, zooms, joins, closes, and reopens through semantic controls
     newGroupId!,
   );
   await expect(groups).toHaveCount(2);
+  await expect(page.getByRole("separator")).toHaveCount(0);
+  await expect.poll(() => visibleDockviewSashCount(page)).toBe(0);
   await choosePaneAction(page, newGroup, "Restore pane");
   await expect(page.getByTestId("workbench-host")).toHaveAttribute(
     "data-zoomed-group-id",
     "none",
   );
+  await expect(page.getByRole("separator")).toHaveCount(1);
+  await expect.poll(() => visibleDockviewSashCount(page)).toBeGreaterThan(0);
 
   await choosePaneAction(page, newGroup, "Merge into previous pane");
   await expect(groups).toHaveCount(1);

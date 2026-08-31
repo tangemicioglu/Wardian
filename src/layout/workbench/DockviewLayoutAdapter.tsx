@@ -1541,7 +1541,7 @@ export function DockviewLayoutAdapter(props: DockviewLayoutAdapterProps) {
             onWillDrop={handleWillDrop}
           />
         )}
-        {!safe_mode && splitNodesInTreeOrder(document.root).map((split) => (
+        {!safe_mode && !zoomed_group_id && splitNodesInTreeOrder(document.root).map((split) => (
           <div
             key={split.node_id}
             className="wardian-workbench-separator-control"
