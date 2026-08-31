@@ -13,15 +13,19 @@ Claude transcript `parentUuid` is lineage metadata present on ordinary user
 messages as well as provider-injected context. It is retained as a causal
 reference, but is not by itself context evidence. Context classification
 requires an explicit provider marker such as `isMeta`/`isContext` or a parent
-tool-use reference. Provider interruption records and local command records do
-not count as user prompts.
+tool-use reference. Provider interruption records are normalized as
+`provider_internal` events so they remain in the lossless transcript and
+conversation archive; neither interruptions nor local command records count as
+user prompts.
 
 The timestamp is read from the transcript record's top-level `timestamp` and
 merged with the durable per-agent watermark using the newest valid value.
 
 ## Regression coverage
 
-The Claude provider tests cover a normal user prompt with `parentUuid`, an
-interruption record, and explicit native context markers. Telemetry tests
-verify that a normal parent-linked prompt is accepted and advances the latest
-query timestamp.
+The shared Claude classifier tests cover a normal user prompt with
+`parentUuid`, both interruption records, and explicit native context markers.
+Normalized-chat tests verify that interruption records remain as
+`provider_internal` messages. The latest-query telemetry path consumes the
+same `RealQuery` classification, so these tests cover its acceptance and
+exclusion boundary without dropping provider-internal archive evidence.

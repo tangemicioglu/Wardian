@@ -11,6 +11,7 @@ pub(crate) enum ClaudeUserEventKind {
     RealQuery,
     ContextInjection,
     ToolResult,
+    ProviderInternal,
     LocalCommand,
     Ignored,
 }
@@ -40,6 +41,9 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
         if trimmed.is_empty() {
             return ClaudeUserEventKind::Ignored;
         }
+        if is_claude_interruption_content(trimmed) {
+            return ClaudeUserEventKind::ProviderInternal;
+        }
         if is_claude_non_query_content(trimmed) {
             return ClaudeUserEventKind::LocalCommand;
         }
@@ -52,6 +56,15 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
 
     if items.is_empty() {
         return ClaudeUserEventKind::Ignored;
+    }
+    if items.iter().any(|item| {
+        item.get("type").and_then(|v| v.as_str()) == Some("text")
+            && item
+                .get("text")
+                .and_then(|v| v.as_str())
+                .is_some_and(|text| is_claude_interruption_content(text.trim()))
+    }) {
+        return ClaudeUserEventKind::ProviderInternal;
     }
     if items.iter().any(|item| {
         item.get("type").and_then(|v| v.as_str()) == Some("text")
@@ -134,13 +147,17 @@ fn first_nonempty_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Opt
     })
 }
 
+fn is_claude_interruption_content(content: &str) -> bool {
+    content.starts_with("[Request interrupted by user]")
+        || content.starts_with("[Request interrupted by user for tool use]")
+}
+
 fn is_claude_non_query_content(content: &str) -> bool {
     content.starts_with("<local-command-caveat>")
         || content.starts_with("<command-name>")
         || content.starts_with("<command-message>")
         || content.starts_with("<command-args>")
         || content.starts_with("<local-command-stdout>")
-        || content.starts_with("[Request interrupted by user for tool use]")
 }
 
 impl Default for ClaudeProvider {
@@ -448,9 +465,9 @@ impl AgentProvider for ClaudeProvider {
                 ClaudeUserEventKind::ContextInjection | ClaudeUserEventKind::ToolResult => {
                     Some(AgentEvent::Generating)
                 }
-                ClaudeUserEventKind::LocalCommand | ClaudeUserEventKind::Ignored => {
-                    Some(AgentEvent::Unknown)
-                }
+                ClaudeUserEventKind::ProviderInternal
+                | ClaudeUserEventKind::LocalCommand
+                | ClaudeUserEventKind::Ignored => Some(AgentEvent::Unknown),
             },
             // Claude is actively streaming a response
             "assistant" => Some(Self::assistant_event(&parsed)),
@@ -706,6 +723,24 @@ SET dp0=%~dp0
         let p = make_provider();
         let line = r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#;
         assert_eq!(p.parse_output(line).unwrap(), AgentEvent::Unknown);
+    }
+
+    #[test]
+    fn classify_claude_interruption_records_as_provider_internal() {
+        for content in [
+            "[Request interrupted by user]",
+            "[Request interrupted by user for tool use]",
+        ] {
+            let parsed = serde_json::json!({
+                "type": "user",
+                "parentUuid": "assistant-1",
+                "message": { "role": "user", "content": content },
+            });
+            assert_eq!(
+                classify_claude_user_event(&parsed),
+                ClaudeUserEventKind::ProviderInternal
+            );
+        }
     }
 
     #[test]

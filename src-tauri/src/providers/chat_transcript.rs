@@ -652,6 +652,25 @@ fn normalize_claude(
                     metadata,
                 )
             }
+            ClaudeUserEventKind::ProviderInternal => {
+                let message = parsed.get("message").unwrap_or(parsed);
+                let metadata = json!({
+                    "raw_type": msg_type,
+                    "input_origin": "provider_internal",
+                    "input_purpose": "internal",
+                    "context_observation": "provider_native",
+                });
+                message_event_with_metadata(
+                    session_id,
+                    provider,
+                    sequence,
+                    AgentChatRole::User,
+                    text_from_value(message)?,
+                    "stream_json".to_string(),
+                    turn_id_from(message).or_else(|| turn_id_from(parsed)),
+                    metadata,
+                )
+            }
             ClaudeUserEventKind::ToolResult => {
                 let item = content_array(parsed.get("message").unwrap_or(parsed))?
                     .iter()
@@ -2514,6 +2533,31 @@ mod tests {
         assert_eq!(event.metadata["input_origin"], "context_injection");
         assert_eq!(event.metadata["input_purpose"], "context");
         assert_eq!(event.metadata["causal_ref"], "provider:uuid:request-1");
+    }
+
+    #[test]
+    fn claude_interruption_records_are_provider_internal_messages() {
+        let lines = [
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user]"}}"#,
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#,
+        ];
+
+        let events = normalize_chat_lines("agent-1", "claude", lines);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| {
+            event.kind == AgentChatEventKind::Message
+                && event.role == Some(AgentChatRole::User)
+                && event.metadata["input_origin"] == "provider_internal"
+                && event.metadata["input_purpose"] == "internal"
+        }));
+        assert_eq!(
+            events[0].text.as_deref(),
+            Some("[Request interrupted by user]")
+        );
+        assert_eq!(
+            events[1].text.as_deref(),
+            Some("[Request interrupted by user for tool use]")
+        );
     }
 
     #[test]
