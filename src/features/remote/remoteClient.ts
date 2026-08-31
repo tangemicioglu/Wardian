@@ -14,6 +14,7 @@ import type {
   RemoteAutomationRunRequest,
   RemoteAutomationStopRequest,
   RemoteAutomationSummary,
+  RemoteAutomationMonitorSnapshot,
 } from "../../types";
 
 export interface RemoteAgentChatPage {
@@ -210,6 +211,20 @@ export const remoteClient = {
   async listAutomations() {
     const result = await remoteJson<{ automations: RemoteAutomationSummary[] }>("/remote/api/automations");
     return result.automations;
+  },
+  async loadAutomationMonitor(offsets: {
+    active_offset?: number;
+    recent_offset?: number;
+    schedule_offset?: number;
+  } = {}) {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(offsets)) {
+      if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+        search.set(key, String(value));
+      }
+    }
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return remoteJson<RemoteAutomationMonitorSnapshot>(`/remote/api/automations/monitor${suffix}`);
   },
   async loadWatchlists() {
     return remoteJson<RemoteWatchlistResponse>("/remote/api/watchlists");

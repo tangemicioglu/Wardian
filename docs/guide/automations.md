@@ -93,6 +93,10 @@ The `mock` executor exists only for automation-engine fixture tests.
 
 ## Monitoring Automation Activity
 
+Automations opens in **Monitor** by default. Choose **Edit** when you want to
+author a workflow; opening a blueprint for editing or a run for observation
+also switches to the appropriate view explicitly.
+
 Monitor shows a unified activity feed for automation schedules and runs. Use the
 tabs to switch between all activity, items needing attention, running work,
 scheduled work, and history.
@@ -106,7 +110,8 @@ Each section uses a card hierarchy suited to the operator's question:
 - **Running** leads with ownership and live state, including when the run
   started and was last updated.
 - **Needs attention** leads with ownership, the action required, and the latest
-  status update.
+  status update. It includes approval gates, unsuperseded failed runs, and
+  schedule launch failures that do not have a newer retained run.
 - **All** preserves those section-specific priorities instead of forcing every
   activity into one universal row layout.
 

@@ -1,6 +1,7 @@
 import type { AutomationSchedule } from '../../../types/automation';
 import type { RunStatusKind, RunSummary } from '../run/runTypes';
 import { formatRunStatus } from '../run/statusLabels';
+import { automationAttention } from './attentionModel';
 
 export type ActivityFilter = 'all' | 'attention' | 'running' | 'scheduled' | 'history';
 export type ActivitySection = Exclude<ActivityFilter, 'all'>;
@@ -55,6 +56,7 @@ export function buildMonitorModel(runs: RunSummary[], schedules: AutomationSched
   let runningCount = 0;
   let awaitingCount = 0;
   let pausedCount = 0;
+  const attention = automationAttention(runs, schedules);
 
   for (const schedule of schedules) {
     scheduleBlueprintIds.add(schedule.blueprint_id);
@@ -109,7 +111,7 @@ export function buildMonitorModel(runs: RunSummary[], schedules: AutomationSched
       activeRun: run,
       schedules: unambiguousSchedule ? [unambiguousSchedule] : [],
       nextSchedule: unambiguousSchedule,
-    }));
+    }, attention.runIds.has(run.run_id)));
   }
 
   for (const schedule of schedules) {
@@ -130,7 +132,7 @@ export function buildMonitorModel(runs: RunSummary[], schedules: AutomationSched
       activeRun: null,
       schedules: [schedule],
       nextSchedule: schedule,
-    }));
+    }, attention.scheduleIds.has(schedule.id) || Boolean(latestRun && attention.runIds.has(latestRun.run_id))));
   }
 
   for (const blueprintId of manualBlueprintIds) {
@@ -144,7 +146,7 @@ export function buildMonitorModel(runs: RunSummary[], schedules: AutomationSched
       activeRun: null,
       schedules: [],
       nextSchedule: null,
-    }));
+    }, Boolean(latestRun && attention.runIds.has(latestRun.run_id))));
   }
 
   const failedRunBlueprintIds = new Set<string>();
@@ -256,8 +258,8 @@ function activityFromParts(parts: {
   latestRun: RunSummary | null;
   activeRun: RunSummary | null;
   nextSchedule: AutomationSchedule | null;
-}): AutomationActivity {
-  const state = activityState(parts.latestRun, parts.activeRun, parts.schedules, parts.nextSchedule);
+}, needsAttention: boolean): AutomationActivity {
+  const state = activityState(parts.latestRun, parts.activeRun, parts.schedules, parts.nextSchedule, needsAttention);
   return { ...parts, ...state };
 }
 
@@ -266,11 +268,20 @@ function activityState(
   activeRun: RunSummary | null,
   schedules: AutomationSchedule[],
   nextSchedule: AutomationSchedule | null,
+  needsAttention: boolean,
 ): Pick<AutomationActivity, 'statusLabel' | 'tone' | 'section' | 'issue'> {
   const scheduleIssue = schedules.find((schedule) => schedule.last_run_status === 'failed' || schedule.last_run_error)?.last_run_error
     ?? (schedules.some((schedule) => schedule.last_run_status === 'failed') ? 'Last scheduled run failed' : null);
   if (activeRun?.status === 'awaiting_approval') {
     return { statusLabel: 'Awaiting approval', tone: 'warning', section: 'attention', issue: null };
+  }
+  if (needsAttention) {
+    return {
+      statusLabel: 'Failed',
+      tone: 'error',
+      section: 'attention',
+      issue: latestRun?.failure ?? scheduleIssue ?? 'Latest run failed',
+    };
   }
   if (activeRun?.status === 'running') {
     return { statusLabel: 'Running', tone: 'active', section: 'running', issue: null };

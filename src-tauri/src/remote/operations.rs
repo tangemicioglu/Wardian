@@ -1,8 +1,10 @@
 use crate::remote::models::{
-    RemoteAgentActionRequest, RemoteAgentSummary, RemoteInboxActionRequest, RemoteTerminalSnapshot,
-    RemoteWatchlistResponse,
+    RemoteAgentActionRequest, RemoteAgentSummary, RemoteAutomationMonitorRun,
+    RemoteAutomationMonitorSchedule, RemoteAutomationMonitorSnapshot, RemoteInboxActionRequest,
+    RemoteTerminalSnapshot, RemoteWatchlistResponse,
 };
 use crate::state::AppState;
+use crate::utils::strip_ansi_controls;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager};
 use wardian_core::control::{
@@ -10,6 +12,10 @@ use wardian_core::control::{
 };
 use wardian_core::models::chat::AgentChatEvent;
 use wardian_core::models::AgentConfig;
+
+const REMOTE_AUTOMATION_MONITOR_PAGE_SIZE: usize = 25;
+const REMOTE_RUN_FAILURE_SUMMARY: &str = "Run failed. Open Wardian desktop for details.";
+const REMOTE_SCHEDULE_FAILURE_SUMMARY: &str = "Last run failed. Open Wardian desktop for details.";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RemoteAgentChatPage {
@@ -166,6 +172,271 @@ pub fn remote_watchlist_state() -> Result<RemoteWatchlistResponse, String> {
         teams,
         prefs,
     })
+}
+
+pub fn remote_automation_monitor_snapshot(
+    active_offset: usize,
+    recent_offset: usize,
+    schedule_offset: usize,
+) -> Result<RemoteAutomationMonitorSnapshot, String> {
+    let root = wardian_core::paths::automation_runs_dir().ok_or("no wardian home")?;
+    let schedules = wardian_core::schedule::try_load_schedules()
+        .map_err(|_| "automation_schedules_unavailable")?;
+    remote_automation_monitor_snapshot_from(
+        &root,
+        schedules,
+        active_offset,
+        recent_offset,
+        schedule_offset,
+    )
+}
+
+fn remote_automation_monitor_snapshot_from(
+    root: &std::path::Path,
+    schedules: Vec<wardian_core::models::AutomationSchedule>,
+    active_offset: usize,
+    recent_offset: usize,
+    schedule_offset: usize,
+) -> Result<RemoteAutomationMonitorSnapshot, String> {
+    let schedule_names = schedules
+        .iter()
+        .map(|schedule| (schedule.id.clone(), schedule.name.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut blueprint_names = HashMap::<String, String>::new();
+    let active_retain = active_offset.saturating_add(REMOTE_AUTOMATION_MONITOR_PAGE_SIZE + 1);
+    let recent_retain = recent_offset.saturating_add(REMOTE_AUTOMATION_MONITOR_PAGE_SIZE + 1);
+    let mut active_runs = Vec::new();
+    let mut recent_runs = Vec::new();
+
+    if root.exists() {
+        for blueprint_entry in std::fs::read_dir(root)
+            .map_err(|_| "automation_runs_unavailable")?
+            .flatten()
+        {
+            if !blueprint_entry.path().is_dir() {
+                continue;
+            }
+            let Ok(run_entries) = std::fs::read_dir(blueprint_entry.path()) else {
+                continue;
+            };
+            for run_entry in run_entries.flatten() {
+                let run_root = run_entry.path();
+                if !run_root.is_dir() {
+                    continue;
+                }
+                let Some(state) = wardian_core::engine::store::read_checkpoint(&run_root)
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                let schedule_id = crate::automation::runs::read_run_invocation(&run_root)
+                    .ok()
+                    .flatten()
+                    .and_then(|invocation| invocation.schedule_id);
+                let automation_name = schedule_id
+                    .as_ref()
+                    .and_then(|id| schedule_names.get(id))
+                    .cloned()
+                    .unwrap_or_else(|| blueprint_name(&state.blueprint_id, &mut blueprint_names));
+                let (started_at, updated_at) =
+                    crate::commands::automation::event_log_timestamp_bounds(&run_root);
+                let completed_at =
+                    matches!(state.status, wardian_core::engine::RunStatus::Completed)
+                        .then(|| updated_at.clone())
+                        .flatten();
+                let run = RemoteAutomationMonitorRun {
+                    run_id: state.run_id,
+                    blueprint_id: state.blueprint_id,
+                    automation_name: bounded_remote_text(&automation_name, 160),
+                    schedule_id,
+                    status: run_status_label(state.status).to_string(),
+                    node_count: state.nodes.len(),
+                    completed_node_count: None,
+                    failure: project_remote_failure(state.failure, REMOTE_RUN_FAILURE_SUMMARY),
+                    started_at,
+                    updated_at,
+                    completed_at,
+                };
+                let (target, retain) = if matches!(
+                    state.status,
+                    wardian_core::engine::RunStatus::Running
+                        | wardian_core::engine::RunStatus::AwaitingApproval
+                ) {
+                    (&mut active_runs, active_retain)
+                } else {
+                    (&mut recent_runs, recent_retain)
+                };
+                target.push(run);
+                target.sort_by(compare_remote_runs);
+                if target.len() > retain {
+                    target.pop();
+                }
+            }
+        }
+    }
+
+    let (active_runs, active_runs_truncated, active_runs_next_offset) =
+        page_remote_items(active_runs, active_offset);
+    let (recent_runs, recent_runs_truncated, recent_runs_next_offset) =
+        page_remote_items(recent_runs, recent_offset);
+
+    let mut projected_schedules = schedules
+        .into_iter()
+        .filter(|schedule| schedule.is_paused || schedule.next_run_epoch_ms.is_some())
+        .map(project_remote_schedule)
+        .collect::<Vec<_>>();
+    projected_schedules.sort_by(compare_remote_schedules);
+    let (schedules, schedules_truncated, schedules_next_offset) =
+        page_remote_items(projected_schedules, schedule_offset);
+
+    Ok(RemoteAutomationMonitorSnapshot {
+        schema_version: 1,
+        generated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        active_runs,
+        active_runs_truncated,
+        active_runs_next_offset,
+        recent_runs,
+        recent_runs_truncated,
+        recent_runs_next_offset,
+        schedules,
+        schedules_truncated,
+        schedules_next_offset,
+    })
+}
+
+fn page_remote_items<T>(items: Vec<T>, offset: usize) -> (Vec<T>, bool, Option<usize>) {
+    let page_end = offset.saturating_add(REMOTE_AUTOMATION_MONITOR_PAGE_SIZE);
+    let truncated = items.len() > page_end;
+    (
+        items
+            .into_iter()
+            .skip(offset)
+            .take(REMOTE_AUTOMATION_MONITOR_PAGE_SIZE)
+            .collect(),
+        truncated,
+        truncated.then_some(page_end),
+    )
+}
+
+fn blueprint_name(blueprint_id: &str, cache: &mut HashMap<String, String>) -> String {
+    if let Some(name) = cache.get(blueprint_id) {
+        return name.clone();
+    }
+    let name = wardian_core::automation::resolve_blueprint_path(blueprint_id)
+        .and_then(|path| wardian_core::automation::parse_file(&path).ok())
+        .map(|blueprint| blueprint.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| blueprint_id.to_string());
+    cache.insert(blueprint_id.to_string(), name.clone());
+    name
+}
+
+fn run_status_label(status: wardian_core::engine::RunStatus) -> &'static str {
+    match status {
+        wardian_core::engine::RunStatus::Running => "running",
+        wardian_core::engine::RunStatus::AwaitingApproval => "awaiting_approval",
+        wardian_core::engine::RunStatus::Completed => "completed",
+        wardian_core::engine::RunStatus::Failed => "failed",
+    }
+}
+
+fn compare_remote_runs(
+    left: &RemoteAutomationMonitorRun,
+    right: &RemoteAutomationMonitorRun,
+) -> std::cmp::Ordering {
+    remote_run_time(right)
+        .cmp(&remote_run_time(left))
+        .then_with(|| right.run_id.cmp(&left.run_id))
+}
+
+fn remote_run_time(run: &RemoteAutomationMonitorRun) -> Option<&str> {
+    run.updated_at
+        .as_deref()
+        .or(run.completed_at.as_deref())
+        .or(run.started_at.as_deref())
+}
+
+fn project_remote_schedule(
+    schedule: wardian_core::models::AutomationSchedule,
+) -> RemoteAutomationMonitorSchedule {
+    let mut target_labels = schedule
+        .assignments
+        .iter()
+        .map(|(role, assignment)| match assignment {
+            wardian_core::models::AutomationRoleAssignment::Agent { .. } => {
+                format!("{} · Agent", bounded_remote_text(role, 80))
+            }
+            wardian_core::models::AutomationRoleAssignment::TemporaryProvider {
+                provider, ..
+            } => {
+                format!(
+                    "{} · Temporary {}",
+                    bounded_remote_text(role, 80),
+                    bounded_remote_text(provider, 80)
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    for role in schedule.bindings.keys() {
+        if !schedule.assignments.contains_key(role) {
+            target_labels.push(format!("{} · Assigned", bounded_remote_text(role, 80)));
+        }
+    }
+    target_labels.sort();
+    target_labels.dedup();
+    RemoteAutomationMonitorSchedule {
+        id: schedule.id,
+        blueprint_id: schedule.blueprint_id,
+        automation_name: bounded_remote_text(&schedule.name, 160),
+        schedule: schedule.schedule,
+        next_run_epoch_ms: schedule.next_run_epoch_ms,
+        is_paused: schedule.is_paused,
+        last_run_status: schedule.last_run_status.filter(|value| {
+            matches!(
+                value.as_str(),
+                "running" | "awaiting_approval" | "completed" | "failed"
+            )
+        }),
+        last_run_error: project_remote_failure(
+            schedule.last_run_error,
+            REMOTE_SCHEDULE_FAILURE_SUMMARY,
+        ),
+        last_run_epoch_ms: schedule.last_run_epoch_ms,
+        target_labels,
+    }
+}
+
+fn compare_remote_schedules(
+    left: &RemoteAutomationMonitorSchedule,
+    right: &RemoteAutomationMonitorSchedule,
+) -> std::cmp::Ordering {
+    left.is_paused
+        .cmp(&right.is_paused)
+        .then_with(|| {
+            if left.is_paused {
+                right.last_run_epoch_ms.cmp(&left.last_run_epoch_ms)
+            } else {
+                left.next_run_epoch_ms.cmp(&right.next_run_epoch_ms)
+            }
+        })
+        .then_with(|| left.automation_name.cmp(&right.automation_name))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn bounded_remote_text(value: &str, max_chars: usize) -> String {
+    strip_ansi_controls(value)
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .take(max_chars)
+        .collect()
+}
+
+/// Failure payloads can contain provider output and local paths. The remote
+/// trust boundary exposes only a stable outcome summary; full diagnostics stay
+/// on the desktop.
+fn project_remote_failure(raw_failure: Option<String>, summary: &str) -> Option<String> {
+    raw_failure.map(|_| summary.to_string())
 }
 
 /// Builds the same Inbox projection as the desktop queue store.
@@ -1265,6 +1536,148 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use wardian_core::control::WatchTranscriptMessage;
     use wardian_core::models::AgentConfig;
+
+    #[test]
+    fn remote_automation_monitor_pages_are_fixed_and_explicit() {
+        let items = (0..=REMOTE_AUTOMATION_MONITOR_PAGE_SIZE).collect::<Vec<_>>();
+        let (first, truncated, next_offset) = page_remote_items(items, 0);
+
+        assert_eq!(first.len(), REMOTE_AUTOMATION_MONITOR_PAGE_SIZE);
+        assert!(truncated);
+        assert_eq!(next_offset, Some(REMOTE_AUTOMATION_MONITOR_PAGE_SIZE));
+
+        let (beyond, truncated, next_offset) = page_remote_items(vec![1, 2], 10);
+        assert!(beyond.is_empty());
+        assert!(!truncated);
+        assert_eq!(next_offset, None);
+    }
+
+    #[test]
+    fn remote_automation_monitor_rejects_an_unreadable_top_level_run_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("runs-as-file");
+        std::fs::write(&root, "not a directory").expect("write root fixture");
+
+        let error = remote_automation_monitor_snapshot_from(&root, Vec::new(), 0, 0, 0)
+            .expect_err("top-level run path should fail");
+        assert_eq!(error, "automation_runs_unavailable");
+    }
+
+    #[test]
+    fn remote_automation_monitor_skips_a_corrupt_run_item() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let run = temp.path().join("blueprint").join("run-corrupt");
+        std::fs::create_dir_all(&run).expect("create corrupt run");
+        std::fs::write(run.join("state.json"), "not json").expect("write corrupt state");
+
+        let snapshot = remote_automation_monitor_snapshot_from(temp.path(), Vec::new(), 0, 0, 0)
+            .expect("corrupt run should be skipped");
+        assert!(snapshot.active_runs.is_empty());
+        assert!(snapshot.recent_runs.is_empty());
+    }
+
+    #[test]
+    fn remote_failure_projection_never_emits_raw_provider_or_path_details() {
+        let raw = "provider failed at C:\\Users\\private\\workspace and /Users/private/workspace\u{1b}[31m\u{1b}]8;;file:///secret\u{7}";
+        let projected = project_remote_failure(Some(raw.to_string()), REMOTE_RUN_FAILURE_SUMMARY)
+            .expect("failure summary");
+
+        assert_eq!(projected, REMOTE_RUN_FAILURE_SUMMARY);
+        assert!(!projected.contains("private"));
+        assert!(!projected.contains("provider"));
+        assert!(!projected.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn remote_schedule_projection_omits_sensitive_invocation_state() {
+        let mut assignments = wardian_core::models::AutomationAssignments::new();
+        assignments.insert(
+            "reviewer".to_string(),
+            wardian_core::models::AutomationRoleAssignment::TemporaryProvider {
+                provider: "codex".to_string(),
+                workspace: Some("<absolute-workspace-path>".to_string()),
+                model: Some("secret-model".to_string()),
+                effort: None,
+            },
+        );
+        let schedule = wardian_core::models::AutomationSchedule {
+            id: "schedule-1".to_string(),
+            blueprint_id: "release".to_string(),
+            name: "Release\u{1b}[31m".to_string(),
+            provider: Some("codex".to_string()),
+            workspace: Some("<absolute-workspace-path>".to_string()),
+            input: serde_json::json!({ "token": "do-not-return" }),
+            bindings: HashMap::from([("writer".to_string(), "agent-secret".to_string())]),
+            assignments,
+            schedule: wardian_core::models::ScheduleDefinition {
+                schedule_type: "daily".to_string(),
+                active: true,
+                ..Default::default()
+            },
+            next_run_epoch_ms: Some(42),
+            paused_remaining_ms: None,
+            is_paused: false,
+            last_run_status: Some("failed".to_string()),
+            last_run_error: Some(
+                "failed at C:\\Users\\private and /Users/private\u{1b}]8;;file:///secret\u{7}"
+                    .to_string(),
+            ),
+            last_run_epoch_ms: Some(10),
+        };
+
+        let projected = project_remote_schedule(schedule);
+        let json = serde_json::to_value(projected).expect("remote schedule json");
+        let text = json.to_string();
+
+        assert_eq!(json["automation_name"], "Release");
+        assert!(json.get("input").is_none());
+        assert!(json.get("workspace").is_none());
+        assert!(json.get("bindings").is_none());
+        assert!(!text.contains("do-not-return"));
+        assert!(!text.contains("absolute-workspace-path"));
+        assert!(!text.contains("agent-secret"));
+        assert!(!text.contains("secret-model"));
+        assert!(!text.contains("Users"));
+        assert!(!text.contains("file:///"));
+        assert_eq!(json["last_run_error"], REMOTE_SCHEDULE_FAILURE_SUMMARY);
+        assert_eq!(
+            json["target_labels"],
+            serde_json::json!(["reviewer · Temporary codex", "writer · Assigned"])
+        );
+    }
+
+    #[test]
+    fn remote_schedule_order_puts_upcoming_before_deterministic_paused_rows() {
+        let schedule = |id: &str, paused: bool, next: Option<u64>, last: Option<u64>| {
+            RemoteAutomationMonitorSchedule {
+                id: id.to_string(),
+                blueprint_id: id.to_string(),
+                automation_name: id.to_string(),
+                schedule: wardian_core::models::ScheduleDefinition::default(),
+                next_run_epoch_ms: next,
+                is_paused: paused,
+                last_run_status: None,
+                last_run_error: None,
+                last_run_epoch_ms: last,
+                target_labels: Vec::new(),
+            }
+        };
+        let mut schedules = vec![
+            schedule("paused-old", true, None, Some(1)),
+            schedule("next-later", false, Some(20), None),
+            schedule("paused-new", true, None, Some(2)),
+            schedule("next-soon", false, Some(10), None),
+        ];
+        schedules.sort_by(compare_remote_schedules);
+
+        assert_eq!(
+            schedules
+                .into_iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec!["next-soon", "next-later", "paused-new", "paused-old"]
+        );
+    }
 
     fn test_agent(
         session_id: &str,

@@ -344,6 +344,9 @@ test.describe("Workbench recovery", () => {
     });
 
     await page.goto("/");
+    await page.getByTestId("automations-view")
+      .getByRole("button", { name: "edit", exact: true })
+      .click();
     const automationName = page.getByRole("textbox", { name: "Automation name" });
     await automationName.fill("Edited automation");
     await executeWorkbenchCommand(page, "Reset Workbench");

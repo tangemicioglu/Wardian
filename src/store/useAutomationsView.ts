@@ -16,7 +16,7 @@ interface AutomationsViewState {
 }
 
 export const useAutomationsView = create<AutomationsViewState>((set) => ({
-  mode: 'edit',
+  mode: 'monitor',
   blueprintPath: null,
   selectedRunId: null,
   observedBlueprintId: null,
@@ -44,7 +44,7 @@ export const useAutomationsView = create<AutomationsViewState>((set) => ({
     };
   }),
   reset: () => set({
-    mode: 'edit',
+    mode: 'monitor',
     blueprintPath: null,
     selectedRunId: null,
     observedBlueprintId: null,

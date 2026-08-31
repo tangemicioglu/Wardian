@@ -9,7 +9,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        DefaultBodyLimit, Json, Path as AxumPath, Query, State,
+        DefaultBodyLimit, Json, Path as AxumPath, Query, RawQuery, State,
     },
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -101,6 +101,10 @@ fn remote_router(app: AppHandle, config: RemoteGatewayConfig) -> Router {
         .route("/remote/api/queue/action", post(run_inbox_action))
         .route("/remote/api/watchlists", get(load_remote_watchlists))
         .route("/remote/api/automations", get(list_remote_automations))
+        .route(
+            "/remote/api/automations/monitor",
+            get(load_remote_automation_monitor),
+        )
         .route(
             "/remote/api/agents/{session_id}/chat",
             get(load_remote_agent_chat),
@@ -699,6 +703,103 @@ async fn list_remote_automations(
 
 fn remote_automation_compat_empty_list_response() -> serde_json::Value {
     serde_json::json!({ "automations": [] })
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct RemoteAutomationMonitorQuery {
+    active_offset: Option<usize>,
+    recent_offset: Option<usize>,
+    schedule_offset: Option<usize>,
+}
+
+async fn load_remote_automation_monitor(
+    State(ctx): State<RemoteGatewayContext>,
+    headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<crate::remote::models::RemoteAutomationMonitorSnapshot>, RemoteGatewayError> {
+    let origin =
+        require_audited_request_boundary(&ctx.config, &headers, false, "load_automation_monitor")?;
+    let session = require_audited_remote_session(
+        &ctx,
+        &headers,
+        &origin,
+        "automation_read",
+        "load_automation_monitor",
+    )
+    .await?;
+    let query = match parse_remote_automation_monitor_query(raw_query.as_deref()) {
+        Ok(query) => query,
+        Err(code) => {
+            audit_gateway_event(
+                &session,
+                &origin,
+                GatewayAuditEvent::rejected("automation_read", "load_automation_monitor", code),
+            );
+            return Err(RemoteGatewayError::bad_request(code));
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        crate::remote::operations::remote_automation_monitor_snapshot(
+            query.active_offset.unwrap_or(0),
+            query.recent_offset.unwrap_or(0),
+            query.schedule_offset.unwrap_or(0),
+        )
+    })
+    .await
+    .map_err(|_| "automation_monitor_unavailable".to_string())
+    .and_then(|result| result);
+
+    match result {
+        Ok(snapshot) => {
+            audit_gateway_event(
+                &session,
+                &origin,
+                GatewayAuditEvent::accepted("automation_read", "load_automation_monitor"),
+            );
+            Ok(Json(snapshot))
+        }
+        Err(_) => {
+            audit_gateway_event(
+                &session,
+                &origin,
+                GatewayAuditEvent::rejected(
+                    "automation_read",
+                    "load_automation_monitor",
+                    "automation_monitor_unavailable",
+                ),
+            );
+            Err(RemoteGatewayError::service_unavailable(
+                "automation_monitor_unavailable",
+            ))
+        }
+    }
+}
+
+fn parse_remote_automation_monitor_query(
+    raw_query: Option<&str>,
+) -> Result<RemoteAutomationMonitorQuery, &'static str> {
+    let mut query = RemoteAutomationMonitorQuery::default();
+    for pair in raw_query.unwrap_or_default().split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let slot = match key {
+            "active_offset" => &mut query.active_offset,
+            "recent_offset" => &mut query.recent_offset,
+            "schedule_offset" => &mut query.schedule_offset,
+            _ => continue,
+        };
+        if slot.is_some() || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("invalid_automation_monitor_query");
+        }
+        *slot = Some(
+            value
+                .parse::<usize>()
+                .map_err(|_| "invalid_automation_monitor_query")?,
+        );
+    }
+    Ok(query)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1616,6 +1717,29 @@ mod tests {
     #[test]
     fn gateway_accepts_loopback_bind_host() {
         assert!(validate_gateway_bind_config(&config()).is_ok());
+    }
+
+    #[test]
+    fn automation_monitor_query_accepts_offsets_and_rejects_ambiguous_values() {
+        let parsed = parse_remote_automation_monitor_query(Some(
+            "active_offset=0&recent_offset=25&schedule_offset=50",
+        ))
+        .expect("valid monitor query");
+        assert_eq!(parsed.active_offset, Some(0));
+        assert_eq!(parsed.recent_offset, Some(25));
+        assert_eq!(parsed.schedule_offset, Some(50));
+
+        for invalid in [
+            "active_offset=-1",
+            "recent_offset=not-a-number",
+            "schedule_offset=",
+            "active_offset=1&active_offset=2",
+        ] {
+            assert_eq!(
+                parse_remote_automation_monitor_query(Some(invalid)).unwrap_err(),
+                "invalid_automation_monitor_query"
+            );
+        }
     }
 
     #[test]

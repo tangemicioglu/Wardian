@@ -44,6 +44,7 @@ export const RemoteBottomNav: React.FC = () => {
             <button
               key={tab.id}
               type="button"
+              data-remote-tab={tab.id}
               aria-current={active ? "page" : undefined}
               onClick={() => setActiveRemoteTab(tab.id)}
               className={`flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-md text-[10px] transition-colors ${

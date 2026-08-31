@@ -119,4 +119,30 @@ describe("remoteClient error propagation", () => {
       vi.useRealTimers();
     }
   });
+
+  it("requests bounded automation monitor pages through server-owned offsets", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        schema_version: 1,
+        generated_at: "2026-08-31T12:00:00.000Z",
+        active_runs: [],
+        active_runs_truncated: false,
+        active_runs_next_offset: null,
+        recent_runs: [],
+        recent_runs_truncated: false,
+        recent_runs_next_offset: null,
+        schedules: [],
+        schedules_truncated: false,
+        schedules_next_offset: null,
+      }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await remoteClient.loadAutomationMonitor({ active_offset: 25, recent_offset: 50 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/remote/api/automations/monitor?active_offset=25&recent_offset=50",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });

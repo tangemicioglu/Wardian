@@ -216,6 +216,65 @@ function writeRemoteGatewayConfig(harness, port) {
   );
 }
 
+function seedRemoteAutomationMonitor(harness) {
+  const blueprintId = `remote-monitor-${RUN_ID}`;
+  const runId = `remote-monitor-run-${RUN_ID}`;
+  const scheduleId = `remote-monitor-schedule-${RUN_ID}`;
+  const automationDir = path.join(harness.isolatedHome, "library", "automations");
+  const runDir = path.join(harness.isolatedHome, "logs", "automations", blueprintId, runId);
+  fs.mkdirSync(automationDir, { recursive: true });
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(automationDir, `${blueprintId}.md`), `---
+schema: 2
+id: ${blueprintId}
+name: Native Remote Monitor
+nodes:
+  - id: trigger
+    type: manual_trigger
+---
+
+# Native Remote Monitor
+`);
+  fs.writeFileSync(path.join(runDir, "events.jsonl"), `${JSON.stringify({
+    seq: 0,
+    ts: "2026-08-31T12:00:00Z",
+    kind: "run_started",
+    blueprint_id: blueprintId,
+    schema: 2,
+    trigger: {},
+  })}\n${JSON.stringify({ seq: 1, ts: "2026-08-31T12:01:00Z", kind: "run_completed" })}\n`);
+  fs.writeFileSync(path.join(runDir, "state.json"), JSON.stringify({
+    run_id: runId,
+    blueprint_id: blueprintId,
+    status: "completed",
+    nodes: {},
+    registry: { nodes: {}, trigger: { output: {} } },
+    loop_iter: {},
+    delivered: {},
+    skipped_edges: [],
+    next_seq: 2,
+    failure: null,
+  }, null, 2));
+  fs.writeFileSync(path.join(harness.isolatedHome, "library", "schedules.json"), JSON.stringify({
+    schema: 1,
+    schedules: [{
+      id: scheduleId,
+      blueprint_id: blueprintId,
+      name: "Native Remote Schedule",
+      input: { secret: "must-not-leak" },
+      bindings: { reviewer: "agent-private-id" },
+      assignments: {},
+      schedule: { schedule_type: "daily", time_of_day: "09:00", repeat_every: 1, end_condition: "never", occurrence_count: 0, active: true },
+      next_run_epoch_ms: Date.parse("2099-09-01T13:00:00.000Z"),
+      is_paused: false,
+      last_run_status: "failed",
+      last_run_error: "provider failed at C:\\Users\\private and /Users/private\u001b]8;;file:///secret\u0007",
+      last_run_epoch_ms: Date.parse("2026-08-31T12:01:00.000Z"),
+    }],
+  }, null, 2));
+  return { blueprintId, runId, scheduleId };
+}
+
 function authSignatureMessage(challenge) {
   return Buffer.from(
     `wardian.remote.auth.v1\norigin:${challenge.origin}\ndevice:${challenge.device_id}\nchallenge:${challenge.challenge_id}\nnonce:${challenge.nonce}`,
@@ -331,6 +390,107 @@ async function assertPreAuthRateLimitIsAudited(baseUrl, canonicalOrigin, deviceI
     "auth challenge rate-limit rejection was not written to the remote audit log",
   );
 }
+
+test("remote automation monitor returns persisted schedule and run state through authenticated gateway", { timeout: 120000 }, async (t) => {
+  const harness = await createNativeHarness();
+  prepareIsolatedHome(harness);
+  const gatewayPort = await getFreePort();
+  writeRemoteGatewayConfig(harness, gatewayPort);
+  const seededAutomation = seedRemoteAutomationMonitor(harness);
+  const baseUrl = `http://127.0.0.1:${gatewayPort}`;
+  const canonicalOrigin = `https://127.0.0.1:${gatewayPort}`;
+
+  if (!skipNativeBuild) ensureNativeAppBuilt(harness);
+  const session = await startNativeSession(harness);
+  t.after(async () => session.close());
+  await waitForAppShell(session.driver, 20000);
+  await waitForGateway(baseUrl);
+
+  const unauthorized = await fetch(`${baseUrl}/remote/api/automations/monitor`);
+  assert.equal(unauthorized.status, 401);
+
+  const keys = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const publicKeySpkiDer = keys.publicKey.export({ type: "spki", format: "der" });
+  const pairing = await invokeTauri(session.driver, "create_remote_pairing_offer");
+  const pairingSubmit = await fetch(`${baseUrl}/remote/api/pairing/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: canonicalOrigin },
+    body: JSON.stringify({
+      pairing_offer_id: pairing.pairing_offer_id,
+      nonce: pairing.nonce,
+      device_label: `Automation monitor phone ${RUN_ID}`,
+      public_key_spki_der_base64: publicKeySpkiDer.toString("base64"),
+    }),
+  });
+  await assertStatus(pairingSubmit, 202, "automation monitor pairing submit");
+  const pendingPairing = await pairingSubmit.json();
+  await invokeTauri(session.driver, "approve_remote_pairing_request", {
+    requestId: pendingPairing.pairing_request_id,
+  });
+
+  const challengeResponse = await fetch(`${baseUrl}/remote/api/auth/challenge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: canonicalOrigin },
+    body: JSON.stringify({ device_id: pendingPairing.device_id }),
+  });
+  await assertStatus(challengeResponse, 200, "automation monitor auth challenge");
+  const challenge = await challengeResponse.json();
+  const signature = crypto.createSign("SHA256").update(authSignatureMessage(challenge)).sign(keys.privateKey);
+  const sessionResponse = await fetch(`${baseUrl}/remote/api/auth/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: canonicalOrigin },
+    body: JSON.stringify({
+      challenge_id: challenge.challenge_id,
+      device_id: pendingPairing.device_id,
+      signature_der_base64: signature.toString("base64"),
+    }),
+  });
+  await assertStatus(sessionResponse, 200, "automation monitor auth session");
+  const cookie = sessionResponse.headers.get("set-cookie");
+  assert.ok(cookie?.includes(`${REMOTE_SESSION_COOKIE_NAME}=`));
+
+  const response = await fetch(`${baseUrl}/remote/api/automations/monitor`, {
+    headers: { Cookie: cookie },
+  });
+  await assertStatus(response, 200, "automation monitor");
+  const snapshot = await response.json();
+  assert.equal(snapshot.schema_version, 1);
+  assert.equal(snapshot.recent_runs.some((run) => run.run_id === seededAutomation.runId), true);
+  assert.equal(snapshot.schedules.some((schedule) => schedule.id === seededAutomation.scheduleId), true);
+  assert.equal(JSON.stringify(snapshot).includes("must-not-leak"), false);
+  assert.equal(JSON.stringify(snapshot).includes("agent-private-id"), false);
+  assert.equal(JSON.stringify(snapshot).includes("Users/private"), false);
+  assert.equal(JSON.stringify(snapshot).includes("file:///secret"), false);
+  assert.equal(
+    snapshot.schedules.find((schedule) => schedule.id === seededAutomation.scheduleId)?.last_run_error,
+    "Last run failed. Open Wardian desktop for details.",
+  );
+  assert.equal(
+    readRemoteAuditRecords(harness).some(
+      (record) => record.event_type === "automation_read"
+        && record.action === "load_automation_monitor"
+        && record.outcome === "accepted",
+    ),
+    true,
+    "automation monitor read was not written to the remote audit log",
+  );
+
+  const malformed = await fetch(`${baseUrl}/remote/api/automations/monitor?active_offset=-1`, {
+    headers: { Cookie: cookie },
+  });
+  await assertStatus(malformed, 400, "malformed automation monitor query");
+  assert.equal((await malformed.json()).code, "invalid_automation_monitor_query");
+  assert.equal(
+    readRemoteAuditRecords(harness).some(
+      (record) => record.event_type === "automation_read"
+        && record.action === "load_automation_monitor"
+        && record.outcome === "rejected"
+        && record.error_code === "invalid_automation_monitor_query",
+    ),
+    true,
+    "malformed automation monitor query was not written to the remote audit log",
+  );
+});
 
 test("remote gateway authenticates broker ownership transitions across desktop and remote", { timeout: 240000 }, async (t) => {
   const harness = await createNativeHarness();

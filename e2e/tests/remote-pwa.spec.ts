@@ -24,6 +24,8 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
 
   const screenshotDir = process.env.WARDIAN_MOBILE_PWA_PARITY_SCREENSHOT_DIR;
   if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
+  const automationScreenshotDir = process.env.WARDIAN_AUTOMATION_MONITOR_SCREENSHOT_DIR;
+  if (automationScreenshotDir) fs.mkdirSync(automationScreenshotDir, { recursive: true });
   const captureFeatureScreenshot = async (name: string, locator: Locator) => {
     if (!screenshotDir) return;
     await locator.screenshot({ path: path.join(screenshotDir, name), animations: "disabled" });
@@ -88,6 +90,74 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   });
   await page.route("**/remote/api/automations", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ automations: [] }) });
+  });
+  await page.route("**/remote/api/automations/monitor**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: 1,
+        generated_at: "2026-08-31T12:00:00.000Z",
+        active_runs: [
+          {
+            run_id: "approval-1",
+            blueprint_id: "release-validation",
+            automation_name: "Release validation",
+            schedule_id: "schedule-release",
+            status: "awaiting_approval",
+            node_count: 4,
+            completed_node_count: 3,
+            failure: null,
+            started_at: "2026-08-31T11:40:00.000Z",
+            updated_at: "2026-08-31T11:55:00.000Z",
+            completed_at: null,
+          },
+          {
+            run_id: "running-1",
+            blueprint_id: "daily-brief",
+            automation_name: "Daily project brief",
+            schedule_id: null,
+            status: "running",
+            node_count: 3,
+            completed_node_count: 1,
+            failure: null,
+            started_at: "2026-08-31T11:50:00.000Z",
+            updated_at: "2026-08-31T11:59:00.000Z",
+            completed_at: null,
+          },
+        ],
+        active_runs_truncated: false,
+        active_runs_next_offset: null,
+        recent_runs: [{
+          run_id: "completed-1",
+          blueprint_id: "dependency-refresh",
+          automation_name: "Dependency refresh",
+          schedule_id: null,
+          status: "completed",
+          node_count: 2,
+          completed_node_count: 2,
+          failure: null,
+          started_at: "2026-08-31T10:00:00.000Z",
+          updated_at: "2026-08-31T10:05:00.000Z",
+          completed_at: "2026-08-31T10:05:00.000Z",
+        }],
+        recent_runs_truncated: false,
+        recent_runs_next_offset: null,
+        schedules: [{
+          id: "schedule-release",
+          blueprint_id: "release-validation",
+          automation_name: "Morning status report",
+          schedule: { schedule_type: "daily", time_of_day: "09:00", repeat_every: 1, end_condition: "never", occurrence_count: 0, active: true },
+          next_run_epoch_ms: Date.parse("2026-09-01T13:00:00.000Z"),
+          is_paused: false,
+          last_run_status: "completed",
+          last_run_error: null,
+          last_run_epoch_ms: Date.parse("2026-08-31T13:00:00.000Z"),
+          target_labels: ["writer · Agent"],
+        }],
+        schedules_truncated: false,
+        schedules_next_offset: null,
+      }),
+    });
   });
   await page.route("**/remote/api/queue", async (route) => {
     await route.fulfill({
@@ -490,6 +560,26 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
     expect.stringContaining("Remote Coder"),
   ]);
   await expect(page.getByRole("navigation", { name: "Remote sections" })).toBeVisible();
+
+  const remoteNavigation = page.getByRole("navigation", { name: "Remote sections" });
+  await remoteNavigation.locator('[data-remote-tab="automations"]').click();
+  const automationMonitor = page.getByTestId("remote-automations-view");
+  await expect(automationMonitor.getByText("Needs attention")).toBeVisible();
+  await expect(automationMonitor.getByText("Running now")).toBeVisible();
+  await expect(automationMonitor.getByText("Up next")).toBeVisible();
+  await expect(automationMonitor.getByText("Recent outcomes")).toBeVisible();
+  await expect(automationMonitor.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "true");
+  if (automationScreenshotDir) {
+    await automationMonitor.screenshot({
+      path: path.join(automationScreenshotDir, "automation-overview.png"),
+      animations: "disabled",
+    });
+  }
+  await automationMonitor.getByRole("button", { name: /Release validation/ }).click();
+  await expect(page.getByRole("dialog", { name: "Release validation" })).toBeVisible();
+  await page.getByRole("button", { name: "Close automation details" }).click();
+  await remoteNavigation.locator('[data-remote-tab="watchlist"]').click();
+  await expect(page.locator('[data-testid="remote-watchlist-view"]')).toBeVisible();
 
   await page.getByRole("button", { name: "Open remote settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
