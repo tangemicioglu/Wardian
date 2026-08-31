@@ -448,13 +448,15 @@ test.describe("Custom Agent Clone", () => {
     });
   });
 
-  test("shows an agent description in the roster and configuration panel", async ({ page }) => {
+  test("keeps an agent description out of the roster while showing it in configuration", async ({ page }) => {
     await installCustomCloneIpcMock(page);
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
+    await expect(page.locator('[data-testid="agent-watchlist"]').getByRole("heading", { name: "All Agents" })).toBeVisible();
     const sourceRow = page.locator('[data-testid="agent-watchlist"] .watchlist-row', { hasText: "E2E Mock Agent" });
-    await expect(sourceRow).toContainText("TestClass · Owns release notes and keeps deployment guidance current.");
+    await expect(sourceRow).toContainText("TestClass");
+    await expect(sourceRow).not.toContainText("Owns release notes and keeps deployment guidance current.");
     await sourceRow.click();
     await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
 
@@ -463,7 +465,7 @@ test.describe("Custom Agent Clone", () => {
     await expect(page.getByText("A memo shown in agent lists. It does not change instructions or capabilities.")).not.toBeVisible();
 
     await page.screenshot({
-      path: path.join("e2e", "screenshots", "agent-descriptions", "2026-07-27", "roster-and-agent-config.png"),
+      path: path.join("e2e", "screenshots", "agent-descriptions", "2026-08-30", "compact-roster-and-agent-config.png"),
       animations: "disabled",
     });
   });

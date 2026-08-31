@@ -1912,7 +1912,7 @@ describe("Agent Watchlist Sidebar", () => {
       render(<App />);
     });
     await waitFor(() => {
-      expect(screen.getByText(/Agent List/i)).toBeInTheDocument();
+      expect(screen.getByText(/All Agents/i)).toBeInTheDocument();
     });
   });
 
@@ -1974,7 +1974,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2006,7 +2006,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2043,7 +2043,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2092,7 +2092,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2146,7 +2146,7 @@ describe("Agent Watchlist Sidebar", () => {
     });
 
     render(<App />);
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     act(() => emitAgentMetrics([{
       session_id: "agent-1",
@@ -2212,7 +2212,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2262,7 +2262,7 @@ describe("Agent Watchlist Sidebar", () => {
     const { emitTurnCompletion } = captureQueueAgentListeners();
 
     render(<App />);
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2283,7 +2283,7 @@ describe("Agent Watchlist Sidebar", () => {
     const { emitTurnCompletion } = captureQueueAgentListeners();
 
     render(<App />);
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2307,7 +2307,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2342,7 +2342,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2374,7 +2374,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitStatus({ session_id: "agent-1", current_status: "Processing..." });
@@ -2406,7 +2406,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
 
     await act(async () => {
       emitAgentMetrics([
@@ -2457,7 +2457,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {
@@ -2494,7 +2494,7 @@ describe("Agent Watchlist Sidebar", () => {
     await act(async () => {
       render(<App />);
     });
-    await screen.findByText("Agent List");
+    await screen.findByText("All Agents");
     mockInvoke.mockClear();
 
     await act(async () => {

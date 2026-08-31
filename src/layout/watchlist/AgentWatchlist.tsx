@@ -927,9 +927,9 @@ export default function AgentWatchlist({
           )}
           <p
             className="text-[10px] text-primary/50 font-medium truncate tracking-wide"
-            title={agent.description?.trim() || agent.agent_class}
+            title={agent.agent_class}
           >
-            {agent.description?.trim() ? `${agent.agent_class} · ${agent.description.trim()}` : agent.agent_class}
+            {agent.agent_class}
           </p>
         </div>
         {prefs.columns.filter(c => c.visible).map(col => {
@@ -993,7 +993,7 @@ export default function AgentWatchlist({
         {/* ── Header ─────────────────────────────────────── */}
         <div className="flex justify-between items-center mb-3">
           <h2 className="text-sm font-bold text-primary tracking-tight truncate">
-            {activeList?.id === "all" ? "Agent List" : activeList?.name ?? "Agent List"}
+            {activeListId === "all" ? "All Agents" : activeList?.name ?? "Agent List"}
           </h2>
           <div className="flex items-center gap-1">
             <button

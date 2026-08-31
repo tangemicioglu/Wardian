@@ -32,7 +32,7 @@ export const RemoteWatchlistView: React.FC<{ onOpenSettings?: () => void }> = ({
   const watchlistAgents = agents.map(remoteAgentToWatchlistAgent);
   const summaryById = new Map(agents.map((agent) => [agent.session_id, agent]));
   const items = getDisplayItemsForList(watchlistAgents, activeList, teams);
-  const currentName = activeList?.name ?? "Agent List";
+  const currentName = activeWatchlistId === "all" ? "All Agents" : activeList?.name ?? "Agent List";
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="remote-watchlist-view">
