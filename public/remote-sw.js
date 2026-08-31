@@ -1,10 +1,26 @@
-const CACHE_NAME = "wardian-remote-app-shell-v1";
-const APP_SHELL = ["/remote", "/manifest.webmanifest", "/icon.png", "/icon-maskable.png"];
+const CACHE_NAME = "wardian-remote-app-shell-__WARDIAN_BUILD_VERSION__";
+const REQUIRED_APP_SHELL = "/remote";
+const OPTIONAL_APP_SHELL = ["/manifest.webmanifest", "/icon.png", "/icon-maskable.png"];
 const ASSET_PREFIX = "/assets/";
+const NAVIGATION_TIMEOUT_MS = 5000;
+
+function fetchWithTimeout(request) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NAVIGATION_TIMEOUT_MS);
+  return fetch(request, { signal: controller.signal }).finally(() => clearTimeout(timeout));
+}
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      // The shell is the recovery path for an unavailable gateway. If it
+      // cannot be cached, fail installation so the last known-good worker and
+      // cache remain active.
+      await cache.add(REQUIRED_APP_SHELL);
+      await Promise.all(OPTIONAL_APP_SHELL.map((url) => cache.add(url).catch(() => undefined)));
+      self.skipWaiting();
+    }),
+  );
 });
 
 self.addEventListener("activate", (event) => {
@@ -25,7 +41,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
   if (event.request.mode === "navigate") {
-    event.respondWith(fetch(event.request).catch(() => caches.match("/remote")));
+    event.respondWith(fetchWithTimeout(event.request).catch(() => caches.match("/remote")));
     return;
   }
 

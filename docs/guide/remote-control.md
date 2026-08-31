@@ -205,6 +205,18 @@ response before diagnosing the browser bundle. The startup split reduces local
 JavaScript transfer and evaluation work; it cannot remove DNS, TLS, Tailscale,
 or remote gateway latency.
 
+During desktop startup, provider restoration, or telemetry persistence, the
+gateway can return the last complete roster immediately. If no live snapshot is
+available yet, it uses the atomic saved agent configuration and marks active
+entries as `Restoring`; the live status stream replaces those provisional
+statuses as soon as the runtime is ready.
+
+The fifteen-second startup request bound applies to read-only data such as the
+session and roster. Remote prompts and lifecycle, Inbox, and automation actions
+can legitimately take longer while the desktop or provider completes the
+operation, so the client does not abandon those mutations at the read timeout
+boundary.
+
 ## Troubleshooting Setup
 
 - **The phone cannot open `/remote`:** confirm Tailscale is connected on both
@@ -229,6 +241,16 @@ or remote gateway latency.
 - **The PWA says the session expired:** tap Re-authenticate. If that fails,
   confirm the device is still listed as paired and scan a fresh pairing code
   after revocation or remote-access reset.
+- **The PWA stays on `Loading Wardian...`:** first verify that the gateway is
+  reachable and that `https://<machine>.<tailnet>.ts.net/remote` serves the
+  current app. After a Wardian update, fully restart the desktop so its
+  embedded remote gateway serves the new build; then reload the PWA. If the
+  gateway is reachable but the spinner remains, inspect the host runtime for
+  provider or telemetry stalls before clearing phone site data.
+- **The PWA still shows an old shell after an update:** close every open tab or
+  installed-PWA window for the remote origin, then open it again after the
+  desktop restart. The versioned worker removes the legacy shell cache during
+  activation; do not clear site data unless the worker cannot be refreshed.
 - **The installed PWA says the desktop is unreachable:** reopen Tailscale on
   the phone, confirm the desktop gateway is running, and retry. This state is
   reserved for transport or gateway failures rather than stale pairing state.

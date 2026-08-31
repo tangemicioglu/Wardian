@@ -24,6 +24,7 @@ export interface RemoteAgentChatPage {
 
 const REMOTE_CSRF_HEADER_NAME = "x-wardian-csrf";
 const REMOTE_STATUS_STREAM_PATH = "/remote/api/status-stream";
+const REMOTE_REQUEST_TIMEOUT_MS = 15_000;
 
 export class RemoteRequestError extends Error {
   constructor(
@@ -50,7 +51,8 @@ const normalizeHeaders = (headers?: HeadersInit): Record<string, string> => {
   return { ...headers };
 };
 
-const isMutatingRequest = (method: string) => method !== "GET" && method !== "HEAD";
+const isReadOnlyRequest = (method: string) => method === "GET" || method === "HEAD";
+const isMutatingRequest = (method: string) => !isReadOnlyRequest(method);
 
 async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -59,30 +61,50 @@ async function remoteJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...normalizeHeaders(init?.headers),
     ...(csrfNonce && isMutatingRequest(method) ? { [REMOTE_CSRF_HEADER_NAME]: csrfNonce } : {}),
   };
-  const response = await fetch(path, {
-    ...init,
-    method,
-    credentials: "same-origin",
-    headers,
-  });
-  if (!response.ok) {
-    let code: string | undefined;
-    let detail: string | undefined;
-    try {
-      const body = (await response.json()) as { code?: unknown; detail?: unknown };
-      if (typeof body.code === "string") code = body.code;
-      if (typeof body.detail === "string" && body.detail.trim()) detail = body.detail;
-    } catch {
-      // An error body is optional; the status code alone still surfaces.
+  const controller = new AbortController();
+  const timeout = isReadOnlyRequest(method)
+    ? setTimeout(() => controller.abort(), REMOTE_REQUEST_TIMEOUT_MS)
+    : undefined;
+  const requestSignal = init?.signal;
+  const abortRequest = () => controller.abort(requestSignal?.reason);
+  if (requestSignal) {
+    if (requestSignal.aborted) {
+      abortRequest();
+    } else {
+      requestSignal.addEventListener("abort", abortRequest, { once: true });
     }
-    throw new RemoteRequestError(
-      detail ? `Remote request failed: ${detail}` : `Remote request failed: ${response.status}`,
-      response.status,
-      code,
-      detail,
-    );
   }
-  return response.json() as Promise<T>;
+
+  try {
+    const response = await fetch(path, {
+      ...init,
+      method,
+      credentials: "same-origin",
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let code: string | undefined;
+      let detail: string | undefined;
+      try {
+        const body = (await response.json()) as { code?: unknown; detail?: unknown };
+        if (typeof body.code === "string") code = body.code;
+        if (typeof body.detail === "string" && body.detail.trim()) detail = body.detail;
+      } catch {
+        // An error body is optional; the status code alone still surfaces.
+      }
+      throw new RemoteRequestError(
+        detail ? `Remote request failed: ${detail}` : `Remote request failed: ${response.status}`,
+        response.status,
+        code,
+        detail,
+      );
+    }
+    return response.json() as Promise<T>;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    requestSignal?.removeEventListener("abort", abortRequest);
+  }
 }
 
 export const remoteClient = {

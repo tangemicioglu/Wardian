@@ -8,7 +8,7 @@ function requestKey(request: Request | string): string {
   return typeof request === "string" ? new URL(request, "https://wardian.tailnet.ts.net").href : request.url;
 }
 
-function createCaches() {
+function createCaches(shouldFailAdd: (url: string) => boolean = () => false) {
   const stores = new Map<string, Map<string, Response>>();
   return {
     open: vi.fn(async (name: string) => {
@@ -18,6 +18,10 @@ function createCaches() {
         stores.set(name, store);
       }
       return {
+        add: vi.fn(async (url: string) => {
+          if (shouldFailAdd(url)) throw new Error(`failed to cache ${url}`);
+          store.set(requestKey(url), new Response(`cached:${url}`));
+        }),
         addAll: vi.fn(async (urls: string[]) => {
           for (const url of urls) {
             store.set(requestKey(url), new Response(`cached:${url}`));
@@ -41,7 +45,11 @@ function createCaches() {
   };
 }
 
-function loadRemoteServiceWorker(fetchMock: typeof fetch) {
+function loadRemoteServiceWorker(
+  fetchMock: typeof fetch,
+  script = readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8"),
+  caches = createCaches(),
+) {
   const listeners: ListenerMap = new Map();
   const selfScope = {
     location: { origin: "https://wardian.tailnet.ts.net" },
@@ -51,9 +59,6 @@ function loadRemoteServiceWorker(fetchMock: typeof fetch) {
       listeners.set(type, [...(listeners.get(type) ?? []), listener]);
     }),
   };
-  const caches = createCaches();
-  const script = readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8");
-
   new Function("self", "caches", "fetch", "URL", "Response", script)(
     selfScope,
     caches,
@@ -62,7 +67,7 @@ function loadRemoteServiceWorker(fetchMock: typeof fetch) {
     Response,
   );
 
-  return { listeners, caches };
+  return { listeners, caches, selfScope };
 }
 
 async function dispatchFetch(listener: (event: unknown) => void, request: Request): Promise<Response | undefined> {
@@ -82,6 +87,68 @@ describe("remote service worker", () => {
 
     expect(script).toContain('"/icon.png"');
     expect(script).toContain('"/icon-maskable.png"');
+  });
+
+  it("removes a poisoned v1 shell when a new build activates", async () => {
+    const caches = createCaches();
+    const oldCache = await caches.open("wardian-remote-app-shell-v1");
+    await oldCache.put("/remote", new Response("old-shell"));
+    const { listeners } = loadRemoteServiceWorker(
+      vi.fn() as unknown as typeof fetch,
+      readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8")
+        .replace(/__WARDIAN_BUILD_VERSION__/g, "build-2"),
+      caches,
+    );
+    const activate = listeners.get("activate")?.[0];
+    expect(activate).toBeDefined();
+    let activation: Promise<unknown> | undefined;
+    activate!({ waitUntil: (promise: Promise<unknown>) => { activation = promise; } } as unknown);
+    await activation;
+
+    expect(await caches.keys()).toEqual([]);
+  });
+
+  it("keeps the previous shell when the replacement shell cannot be cached", async () => {
+    const caches = createCaches((url) => url === "/remote");
+    const oldCache = await caches.open("wardian-remote-app-shell-v1");
+    await oldCache.put("/remote", new Response("old-shell"));
+    const { listeners, selfScope } = loadRemoteServiceWorker(
+      vi.fn() as unknown as typeof fetch,
+      readFileSync(join(process.cwd(), "public", "remote-sw.js"), "utf8")
+        .replace(/__WARDIAN_BUILD_VERSION__/g, "build-2"),
+      caches,
+    );
+    const install = listeners.get("install")?.[0];
+    expect(install).toBeDefined();
+    let installation: Promise<unknown> | undefined;
+    install!({ waitUntil: (promise: Promise<unknown>) => { installation = promise; } } as unknown);
+
+    await expect(installation).rejects.toThrow("failed to cache /remote");
+    expect(selfScope.skipWaiting).not.toHaveBeenCalled();
+    expect(await (await caches.open("wardian-remote-app-shell-v1")).match("/remote")).toBeDefined();
+  });
+
+  it("falls back to the cached shell when navigation fetch hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((_request: Request, options?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+      ) as unknown as typeof fetch;
+      const { listeners, caches } = loadRemoteServiceWorker(fetchMock);
+      const shell = await caches.open("wardian-remote-app-shell-__WARDIAN_BUILD_VERSION__");
+      await shell.put("/remote", new Response("cached-shell"));
+      const fetchListener = listeners.get("fetch")?.[0];
+      const request = new Request("https://wardian.tailnet.ts.net/remote");
+      Object.defineProperty(request, "mode", { value: "navigate" });
+      const responsePromise = dispatchFetch(fetchListener!, request);
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await (await responsePromise)?.text()).toBe("cached-shell");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runtime-caches successful remote asset responses for flaky network reuse", async () => {
