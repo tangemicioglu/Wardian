@@ -521,8 +521,12 @@ pub async fn run_headless_with_options(
     for arg in &launch_spec.args {
         cmd.arg(arg);
     }
-    let _memory_capability =
-        apply_headless_identity_env(&mut cmd, wardian_session_id, memory_agent_id);
+    let _memory_capability = apply_headless_identity_env(
+        &mut cmd,
+        wardian_session_id,
+        memory_agent_id,
+        memory_enabled,
+    );
     super::apply_managed_cli_path_to_process(&mut cmd);
     super::apply_process_provider_runtime_env(provider_name, &mut cmd)?;
     if let Some(config) = effective_provider_config.as_ref() {
@@ -1170,8 +1174,10 @@ pub async fn obtain_session_id(
     for arg in &launch_spec.args {
         cmd.arg(arg);
     }
-    let _memory_capability = bootstrap_session_id
-        .and_then(|session_id| apply_headless_identity_env(&mut cmd, session_id, Some(session_id)));
+    let memory_enabled = crate::utils::memory_feature_enabled();
+    let _memory_capability = bootstrap_session_id.and_then(|session_id| {
+        apply_headless_identity_env(&mut cmd, session_id, Some(session_id), memory_enabled)
+    });
     super::apply_managed_cli_path_to_process(&mut cmd);
     super::apply_process_provider_runtime_env(provider_name, &mut cmd)?;
 
@@ -1378,10 +1384,14 @@ fn bootstrap_output_session_id(provider_name: &str, output: &str) -> Option<Stri
     })
 }
 
+/// Apply provider identity and an optional memory capability using the setting
+/// decision captured for this launch. The helper intentionally does not reread
+/// mutable settings after the launch boundary has been crossed.
 pub(crate) fn apply_headless_identity_env(
     cmd: &mut tokio::process::Command,
     process_session_id: &str,
     memory_agent_id: Option<&str>,
+    memory_enabled: bool,
 ) -> Option<wardian_core::memory::MemoryCapabilityLease> {
     if let Some(home) = crate::utils::fs::get_wardian_home() {
         cmd.env("WARDIAN_HOME", home);
@@ -1391,7 +1401,7 @@ pub(crate) fn apply_headless_identity_env(
         cmd.env("WARDIAN_SESSION_ID", effective_session_id);
     }
     if let Some(memory_agent_id) = memory_agent_id {
-        if !crate::utils::memory_feature_enabled() {
+        if !memory_enabled {
             return None;
         }
         let capability = super::issue_memory_capability(memory_agent_id);
@@ -2706,6 +2716,7 @@ mod tests {
             &mut cmd,
             "automation-bg-run-node",
             Some("wardian-session-123"),
+            true,
         );
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
@@ -2741,6 +2752,7 @@ mod tests {
             &mut cmd,
             "automation-bg-run-node",
             Some("wardian-session-123"),
+            false,
         );
 
         assert!(capability.is_none());
@@ -2756,7 +2768,7 @@ mod tests {
         let mut cmd = crate::utils::process::new_headless_command("node");
 
         let capability =
-            apply_headless_identity_env(&mut cmd, "automation-bg-temporary-node", None);
+            apply_headless_identity_env(&mut cmd, "automation-bg-temporary-node", None, false);
 
         assert!(capability.is_none());
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
@@ -2781,6 +2793,29 @@ mod tests {
     }
 
     #[test]
+    fn headless_identity_env_uses_captured_memory_decision() {
+        let test_home = TestWardianHome::new();
+        std::fs::write(
+            test_home._home.path().join("settings/app.json"),
+            r#"{"schema_version":2,"overrides":{}}"#,
+        )
+        .expect("disable memory after launch decision was captured");
+        let mut cmd = crate::utils::process::new_headless_command("node");
+
+        let capability = apply_headless_identity_env(
+            &mut cmd,
+            "automation-bg-run-node",
+            Some("wardian-session-123"),
+            true,
+        );
+
+        assert!(capability.is_some());
+        assert!(cmd.as_std().get_envs().any(|(key, value)| {
+            key.to_string_lossy() == wardian_core::memory::MEMORY_CAPABILITY_ENV && value.is_some()
+        }));
+    }
+
+    #[test]
     fn headless_identity_env_includes_resolved_wardian_home() {
         let _guard = crate::utils::wardian_test_env_lock();
         let previous_home = std::env::var_os("WARDIAN_HOME");
@@ -2792,6 +2827,7 @@ mod tests {
             &mut cmd,
             "automation-bg-run-node",
             Some("wardian-session-123"),
+            true,
         );
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
@@ -2811,7 +2847,7 @@ mod tests {
     fn headless_identity_env_is_omitted_when_session_id_is_blank() {
         let mut cmd = crate::utils::process::new_headless_command("node");
 
-        apply_headless_identity_env(&mut cmd, "  ", None);
+        apply_headless_identity_env(&mut cmd, "  ", None, false);
 
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         assert!(!envs

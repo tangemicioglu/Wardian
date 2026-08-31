@@ -1618,10 +1618,12 @@ fn native_command(
             )
         },
     )?;
+    let memory_enabled = crate::utils::memory_feature_enabled();
     let _memory_capability = crate::manager::headless::apply_headless_identity_env(
         &mut command,
         &spec.target_agent_id,
         Some(&spec.target_agent_id),
+        memory_enabled,
     );
     for (key, value) in crate::manager::worktree_build_env(&config) {
         command.env(key, value);
