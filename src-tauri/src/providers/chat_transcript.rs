@@ -2536,6 +2536,18 @@ mod tests {
     }
 
     #[test]
+    fn claude_parent_uuid_query_does_not_create_normalized_causal_ref() {
+        let event = one(
+            "claude",
+            r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"Inspect the archive."}}"#,
+        );
+
+        assert_eq!(event.metadata["input_origin"], "human_input");
+        assert_eq!(event.metadata["input_purpose"], "request");
+        assert!(event.metadata["causal_ref"].is_null());
+    }
+
+    #[test]
     fn claude_interruption_records_are_provider_internal_messages() {
         let lines = [
             r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user]"}}"#,

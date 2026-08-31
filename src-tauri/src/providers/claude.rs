@@ -82,8 +82,10 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
 /// Returns the provider-native causal reference for a Claude context record.
 ///
 /// Claude uses parent tool-use and transcript UUID fields for records that are
-/// injected into the provider conversation. These references are retained as
-/// provenance; the injected text itself is never inspected to classify it.
+/// injected into the provider conversation. Context records retain these
+/// references as normalized provenance; ordinary prompt records keep
+/// `parentUuid` only in the raw provider transcript. The injected text itself
+/// is never inspected to classify a record.
 pub(crate) fn claude_context_causal_ref(parsed: &serde_json::Value) -> Option<String> {
     let message = parsed.get("message");
     first_nonempty_string(parsed, &["parent_tool_use_id", "parentToolUseId"])
@@ -123,8 +125,9 @@ pub(crate) fn claude_context_purpose(parsed: &serde_json::Value) -> &'static str
 
 fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
     // parentUuid is ordinary transcript lineage on normal Claude user
-    // records as well as context records. It is retained as a causal
-    // reference, but cannot identify context without an explicit marker.
+    // records as well as context records. It remains in the raw record and
+    // becomes normalized causal_ref only for an explicitly classified context
+    // record; it cannot identify context without an explicit marker.
     let message = parsed.get("message");
     [parsed, message.unwrap_or(&serde_json::Value::Null)]
         .into_iter()

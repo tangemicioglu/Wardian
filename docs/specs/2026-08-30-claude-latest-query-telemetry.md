@@ -10,10 +10,12 @@ prompt timestamp remains the historical user-message time.
 ## Provider boundary
 
 Claude transcript `parentUuid` is lineage metadata present on ordinary user
-messages as well as provider-injected context. It is retained as a causal
-reference, but is not by itself context evidence. Context classification
-requires an explicit provider marker such as `isMeta`/`isContext` or a parent
-tool-use reference. Provider interruption records are normalized as
+messages as well as provider-injected context. It remains in the raw
+transcript; the adapter copies it into normalized `causal_ref` only for an
+explicitly classified context record that has no parent tool-use reference.
+It is not by itself context evidence. Context classification requires an
+explicit provider marker such as `isMeta`/`isContext` or a parent tool-use
+reference. Provider interruption records are normalized as
 `provider_internal` events so they remain in the lossless transcript and
 conversation archive; neither interruptions nor local command records count as
 user prompts.
