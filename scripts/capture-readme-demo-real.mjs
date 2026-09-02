@@ -78,6 +78,25 @@ const privateTextPatterns = [
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function normalizeCaptureTerminalEnvironment() {
+  delete process.env.NO_COLOR;
+  delete process.env.CLICOLOR;
+  process.env.FORCE_COLOR = "1";
+  process.env.TERM = "xterm-256color";
+  process.env.COLORTERM = "truecolor";
+}
+
+function compactTerminalText(value) {
+  return String(value ?? "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "")
+    .toLowerCase();
+}
+
+function terminalTextIncludes(value, expectedText) {
+  return compactTerminalText(value).includes(compactTerminalText(expectedText));
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? root,
@@ -112,6 +131,26 @@ function resolveCommand(candidates) {
       }
     }
   }
+  return null;
+}
+
+function resolveProviderCommand(currentProvider) {
+  const candidates = providerCommandCandidates[currentProvider];
+  if (!candidates) return null;
+
+  const pathCommand = resolveCommand(candidates);
+  if (pathCommand) return pathCommand;
+
+  if (process.platform === "win32" && currentProvider === "antigravity") {
+    const localData = process.env.LOCALAPPDATA;
+    if (localData) {
+      const installedExecutable = path.join(localData, "agy", "bin", "agy.exe");
+      if (fsSync.existsSync(installedExecutable) && fsSync.statSync(installedExecutable).isFile()) {
+        return installedExecutable;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -375,6 +414,73 @@ async function waitForAgentConfigByName(name, timeoutMs = 90000) {
   throw new Error(`Timed out waiting for agent config: ${name}`);
 }
 
+function assertAgentProvider(agent, expectedProvider) {
+  if (agent?.provider !== expectedProvider) {
+    throw new Error(
+      `Expected ${agent?.session_name ?? "demo agent"} to use ${expectedProvider}, received ${agent?.provider ?? "unknown"}`,
+    );
+  }
+}
+
+function assertManagedPermissionBypass(agent, expectedProvider) {
+  const config = agent?.provider_config ?? {};
+  if (expectedProvider === "claude" && config.permission_mode !== "bypassPermissions") {
+    throw new Error(`Expected Wardian-managed Claude permission bypass for ${agent?.session_name ?? "demo agent"}`);
+  }
+  if (expectedProvider === "antigravity" && config.dangerously_skip_permissions === false) {
+    throw new Error(`Expected Wardian-managed Antigravity permission bypass for ${agent?.session_name ?? "demo agent"}`);
+  }
+}
+
+async function archivedConversationFiles(sessionId) {
+  const conversationsRoot = path.join(demoHome, "agents", sessionId, "conversations");
+  let entries;
+  try {
+    entries = await fs.readdir(conversationsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(conversationsRoot, entry.name, "conversation.jsonl"));
+}
+
+async function archivedAssistantContains(sessionId, expectedText) {
+  for (const filePath of await archivedConversationFiles(sessionId)) {
+    let content;
+    try {
+      content = await fs.readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of content.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record?.role === "assistant" && String(record?.text ?? "").includes(expectedText)) {
+          return true;
+        }
+      } catch {
+        // The provider may still be appending the final JSONL record. Retry it.
+      }
+    }
+  }
+  return false;
+}
+
+async function waitForArchivedAssistantText(sessionId, expectedText, timeoutMs = 180000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await archivedAssistantContains(sessionId, expectedText)) {
+      return;
+    }
+    await wait(500);
+  }
+  throw new Error(
+    `Timed out waiting for real provider assistant reply ${JSON.stringify(expectedText)} in ${sessionId}`,
+  );
+}
+
 async function invokeTauri(driver, command, args = {}) {
   const result = await driver.executeAsyncScript((cmd, payload, done) => {
     window.__TAURI_INTERNALS__.invoke(cmd, payload).then(
@@ -390,7 +496,11 @@ async function invokeTauri(driver, command, args = {}) {
 }
 
 async function terminalText(driver, sessionId) {
-  return await driver.executeScript((sid) => {
+  const ptyText = await invokeTauri(driver, "read_agent_pty", {
+    sessionId,
+    options: { max_bytes: 1048576, peek: true },
+  });
+  const rendererText = await driver.executeScript((sid) => {
     const card = document.getElementById(`agent-card-${sid}`);
     const matchingHosts = [...(card?.querySelectorAll('[data-testid="agent-terminal-host"]') ?? [])]
       .filter((candidate) => candidate.getAttribute("data-terminal-session-id") === sid);
@@ -414,6 +524,7 @@ async function terminalText(driver, sessionId) {
       card?.textContent ?? "",
     ].join("\n");
   }, sessionId);
+  return `${ptyText ?? ""}\n${rendererText ?? ""}`;
 }
 
 async function waitForTerminalText(driver, sessionId, expectedText, timeoutMs = 30000) {
@@ -421,7 +532,7 @@ async function waitForTerminalText(driver, sessionId, expectedText, timeoutMs = 
   let lastText = "";
   while (Date.now() - started < timeoutMs) {
     lastText = String(await terminalText(driver, sessionId) ?? "");
-    if (lastText.includes(expectedText)) {
+    if (terminalTextIncludes(lastText, expectedText)) {
       return;
     }
     await wait(500);
@@ -540,13 +651,15 @@ async function elementCenter(driver, selectorOrXpath, kind = "css") {
 }
 
 async function main() {
+  normalizeCaptureTerminalEnvironment();
+
   for (const currentProvider of new Set([sourceProvider, cloneProvider])) {
     const candidates = providerCommandCandidates[currentProvider];
     if (!candidates) {
       throw new Error(`Unsupported demo provider: ${currentProvider}`);
     }
-    if (!resolveCommand(candidates)) {
-      throw new Error(`Provider command not found on PATH for ${currentProvider}: ${candidates.join(", ")}`);
+    if (!resolveProviderCommand(currentProvider)) {
+      throw new Error(`Provider command not found for ${currentProvider}: ${candidates.join(", ")}`);
     }
   }
 
@@ -563,6 +676,7 @@ async function main() {
   let session;
   let frame = 0;
   let cursorPosition = { x: 32, y: 32 };
+  let providerAccountMaskRange;
 
   const captureStep = async () => {
     await assertPrivacy(session.driver);
@@ -743,10 +857,24 @@ async function main() {
     }), minSeconds);
   };
 
-  const confirmProviderStartupPrompt = async (sessionId, settleMs = 5000) => {
-    await wait(settleMs);
-    await injectProviderStartupInput(sessionId, "\r\n", 0.4);
-    await wait(2500);
+  const acceptClaudeWorkspaceTrust = async (sessionId, currentProvider) => {
+    if (currentProvider !== "claude") return;
+
+    await waitForTerminalText(session.driver, sessionId, "Accessing workspace", 30000);
+    await waitForTerminalText(session.driver, sessionId, "Quick safety check", 30000);
+    await waitForTerminalText(session.driver, sessionId, "Yes, I trust this folder", 30000);
+    await waitForTerminalText(session.driver, sessionId, "Enter to confirm", 30000);
+    await injectProviderStartupInput(sessionId, "\u001b[B\r", 0.4);
+    await waitForTerminalText(
+      session.driver,
+      sessionId,
+      "Allow external CLAUDE.md file imports?",
+      30000,
+    );
+    await waitForTerminalText(session.driver, sessionId, "Yes, allow external imports", 30000);
+    await waitForTerminalText(session.driver, sessionId, "Enter to confirm", 30000);
+    await injectProviderStartupInput(sessionId, "\u001b[B\r", 0.4);
+    await waitForTerminalText(session.driver, sessionId, "bypass permissions on", 60000);
   };
 
   try {
@@ -766,9 +894,11 @@ async function main() {
     await clickCss('[data-testid="spawn-submit"]');
     await waitForXpath(session.driver, `//p[normalize-space(.)=${JSON.stringify(sourceAgentName)}]`, 120000);
     const sourceAgent = await waitForAgentConfigByName(sourceAgentName);
-    if (sourceProvider === "claude") {
-      await confirmProviderStartupPrompt(sourceAgent.session_id, 4500);
-    }
+    assertAgentProvider(sourceAgent, sourceProvider);
+    assertManagedPermissionBypass(sourceAgent, sourceProvider);
+    await clickXpath(`//p[normalize-space(.)=${JSON.stringify(sourceAgentName)}]`, 0.18);
+    await waitForCss(session.driver, terminalHostSelector(sourceAgent.session_id), 30000);
+    await acceptClaudeWorkspaceTrust(sourceAgent.session_id, sourceProvider);
     await captureFor(2.2);
 
     const sourceWatchlistRow = `//div[contains(@class,'watchlist-row')][.//p[normalize-space(.)=${JSON.stringify(sourceAgentName)}]]`;
@@ -782,21 +912,17 @@ async function main() {
     await clickCss('[data-testid="custom-clone-submit"]');
     await waitForXpath(session.driver, `//p[normalize-space(.)=${JSON.stringify(cloneAgentName)}]`, 120000);
     const cloneAgent = await waitForAgentConfigByName(cloneAgentName);
+    assertAgentProvider(cloneAgent, cloneProvider);
+    assertManagedPermissionBypass(cloneAgent, cloneProvider);
 
+    providerAccountMaskRange = { start: frame, end: null };
     await clickXpath(`//p[normalize-space(.)=${JSON.stringify(cloneAgentName)}]`, 0.18);
     await waitForCss(session.driver, terminalHostSelector(cloneAgent.session_id), 30000);
-    if (cloneProvider === "antigravity") {
-      await confirmProviderStartupPrompt(cloneAgent.session_id, 5500);
-      await captureFor(1.5);
-    } else {
-      await captureFor(1.2);
-    }
+    await acceptClaudeWorkspaceTrust(cloneAgent.session_id, cloneProvider);
+    await captureFor(1.5);
     await submitTerminalPrompt(cloneAgent.session_id, terminalPromptText, 0.8);
-    try {
-      await waitForTerminalText(session.driver, cloneAgent.session_id, "WARDIAN READY", 12000);
-    } catch {
-      // Some provider terminals render through canvas in release captures; keep the visual beat.
-    }
+    await waitForArchivedAssistantText(cloneAgent.session_id, "WARDIAN READY");
+    console.log(`verified real ${providerLabels[cloneProvider] ?? cloneProvider} provider reply`);
     await captureFor(8);
 
     await clickXpath(`//p[normalize-space(.)=${JSON.stringify(sourceAgentName)}]`, 0.18);
@@ -804,15 +930,13 @@ async function main() {
     await waitForCss(session.driver, '[data-testid="command-panel"]');
     await captureFor(0.8);
     await clickXpath("//button[.//span[normalize-space(.)='summarize-workspace']]", 0.25);
-    try {
-      await waitForTerminalText(session.driver, sourceAgent.session_id, "WARDIAN SNAPSHOT", 12000);
-    } catch {
-      // Some provider terminals render through canvas in release captures; keep the visual beat.
-    }
+    await waitForArchivedAssistantText(sourceAgent.session_id, "WARDIAN SNAPSHOT");
+    console.log(`verified real ${providerLabels[sourceProvider] ?? sourceProvider} provider reply`);
     await captureFor(8);
 
     await clickCss('[data-testid="sidebar-tab-git"]');
     await captureFor(3);
+    providerAccountMaskRange.end = frame - 1;
 
     await openWorkbenchSurface("library");
     await waitForCss(session.driver, '[data-testid="library-view"]');
@@ -853,13 +977,14 @@ async function main() {
   process.stdout.write(`captured ${(frame / fps).toFixed(1)}s\n`);
 
   const framePattern = path.join(framesDir, "frame-%04d.png");
-  const privacyMaskFilter = [
-    "drawbox=x=460:y=145:w=440:h=32:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
-    "drawbox=x=460:y=235:w=440:h=30:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
-    "drawbox=x=460:y=300:w=440:h=30:color=0xfffdf8:t=fill:enable='between(n,45,205)'",
-    "drawbox=x=950:y=272:w=600:h=32:color=0xfffdf8:t=fill:enable='between(n,45,230)'",
-  ].join(",");
-  const outputFilter = `${privacyMaskFilter},fps=${fps},scale=${outputWidth}:-1:flags=lanczos`;
+  const privacyMaskFilter = providerAccountMaskRange?.end != null
+    ? `drawbox=x=990:y=276:w=560:h=26:color=0xfffdf8:t=fill:enable='between(n,${providerAccountMaskRange.start},${providerAccountMaskRange.end})'`
+    : null;
+  const outputFilter = [
+    privacyMaskFilter,
+    `fps=${fps}`,
+    `scale=${outputWidth}:-1:flags=lanczos`,
+  ].filter(Boolean).join(",");
   run("ffmpeg", [
     "-y",
     "-hide_banner",
