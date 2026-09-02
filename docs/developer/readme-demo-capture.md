@@ -14,7 +14,9 @@ npm run docs:demo-gif
 
 The capture script starts the native Wardian app, uses an isolated `WARDIAN_HOME`, seeds safe prompts, skills, classes, an automation, and a tiny git repository, drives actual Wardian UI controls, and converts captured app frames to `public/demo.gif` with `ffmpeg`.
 
-The filmed flow uses real providers inside the isolated demo workspace. By default it spawns a Claude agent, opens the single-agent context menu, creates a custom Antigravity clone, sends a terminal prompt to the clone, and runs a seeded Command-panel Quick Prompt against Claude. This keeps the demo focused on Wardian's GUI-first coordination surface instead of a single provider transcript.
+The filmed flow uses real providers inside the isolated demo workspace. By default it spawns a Claude agent, opens the single-agent context menu, creates a custom Antigravity clone, sends a terminal prompt to the clone, and runs a seeded Command-panel Quick Prompt against Claude. The run fails unless Wardian archives the expected assistant reply from both providers. This keeps the demo focused on Wardian's GUI-first coordination surface instead of a single provider transcript.
+
+The capture clears inherited terminal color-suppression variables and requests a true-color terminal so provider-owned interfaces match a normal Wardian launch. It also verifies Wardian's managed permission-skip configuration. Claude's first-use workspace-trust and external-instruction-import prompts are separate startup consent screens; the isolated capture accepts them before Wardian auto-confirms Claude's bypass-mode warning.
 
 The README hero demo should be filmed with real providers when the local machine has provider credentials and native WebDriver tooling available. It defaults to `WARDIAN_DEMO_SOURCE_PROVIDER=claude` and `WARDIAN_DEMO_CLONE_PROVIDER=antigravity`.
 
