@@ -394,30 +394,35 @@ fn schedule_agent_status_observation(
 
 pub(crate) async fn publish_telemetry_status_observation(
     state: &AppState,
-    session_id: &str,
-    status: &str,
-    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
-) {
+    observation: &telemetry::TelemetryProviderStatus,
+) -> ProviderInputReadiness {
     let agents = state.agents.lock().await;
-    let Some(agent) = agents.get(session_id) else {
-        return;
-    };
-
-    // Telemetry runs from a detached snapshot. Do not let an observation from
-    // a replaced runtime, or a status that was superseded after the snapshot,
-    // overwrite the fallback roster cache.
-    if !std::sync::Arc::ptr_eq(&agent.current_status, current_status) {
-        return;
+    if let Some(agent) = agents.get(&observation.session_id) {
+        // Telemetry runs from a detached snapshot. Do not let an observation
+        // from a replaced runtime, or a status that was superseded after the
+        // snapshot, overwrite the fallback roster cache.
+        if std::sync::Arc::ptr_eq(&agent.current_status, &observation.current_status) {
+            if let Ok(current) = agent.current_status.lock() {
+                if *current == observation.status {
+                    let status_sequence =
+                        state.next_status_observation_sequence(&observation.session_id);
+                    state.set_remote_agent_status(
+                        &observation.session_id,
+                        &observation.status,
+                        status_sequence,
+                    );
+                }
+            }
+        }
     }
-    let Ok(current) = agent.current_status.lock() else {
-        return;
-    };
-    if *current != status {
-        return;
-    }
 
-    let status_sequence = state.next_status_observation_sequence(session_id);
-    state.set_remote_agent_status(session_id, status, status_sequence);
+    match wardian_core::identity::normalize_status(&observation.status).as_str() {
+        "idle" => ProviderInputReadiness::Ready,
+        "processing" => ProviderInputReadiness::Busy,
+        "action_required" => ProviderInputReadiness::ActionRequired,
+        "off" | "error" => ProviderInputReadiness::Unavailable,
+        _ => ProviderInputReadiness::Unknown,
+    }
 }
 
 async fn status_arc_belongs_to_current_agent(
@@ -2187,11 +2192,37 @@ mod tests {
             .await
             .insert("agent-1".to_string(), agent);
 
-        publish_telemetry_status_observation(&state, "agent-1", "Idle", &current_status).await;
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                current_status: current_status.clone(),
+            },
+        )
+        .await;
         *current_status.lock().expect("status") = "Processing".to_string();
-        publish_telemetry_status_observation(&state, "agent-1", "Processing", &current_status)
-            .await;
-        publish_telemetry_status_observation(&state, "agent-1", "Idle", &current_status).await;
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Processing".to_string(),
+                current_status: current_status.clone(),
+            },
+        )
+        .await;
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                current_status,
+            },
+        )
+        .await;
 
         assert_eq!(
             state.remote_agent_status("agent-1").as_deref(),

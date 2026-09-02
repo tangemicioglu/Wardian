@@ -699,11 +699,11 @@ struct TelemetryPassResult {
     provider_statuses: Vec<TelemetryProviderStatus>,
 }
 
-struct TelemetryProviderStatus {
-    session_id: String,
-    generation: u64,
-    status: String,
-    current_status: Arc<Mutex<String>>,
+pub(crate) struct TelemetryProviderStatus {
+    pub(crate) session_id: String,
+    pub(crate) generation: u64,
+    pub(crate) status: String,
+    pub(crate) current_status: Arc<Mutex<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1998,18 +1998,7 @@ async fn apply_provider_status_observations(
     observations: &[TelemetryProviderStatus],
 ) {
     for observation in observations {
-        // Telemetry runs from a detached snapshot. Only publish its status to
-        // the remote fallback when the same status Arc is still installed and
-        // still has the observed value; a provider event that arrived after
-        // the snapshot must win instead of being overwritten by stale data.
-        super::publish_telemetry_status_observation(
-            state,
-            &observation.session_id,
-            &observation.status,
-            &observation.current_status,
-        )
-        .await;
-        let readiness = provider_readiness_from_status(&observation.status);
+        let readiness = super::publish_telemetry_status_observation(state, observation).await;
         let ready_evidence = (readiness == ProviderInputReadiness::Ready)
             .then_some(ProviderReadyEvidence::ProviderEvent);
         state
@@ -2029,16 +2018,6 @@ async fn apply_provider_status_observations(
             )
             .await;
         }
-    }
-}
-
-fn provider_readiness_from_status(status: &str) -> ProviderInputReadiness {
-    match wardian_core::identity::normalize_status(status).as_str() {
-        "idle" => ProviderInputReadiness::Ready,
-        "processing" => ProviderInputReadiness::Busy,
-        "action_required" => ProviderInputReadiness::ActionRequired,
-        "off" | "error" => ProviderInputReadiness::Unavailable,
-        _ => ProviderInputReadiness::Unknown,
     }
 }
 
