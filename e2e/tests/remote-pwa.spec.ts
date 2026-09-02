@@ -149,9 +149,20 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
           schedule: { schedule_type: "daily", time_of_day: "09:00", repeat_every: 1, end_condition: "never", occurrence_count: 0, active: true },
           next_run_epoch_ms: Date.parse("2026-09-01T13:00:00.000Z"),
           is_paused: false,
+          last_run_status: "failed",
+          last_run_error: "Last run failed. Open Wardian desktop for details.",
+          last_run_epoch_ms: Date.parse("2026-08-31T13:00:00.000Z"),
+          target_labels: ["writer · Agent"],
+        }, {
+          id: "schedule-paused",
+          blueprint_id: "daily-brief",
+          automation_name: "Paused brief",
+          schedule: { schedule_type: "daily", time_of_day: "10:00", repeat_every: 1, end_condition: "never", occurrence_count: 0, active: true },
+          next_run_epoch_ms: null,
+          is_paused: true,
           last_run_status: "completed",
           last_run_error: null,
-          last_run_epoch_ms: Date.parse("2026-08-31T13:00:00.000Z"),
+          last_run_epoch_ms: Date.parse("2026-08-31T12:01:00.000Z"),
           target_labels: ["writer · Agent"],
         }],
         schedules_truncated: false,
@@ -567,7 +578,11 @@ test("remote mobile shell renders team-ordered watchlist and opens agent detail"
   await expect(automationMonitor.getByText("Needs attention")).toBeVisible();
   await expect(automationMonitor.getByText("Running now")).toBeVisible();
   await expect(automationMonitor.getByText("Up next")).toBeVisible();
+  await expect(automationMonitor.getByRole("heading", { name: "Paused", exact: true })).toBeVisible();
   await expect(automationMonitor.getByText("Recent outcomes")).toBeVisible();
+  await expect(automationMonitor.getByTestId("remote-schedule-card-schedule-release-attention")).toHaveAttribute("data-status-tone", "attention");
+  await expect(automationMonitor.getByTestId("remote-schedule-card-schedule-release-pending")).toHaveAttribute("data-status-tone", "pending");
+  await expect(automationMonitor.getByTestId("remote-schedule-card-schedule-paused-paused")).toHaveAttribute("data-status-tone", "paused");
   await expect(automationMonitor.getByRole("button", { name: "Overview" })).toHaveAttribute("aria-pressed", "true");
   if (automationScreenshotDir) {
     await automationMonitor.screenshot({
