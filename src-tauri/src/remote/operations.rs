@@ -76,19 +76,24 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
         .into_iter()
         .map(|(session_id, config_lock, status_lock)| {
             let config = config_lock.try_lock().ok().map(|config| config.clone());
-            let live_status = status_lock.try_lock().ok().map(|status| status.clone());
-            if let Some(status) = live_status.as_deref() {
+            let live_status = status_lock.try_lock().ok();
+            let live_status_value = live_status.as_deref().cloned();
+            if let Some(status) = live_status_value.as_deref() {
                 // A successful live snapshot is newer evidence than the
                 // fallback snapshot. Publish it so a later global-lock miss
                 // cannot overlay an older cached status onto this roster.
+                // Keep the status guard held through sequence allocation so a
+                // transition cannot receive a lower sequence and then lose
+                // its cache update to this older snapshot.
                 let sequence = state.next_status_observation_sequence(&session_id);
                 state.set_remote_agent_status(&session_id, status, sequence);
             }
+            drop(live_status);
             let cached_status = || state.remote_agent_status(&session_id);
             match config {
                 Some(config) => Some(remote_agent_summary(
                     config,
-                    live_status
+                    live_status_value
                         .or_else(cached_status)
                         .or_else(|| {
                             previous_by_id
@@ -102,7 +107,7 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
                         .get(&session_id)
                         .cloned()
                         .or_else(|| persisted_by_id.get(&session_id).cloned())?;
-                    if let Some(status) = live_status.or_else(cached_status) {
+                    if let Some(status) = live_status_value.or_else(cached_status) {
                         summary.status = status;
                     }
                     Some(summary)
