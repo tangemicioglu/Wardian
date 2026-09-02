@@ -28,27 +28,28 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     // `set_agent_status` persists observations while it owns the global agent
     // map. Waiting here made the remote shell inherit provider/SQLite stalls.
     // A remote read must never make the phone wait for that write to finish.
-    let (agent_snapshot_handles, order) = {
-        let Ok(agents) = state.agents.try_lock() else {
-            return remote_agent_roster_fallback(state);
-        };
+    let Ok(agents) = state.agents.try_lock() else {
+        return remote_agent_roster_fallback(state);
+    };
+    let order = {
         let Ok(order) = state.agent_order.try_lock() else {
             return remote_agent_roster_fallback(state);
         };
-        (
-            agents
-                .iter()
-                .map(|(session_id, agent)| {
-                    (
-                        session_id.clone(),
-                        agent.config.clone(),
-                        agent.current_status.clone(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            order.clone(),
-        )
+        order.clone()
     };
+    // Keep the map guard until the status/config snapshots and roster cache
+    // are committed. A pause/resume replacement cannot retire these Arcs
+    // between the read and a fallback-cache write.
+    let agent_snapshot_handles = agents
+        .iter()
+        .map(|(session_id, agent)| {
+            (
+                session_id.clone(),
+                agent.config.clone(),
+                agent.current_status.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
 
     // During asynchronous startup the live map can be empty for a short
     // period even though the atomic persisted snapshot already has the full
@@ -73,7 +74,7 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
         .map(|summary| (summary.session_id.clone(), summary))
         .collect::<HashMap<_, _>>();
     let Some(summaries) = agent_snapshot_handles
-        .into_iter()
+        .iter()
         .map(|(session_id, config_lock, status_lock)| {
             let config = config_lock.try_lock().ok().map(|config| config.clone());
             let live_status = status_lock.try_lock().ok();
@@ -97,16 +98,16 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
                         .or_else(cached_status)
                         .or_else(|| {
                             previous_by_id
-                                .get(&session_id)
+                                .get(session_id)
                                 .map(|summary| summary.status.clone())
                         })
                         .unwrap_or_else(|| "Restoring".to_string()),
                 )),
                 None => {
                     let mut summary = previous_by_id
-                        .get(&session_id)
+                        .get(session_id)
                         .cloned()
-                        .or_else(|| persisted_by_id.get(&session_id).cloned())?;
+                        .or_else(|| persisted_by_id.get(session_id).cloned())?;
                     if let Some(status) = live_status_value.or_else(cached_status) {
                         summary.status = status;
                     }
@@ -118,6 +119,17 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     else {
         return remote_agent_roster_fallback(state);
     };
+
+    if agent_snapshot_handles
+        .iter()
+        .any(|(session_id, _, status)| {
+            !agents
+                .get(session_id)
+                .is_some_and(|agent| std::sync::Arc::ptr_eq(&agent.current_status, status))
+        })
+    {
+        return remote_agent_roster_fallback(state);
+    }
 
     let ordered = order_remote_agent_summaries(summaries, &order);
     state.set_remote_agent_roster_snapshot(ordered.clone());
