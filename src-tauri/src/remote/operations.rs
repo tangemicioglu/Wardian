@@ -86,11 +86,11 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
                 // Keep the status guard held through sequence allocation so a
                 // transition cannot receive a lower sequence and then lose
                 // its cache update to this older snapshot.
-                let sequence = state.next_status_observation_sequence(&session_id);
-                state.set_remote_agent_status(&session_id, status, sequence);
+                let sequence = state.next_status_observation_sequence(session_id);
+                state.set_remote_agent_status(session_id, status, sequence);
             }
             drop(live_status);
-            let cached_status = || state.remote_agent_status(&session_id);
+            let cached_status = || state.remote_agent_status(session_id);
             match config {
                 Some(config) => Some(remote_agent_summary(
                     config,
