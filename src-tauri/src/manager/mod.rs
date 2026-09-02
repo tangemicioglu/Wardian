@@ -317,6 +317,11 @@ fn schedule_agent_status_observation(
             return;
         }
 
+        // Keep the remote roster useful after the current runtime identity has
+        // been verified, even when the following durable write or a later
+        // remote read encounters another busy agent-state path.
+        state.set_remote_agent_status(&status_session_id, &status);
+
         // Phase 2: Persist while the reporting runtime still owns the active
         // agent slot. `update_agent_status` is synchronous, so no await can
         // let a replacement interleave between the identity check and write.

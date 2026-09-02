@@ -24,10 +24,19 @@ either case the initial roster and Inbox response remained stale.
 - When a replacement stream receives an agent roster, replace the provisional
   roster and refresh the remote Inbox. Existing request-serial ordering keeps
   an older Inbox response from overwriting a newer one.
+- Publish the installed runtime's current status after restoration inserts it
+  into the live agent map. The gateway also keeps verified per-session status
+  observations independently of the global agent lock, so a temporary
+  telemetry/provider lock cannot turn the entire roster back into `Restoring`.
+- Return the durable queue and notification portion of the remote Inbox within
+  the read request. Reconcile filesystem-heavy automation approvals and
+  completions in a single-flight background refresh, cache that projection for
+  later requests, and continue to deduplicate it against durable queue items.
 
 ## Verification
 
 The remote store regression tests cover runtime socket-error recovery from a
 `Restoring` roster to a live roster plus a new Inbox item, and recovery from an
-initial stream-open failure. TypeScript checking and linting must pass before
-the change is published.
+initial stream-open failure. Backend tests cover roster lock fallback, durable
+Inbox projection, runtime-cache merging, and single-flight refresh bounds.
+TypeScript checking and linting must pass before the change is published.

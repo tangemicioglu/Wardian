@@ -623,7 +623,7 @@ async fn load_remote_queue(
         require_audited_remote_session(&ctx, &headers, &origin, "roster_read", "load_queue")
             .await?;
     let state = ctx.app.state::<crate::state::AppState>();
-    let items = crate::remote::operations::remote_queue_items(&state).await;
+    let items = crate::remote::operations::remote_queue_items_for_app(&ctx.app, &state).await;
     audit_gateway_event(
         &session,
         &origin,

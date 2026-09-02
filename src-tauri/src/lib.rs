@@ -389,6 +389,7 @@ pub fn run() {
                                     let app_handle = app_handle.clone();
                                     async move {
                                         let state = app_handle.state::<AppState>();
+                                        let status = agent.current_status.clone();
                                         let mut agents_map = state.agents.lock().await;
                                         let mut order_map = state.agent_order.lock().await;
                                         if !order_map.contains(&session_id) {
@@ -397,6 +398,11 @@ pub fn run() {
                                         agents_map.insert(session_id.clone(), agent);
                                         drop(agents_map);
                                         drop(order_map);
+                                        manager::publish_agent_status(
+                                            &app_handle,
+                                            &session_id,
+                                            &status,
+                                        );
                                         crate::control::spawn_mailbox_drain_after_restore(
                                             &app_handle,
                                             &session_id,
@@ -565,6 +571,7 @@ pub fn run() {
                                         }
                                     };
                                     let state = app_handle.state::<AppState>();
+                                    let status = agent.current_status.clone();
                                     let mut agents_map = state.agents.lock().await;
                                     let mut order_map = state.agent_order.lock().await;
                                     if !order_map.contains(&config.session_id) {
@@ -573,6 +580,11 @@ pub fn run() {
                                     agents_map.insert(config.session_id.clone(), agent);
                                     drop(agents_map);
                                     drop(order_map);
+                                    manager::publish_agent_status(
+                                        &app_handle,
+                                        &config.session_id,
+                                        &status,
+                                    );
                                     crate::control::spawn_mailbox_drain_after_restore(
                                         &app_handle,
                                         &config.session_id,

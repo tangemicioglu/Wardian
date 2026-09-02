@@ -208,8 +208,10 @@ or remote gateway latency.
 During desktop startup, provider restoration, or telemetry persistence, the
 gateway can return the last complete roster immediately. If no live snapshot is
 available yet, it uses the atomic saved agent configuration and marks active
-entries as `Restoring`; the live status stream replaces those provisional
-statuses as soon as the runtime is ready.
+entries as `Restoring`; installed provider runtimes republish their current
+status after restoration, and the live status stream replaces any remaining
+provisional statuses as soon as the runtime is ready. A temporary agent-state
+lock does not discard statuses already observed for other agents.
 
 The live status stream also refreshes the remote Inbox projection. If the
 stream encounters a transport error, the PWA closes that connection and
@@ -329,11 +331,13 @@ Clone remains a desktop-only operation so the phone does not create new agent
 sessions accidentally from a compact remote surface.
 
 The mobile Inbox tab shows the same remote Inbox projection used by the desktop
-queue. Cards start with long summaries collapsed to a four-line preview; use
-Show details or Hide details to change the card state. When an item identifies
-an agent session, use Open agent to move directly into that agent's detail view.
-The mobile card keeps the desktop unread, status, and timestamp cues while
-remaining sized for a phone screen.
+queue. Durable queue and notification items are returned immediately; the
+filesystem-heavy automation-run portion is reconciled in the background and
+included by the next refresh. Cards start with long summaries collapsed to a
+four-line preview; use Show details or Hide details to change the card state.
+When an item identifies an agent session, use Open agent to move directly into
+that agent's detail view. The mobile card keeps the desktop unread, status, and
+timestamp cues while remaining sized for a phone screen.
 
 ![Mobile PWA Inbox showing a recent agent completion summary](../assets/screenshots/remote-control/mobile-pwa-queue-summary.png)
 
