@@ -529,6 +529,21 @@ pub async fn remote_queue_items_for_app(
     items
 }
 
+/// Builds the action lookup from an authoritative notification projection.
+/// Read requests use a bounded timeout so the remote shell stays responsive;
+/// mutations must wait for the durable interaction source instead of turning
+/// lock contention into a false `inbox_item_not_found` or no-op bulk action.
+async fn remote_queue_items_for_mutation(state: &AppState) -> Vec<serde_json::Value> {
+    let mut items = remote_durable_queue_items_authoritative(state).await;
+    if let Some(runtime_items) = state.remote_inbox_runtime_items() {
+        items.extend(runtime_items);
+    } else {
+        items.extend(remote_runtime_inbox_items(state).await);
+    }
+    sort_remote_queue_items(&mut items);
+    items
+}
+
 async fn remote_durable_queue_items(state: &AppState) -> Vec<serde_json::Value> {
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
@@ -551,6 +566,37 @@ async fn remote_durable_queue_items(state: &AppState) -> Vec<serde_json::Value> 
             MAX_INBOX_SOURCE_ITEMS,
             &context,
         ),
+    )
+    .await
+    {
+        items.extend(page.items);
+    }
+    items.extend(persisted_queue_items().into_iter().filter(|item| {
+        item_timestamp(item) > cutoff
+            && is_legacy_queue_item(item)
+            && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
+    }));
+    items
+}
+
+async fn remote_durable_queue_items_authoritative(state: &AppState) -> Vec<serde_json::Value> {
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &queue_metadata.read_notification_ids,
+        persisted_automation_runs: &queue_metadata.automation_runs,
+        types: &[],
+        sources: &[],
+        unread: false,
+    };
+    let mut items = Vec::new();
+    if let Ok(page) = remote_inbox_source_page(
+        state,
+        InboxSource::Notifications,
+        0,
+        MAX_INBOX_SOURCE_ITEMS,
+        &context,
     )
     .await
     {
@@ -1198,7 +1244,7 @@ pub async fn apply_remote_inbox_action(
     request: RemoteInboxActionRequest,
 ) -> Result<(), String> {
     let _queue_guard = state.queue_io_lock.lock().await;
-    let projected_items = remote_queue_items(state).await;
+    let projected_items = remote_queue_items_for_mutation(state).await;
     match request.action.as_str() {
         "mark_read" => {
             let item_id = request
@@ -2549,6 +2595,102 @@ mod tests {
             item["approval_choices"],
             serde_json::json!(["Approve", "Reject"])
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_mutation_lookup_waits_for_authoritative_notifications() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize state db");
+        let state = Arc::new(AppState::new());
+        let first = state
+            .interactions
+            .create_notification_durable(
+                "agent-1".to_string(),
+                wardian_core::control::InboxNotificationPayload {
+                    kind: InboxNotificationKind::Update,
+                    title: "First update".to_string(),
+                    body: "The first update is ready.".to_string(),
+                    proposed_action: None,
+                    risk: None,
+                    choices: Vec::new(),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("create first notification");
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocker_state = Arc::clone(&state);
+        let blocker_entered = Arc::clone(&entered);
+        let blocker_release = Arc::clone(&release);
+        let blocker = tokio::spawn(async move {
+            let _records = blocker_state.interactions.records.lock().await;
+            blocker_entered.notify_one();
+            blocker_release.notified().await;
+        });
+        entered.notified().await;
+
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            remote_queue_items_for_mutation(&state),
+        )
+        .await
+        .is_err());
+        release.notify_one();
+        blocker.await.expect("release first records lock");
+        let items = remote_queue_items_for_mutation(&state).await;
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", first.id) }));
+
+        let second = state
+            .interactions
+            .create_notification_durable(
+                "agent-1".to_string(),
+                wardian_core::control::InboxNotificationPayload {
+                    kind: InboxNotificationKind::Update,
+                    title: "Second update".to_string(),
+                    body: "The second update is ready.".to_string(),
+                    proposed_action: None,
+                    risk: None,
+                    choices: Vec::new(),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("create second notification");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocker_state = Arc::clone(&state);
+        let blocker_entered = Arc::clone(&entered);
+        let blocker_release = Arc::clone(&release);
+        let blocker = tokio::spawn(async move {
+            let _records = blocker_state.interactions.records.lock().await;
+            blocker_entered.notify_one();
+            blocker_release.notified().await;
+        });
+        entered.notified().await;
+
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            remote_queue_items_for_mutation(&state),
+        )
+        .await
+        .is_err());
+        release.notify_one();
+        blocker.await.expect("release second records lock");
+        let items = remote_queue_items_for_mutation(&state).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", first.id) }));
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", second.id) }));
     }
 
     #[tokio::test]
