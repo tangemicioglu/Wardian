@@ -392,6 +392,34 @@ fn schedule_agent_status_observation(
     });
 }
 
+pub(crate) async fn publish_telemetry_status_observation(
+    state: &AppState,
+    session_id: &str,
+    status: &str,
+    current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    let agents = state.agents.lock().await;
+    let Some(agent) = agents.get(session_id) else {
+        return;
+    };
+
+    // Telemetry runs from a detached snapshot. Do not let an observation from
+    // a replaced runtime, or a status that was superseded after the snapshot,
+    // overwrite the fallback roster cache.
+    if !std::sync::Arc::ptr_eq(&agent.current_status, current_status) {
+        return;
+    }
+    let Ok(current) = agent.current_status.lock() else {
+        return;
+    };
+    if *current != status {
+        return;
+    }
+
+    let status_sequence = state.next_status_observation_sequence(session_id);
+    state.set_remote_agent_status(session_id, status, status_sequence);
+}
+
 async fn status_arc_belongs_to_current_agent(
     state: &AppState,
     session_id: &str,
@@ -2145,6 +2173,29 @@ mod tests {
         assert!(
             !status_arc_belongs_to_current_agent(&state, "agent-1", &old_status).await,
             "late status events from a cleared runtime must not update the replacement agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn telemetry_status_observation_updates_remote_cache_only_for_current_value() {
+        let state = AppState::new();
+        let agent = test_active_agent("Idle");
+        let current_status = agent.current_status.clone();
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        publish_telemetry_status_observation(&state, "agent-1", "Idle", &current_status).await;
+        *current_status.lock().expect("status") = "Processing".to_string();
+        publish_telemetry_status_observation(&state, "agent-1", "Processing", &current_status)
+            .await;
+        publish_telemetry_status_observation(&state, "agent-1", "Idle", &current_status).await;
+
+        assert_eq!(
+            state.remote_agent_status("agent-1").as_deref(),
+            Some("Processing")
         );
     }
 

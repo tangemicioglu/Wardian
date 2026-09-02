@@ -2002,26 +2002,13 @@ async fn apply_provider_status_observations(
         // the remote fallback when the same status Arc is still installed and
         // still has the observed value; a provider event that arrived after
         // the snapshot must win instead of being overwritten by stale data.
-        let _ = {
-            let agents = state.agents.lock().await;
-            agents.get(&observation.session_id).and_then(|agent| {
-                if !std::sync::Arc::ptr_eq(&agent.current_status, &observation.current_status) {
-                    return None;
-                }
-                let current_status = agent.current_status.lock().ok()?;
-                if *current_status != observation.status {
-                    return None;
-                }
-                let status_sequence =
-                    state.next_status_observation_sequence(&observation.session_id);
-                state.set_remote_agent_status(
-                    &observation.session_id,
-                    &observation.status,
-                    status_sequence,
-                );
-                Some(status_sequence)
-            })
-        };
+        super::publish_telemetry_status_observation(
+            state,
+            &observation.session_id,
+            &observation.status,
+            &observation.current_status,
+        )
+        .await;
         let readiness = provider_readiness_from_status(&observation.status);
         let ready_evidence = (readiness == ProviderInputReadiness::Ready)
             .then_some(ProviderReadyEvidence::ProviderEvent);
@@ -2150,36 +2137,6 @@ mod tests {
     use rusqlite::Connection;
     use std::collections::{BTreeSet, HashMap};
     use std::sync::{Arc, Mutex};
-
-    fn test_active_agent(status: &str) -> crate::state::ActiveAgent {
-        crate::state::ActiveAgent {
-            config: Arc::new(Mutex::new(wardian_core::models::AgentConfig {
-                session_id: "agent-1".to_string(),
-                ..Default::default()
-            })),
-            child_process: None,
-            background_processes: Vec::new(),
-            memory_capability: None,
-            runtime_generation: None,
-            process_id: None,
-            query_count: Arc::new(Mutex::new(0)),
-            init_timestamp: Arc::new(Mutex::new(None)),
-            last_query_timestamp: Arc::new(Mutex::new(None)),
-            current_status: Arc::new(Mutex::new(status.to_string())),
-            last_status_at: Arc::new(Mutex::new(None)),
-            watch_state: Arc::new(Mutex::new(crate::state::AgentWatchState::new(
-                "agent-1".to_string(),
-                16,
-                1024,
-            ))),
-            terminal_title: Arc::new(Mutex::new(String::new())),
-            last_output_at: Arc::new(Mutex::new(None)),
-            log_path: Arc::new(Mutex::new(None)),
-            log_last_modified: Arc::new(Mutex::new(None)),
-            #[cfg(windows)]
-            job_object: None,
-        }
-    }
 
     fn test_snapshot(status: &str) -> AgentSnapshot {
         AgentSnapshot {
@@ -2487,55 +2444,6 @@ mod tests {
             .snapshot_since(None, None)
             .unwrap();
         assert!(snapshot.events.is_empty());
-    }
-
-    #[tokio::test]
-    async fn telemetry_status_observation_updates_remote_cache_only_for_current_value() {
-        let state = crate::state::AppState::new();
-        let agent = test_active_agent("Idle");
-        let current_status = agent.current_status.clone();
-        state
-            .agents
-            .lock()
-            .await
-            .insert("agent-1".to_string(), agent);
-
-        super::apply_provider_status_observations(
-            &state,
-            &[super::TelemetryProviderStatus {
-                session_id: "agent-1".to_string(),
-                generation: 0,
-                status: "Idle".to_string(),
-                current_status: current_status.clone(),
-            }],
-        )
-        .await;
-        *current_status.lock().expect("status") = "Processing".to_string();
-        super::apply_provider_status_observations(
-            &state,
-            &[super::TelemetryProviderStatus {
-                session_id: "agent-1".to_string(),
-                generation: 0,
-                status: "Processing".to_string(),
-                current_status: current_status.clone(),
-            }],
-        )
-        .await;
-        super::apply_provider_status_observations(
-            &state,
-            &[super::TelemetryProviderStatus {
-                session_id: "agent-1".to_string(),
-                generation: 0,
-                status: "Idle".to_string(),
-                current_status,
-            }],
-        )
-        .await;
-
-        assert_eq!(
-            state.remote_agent_status("agent-1").as_deref(),
-            Some("Processing")
-        );
     }
 
     #[test]
