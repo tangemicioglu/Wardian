@@ -335,6 +335,8 @@ queue. Durable queue and notification items are returned immediately; the
 filesystem-heavy automation-run portion is reconciled in the background and
 included by the next refresh. Cards start with long summaries collapsed to a
 four-line preview; use Show details or Hide details to change the card state.
+After a successful Inbox action, the runtime projection is invalidated so an
+in-flight filesystem refresh cannot restore the resolved or dismissed card.
 When an item identifies an agent session, use Open agent to move directly into
 that agent's detail view. The mobile card keeps the desktop unread, status, and
 timestamp cues while remaining sized for a phone screen.

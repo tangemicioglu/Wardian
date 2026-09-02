@@ -32,6 +32,8 @@ either case the initial roster and Inbox response remained stale.
   the read request. Reconcile filesystem-heavy automation approvals and
   completions in a single-flight background refresh, cache that projection for
   later requests, and continue to deduplicate it against durable queue items.
+  Successful Inbox mutations invalidate the cache and generation-check any
+  in-flight refresh before it is allowed to publish a replacement projection.
 
 ## Verification
 

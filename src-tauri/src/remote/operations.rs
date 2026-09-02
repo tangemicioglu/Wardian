@@ -77,11 +77,12 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
         .map(|(session_id, config_lock, status_lock)| {
             let config = config_lock.try_lock().ok().map(|config| config.clone());
             let status = status_lock.try_lock().ok().map(|status| status.clone());
+            let cached_status = || state.remote_agent_status(&session_id);
             match config {
                 Some(config) => Some(remote_agent_summary(
                     config,
                     status
-                        .or_else(|| state.remote_agent_status(&session_id))
+                        .or_else(cached_status)
                         .or_else(|| {
                             previous_by_id
                                 .get(&session_id)
@@ -89,10 +90,16 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
                         })
                         .unwrap_or_else(|| "Restoring".to_string()),
                 )),
-                None => previous_by_id
-                    .get(&session_id)
-                    .cloned()
-                    .or_else(|| persisted_by_id.get(&session_id).cloned()),
+                None => {
+                    let mut summary = previous_by_id
+                        .get(&session_id)
+                        .cloned()
+                        .or_else(|| persisted_by_id.get(&session_id).cloned())?;
+                    if let Some(status) = status.or_else(cached_status) {
+                        summary.status = status;
+                    }
+                    Some(summary)
+                }
             }
         })
         .collect::<Option<Vec<_>>>()
@@ -509,12 +516,14 @@ pub async fn remote_queue_items_for_app(
     state: &AppState,
 ) -> Vec<serde_json::Value> {
     let items = remote_queue_items(state).await;
-    if state.try_start_remote_inbox_runtime_refresh() {
+    if let Some(refresh_generation) = state.try_start_remote_inbox_runtime_refresh() {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let state = app.state::<AppState>();
             let runtime_items = remote_runtime_inbox_items(state.inner()).await;
-            state.inner().set_remote_inbox_runtime_items(runtime_items);
+            state
+                .inner()
+                .set_remote_inbox_runtime_items(refresh_generation, runtime_items);
         });
     }
     items
@@ -1390,6 +1399,7 @@ pub async fn apply_remote_inbox_action(
         }
         _ => return Err("unsupported_inbox_action".to_string()),
     }
+    state.invalidate_remote_inbox_runtime();
     let _ = app.emit("inbox-updated", ());
     Ok(())
 }
@@ -1943,6 +1953,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_keeps_live_status_when_config_is_busy() {
+        let state = Arc::new(AppState::new());
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Processing");
+        let config = agent.config.clone();
+        let status = agent.current_status.clone();
+        insert_agent(&state, agent).await;
+        let _ = remote_agent_roster(&state).await;
+        *status.lock().expect("status") = "Idle".to_string();
+        let config_guard = config.lock().expect("config");
+
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("busy config read should not wait for the config lock");
+
+        drop(config_guard);
+        assert_eq!(roster[0].status, "Idle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_agent_roster_uses_cached_status_when_global_state_is_busy() {
         let state = Arc::new(AppState::new());
         insert_agent(
@@ -1951,7 +1983,7 @@ mod tests {
         )
         .await;
         let initial_roster = remote_agent_roster(&state).await;
-        state.set_remote_agent_status("agent-1", "Idle");
+        state.set_remote_agent_status("agent-1", "Idle", 1);
 
         let agents_guard = state.agents.lock().await;
         let roster = tokio::time::timeout(
@@ -2052,7 +2084,7 @@ mod tests {
 
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].session_id, "agent-1");
-        assert_eq!(roster[0].status, "Restoring");
+        assert_eq!(roster[0].status, "Processing");
     }
 
     #[tokio::test]
@@ -2169,11 +2201,14 @@ mod tests {
         })])
         .expect("desktop item");
         let state = AppState::new();
-        state.set_remote_inbox_runtime_items(vec![serde_json::json!({
-            "id": "automation-item",
-            "type": "automation_completed",
-            "timestamp": chrono::Utc::now().timestamp_millis() + 1,
-        })]);
+        state.set_remote_inbox_runtime_items(
+            0,
+            vec![serde_json::json!({
+                "id": "automation-item",
+                "type": "automation_completed",
+                "timestamp": chrono::Utc::now().timestamp_millis() + 1,
+            })],
+        );
 
         let items = remote_queue_items(&state).await;
         unsafe { std::env::remove_var("WARDIAN_HOME") };
@@ -2190,10 +2225,31 @@ mod tests {
     #[test]
     fn remote_runtime_refresh_is_single_flight_and_interval_bounded() {
         let state = AppState::new();
-        assert!(state.try_start_remote_inbox_runtime_refresh());
-        assert!(!state.try_start_remote_inbox_runtime_refresh());
-        state.set_remote_inbox_runtime_items(Vec::new());
-        assert!(!state.try_start_remote_inbox_runtime_refresh());
+        let generation = state
+            .try_start_remote_inbox_runtime_refresh()
+            .expect("first refresh should start");
+        assert!(state.try_start_remote_inbox_runtime_refresh().is_none());
+        state.set_remote_inbox_runtime_items(generation, Vec::new());
+        assert!(state.try_start_remote_inbox_runtime_refresh().is_none());
+    }
+
+    #[test]
+    fn remote_runtime_refresh_invalidation_rejects_stale_results() {
+        let state = AppState::new();
+        let generation = state
+            .try_start_remote_inbox_runtime_refresh()
+            .expect("refresh should start");
+        state
+            .set_remote_inbox_runtime_items(generation, vec![serde_json::json!({ "id": "stale" })]);
+        assert!(state.remote_inbox_runtime_items().is_some());
+
+        state.invalidate_remote_inbox_runtime();
+        assert!(state.remote_inbox_runtime_items().is_none());
+        state.set_remote_inbox_runtime_items(
+            generation,
+            vec![serde_json::json!({ "id": "rejected" })],
+        );
+        assert!(state.remote_inbox_runtime_items().is_none());
     }
 
     #[test]

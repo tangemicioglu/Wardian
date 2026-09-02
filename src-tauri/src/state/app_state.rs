@@ -85,13 +85,14 @@ pub struct AppState {
     pub remote_agent_roster_cache: RwLock<Option<Vec<RemoteAgentSummary>>>,
     // Status observations are updated independently of the global agent map so
     // a remote read can still report live state while that map is busy.
-    pub remote_agent_status_cache: RwLock<HashMap<String, String>>,
+    pub remote_agent_status_cache: RwLock<HashMap<String, (u64, String)>>,
     // Filesystem-heavy automation Inbox reconciliation is refreshed at most
     // once per short interval and served from this cache by the fast remote
     // compatibility endpoint.
     pub remote_inbox_runtime_cache: RwLock<Option<Vec<serde_json::Value>>>,
     pub remote_inbox_runtime_refreshing: std::sync::atomic::AtomicBool,
     pub remote_inbox_runtime_refreshed_at: std::sync::atomic::AtomicI64,
+    pub remote_inbox_runtime_generation: std::sync::atomic::AtomicU64,
     // Last frontend-reported effective theme. The frontend resolves "system"
     // before updating this so native PTY fallbacks can answer light/dark probes.
     pub terminal_theme: RwLock<String>,
@@ -196,6 +197,10 @@ impl AppState {
         if let Ok(mut sequences) = self.status_observation_sequences.lock() {
             sequences.remove(target_session_id);
         }
+        self.remote_agent_status_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(target_session_id);
         self.mailbox
             .lock()
             .await
@@ -323,12 +328,17 @@ impl AppState {
         *cached = Some(snapshot);
     }
 
-    pub fn set_remote_agent_status(&self, session_id: &str, status: &str) {
+    pub fn set_remote_agent_status(&self, session_id: &str, status: &str, sequence: u64) {
         let mut cached = self
             .remote_agent_status_cache
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cached.insert(session_id.to_string(), status.to_string());
+        if cached
+            .get(session_id)
+            .is_none_or(|(cached_sequence, _)| sequence >= *cached_sequence)
+        {
+            cached.insert(session_id.to_string(), (sequence, status.to_string()));
+        }
     }
 
     pub fn remote_agent_status(&self, session_id: &str) -> Option<String> {
@@ -336,7 +346,7 @@ impl AppState {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(session_id)
-            .cloned()
+            .map(|(_, status)| status.clone())
     }
 
     pub fn remote_agent_statuses(&self) -> HashMap<String, String> {
@@ -344,6 +354,9 @@ impl AppState {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+            .into_iter()
+            .map(|(session_id, (_, status))| (session_id, status))
+            .collect()
     }
 
     pub fn remote_inbox_runtime_items(&self) -> Option<Vec<serde_json::Value>> {
@@ -353,14 +366,14 @@ impl AppState {
             .clone()
     }
 
-    pub fn try_start_remote_inbox_runtime_refresh(&self) -> bool {
+    pub fn try_start_remote_inbox_runtime_refresh(&self) -> Option<u64> {
         const REFRESH_INTERVAL_MS: i64 = 5_000;
         let now = chrono::Utc::now().timestamp_millis();
         let refreshed_at = self
             .remote_inbox_runtime_refreshed_at
             .load(std::sync::atomic::Ordering::Acquire);
         if refreshed_at > 0 && now.saturating_sub(refreshed_at) < REFRESH_INTERVAL_MS {
-            return false;
+            return None;
         }
         self.remote_inbox_runtime_refreshing
             .compare_exchange(
@@ -370,29 +383,42 @@ impl AppState {
                 std::sync::atomic::Ordering::Acquire,
             )
             .is_ok()
+            .then(|| {
+                self.remote_inbox_runtime_generation
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
     }
 
-    pub fn set_remote_inbox_runtime_items(&self, items: Vec<serde_json::Value>) {
+    pub fn set_remote_inbox_runtime_items(&self, generation: u64, items: Vec<serde_json::Value>) {
         let mut cached = self
             .remote_inbox_runtime_cache
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *cached = Some(items);
-        self.remote_inbox_runtime_refreshed_at.store(
-            chrono::Utc::now().timestamp_millis(),
-            std::sync::atomic::Ordering::Release,
-        );
+        if self
+            .remote_inbox_runtime_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            == generation
+        {
+            *cached = Some(items);
+            self.remote_inbox_runtime_refreshed_at.store(
+                chrono::Utc::now().timestamp_millis(),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
         self.remote_inbox_runtime_refreshing
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
-    pub fn finish_remote_inbox_runtime_refresh(&self) {
-        self.remote_inbox_runtime_refreshed_at.store(
-            chrono::Utc::now().timestamp_millis(),
-            std::sync::atomic::Ordering::Release,
-        );
-        self.remote_inbox_runtime_refreshing
-            .store(false, std::sync::atomic::Ordering::Release);
+    pub fn invalidate_remote_inbox_runtime(&self) {
+        let mut cached = self
+            .remote_inbox_runtime_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.remote_inbox_runtime_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *cached = None;
+        self.remote_inbox_runtime_refreshed_at
+            .store(0, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -474,6 +500,7 @@ impl Default for AppState {
             remote_inbox_runtime_cache: RwLock::new(None),
             remote_inbox_runtime_refreshing: std::sync::atomic::AtomicBool::new(false),
             remote_inbox_runtime_refreshed_at: std::sync::atomic::AtomicI64::new(0),
+            remote_inbox_runtime_generation: std::sync::atomic::AtomicU64::new(0),
             terminal_theme: RwLock::new("dark".to_string()),
             terminal_sessions: Arc::new(TerminalSessionBroker::default()),
             // Profiles and downloads live under Wardian home so an isolated
@@ -523,6 +550,19 @@ mod tests {
 
         state.set_terminal_theme("system");
         assert_eq!(state.terminal_theme(), "dark");
+    }
+
+    #[test]
+    fn remote_agent_status_cache_rejects_out_of_order_observations() {
+        let state = AppState::new();
+
+        state.set_remote_agent_status("agent-1", "Idle", 2);
+        state.set_remote_agent_status("agent-1", "Processing", 1);
+
+        assert_eq!(
+            state.remote_agent_status("agent-1").as_deref(),
+            Some("Idle")
+        );
     }
 
     #[tokio::test]
