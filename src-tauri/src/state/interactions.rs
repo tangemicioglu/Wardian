@@ -13,7 +13,9 @@ use wardian_core::control::{
 pub struct InteractionState {
     mutation_lock: Mutex<()>,
     deleted_sessions: Mutex<HashSet<String>>,
-    records: Mutex<HashMap<String, InteractionRecord>>,
+    // Crate-visible for remote projection tests that need to model source-lock
+    // contention without adding another production synchronization path.
+    pub(crate) records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
     provider_status_observations: Mutex<HashMap<String, u64>>,

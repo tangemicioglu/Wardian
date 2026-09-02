@@ -4,6 +4,8 @@ import type { AgentChatEvent, QueueItem } from "../../types";
 import { type RemoteAgentChatPage, RemoteRequestError, remoteClient } from "./remoteClient";
 import { useRemoteStore } from "./useRemoteStore";
 
+type StatusStreamHandlers = Parameters<typeof remoteClient.openStatusStream>[0];
+
 vi.mock("./remoteClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./remoteClient")>();
   return {
@@ -92,6 +94,11 @@ describe("useRemoteStore watchlists", () => {
     });
   });
 
+  afterEach(() => {
+    useRemoteStore.getState().disconnectStatusStream();
+    vi.useRealTimers();
+  });
+
   it("loads and normalizes remote watchlists and team state", async () => {
     localStorage.setItem("wardian.remote.activeWatchlistId", "main");
     vi.mocked(remoteClient.loadWatchlists).mockResolvedValue({
@@ -160,6 +167,188 @@ describe("useRemoteStore watchlists", () => {
     first.resolve(oldest);
     await initialLoad;
     expect(useRemoteStore.getState().remoteQueueItems).toEqual(newest);
+  });
+
+  it("reconnects the status stream so roster and Inbox updates resume after a socket error", async () => {
+    const handlers: StatusStreamHandlers[] = [];
+    const nextQueueItems: QueueItem[] = [{
+      id: "new-inbox-item",
+      type: "agent_update",
+      timestamp: 2,
+      read: false,
+      summary: "New desktop Inbox update",
+    }];
+    vi.mocked(remoteClient.listAgents).mockResolvedValue([{
+      session_id: "agent-1",
+      session_name: "Coder",
+      agent_class: "Coder",
+      provider: "codex",
+      workspace: "<absolute-workspace-path>",
+      status: "Restoring",
+      latest_text: null,
+    }]);
+    vi.mocked(remoteClient.loadQueueItems)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(nextQueueItems);
+    vi.mocked(remoteClient.openStatusStream).mockImplementation(async (nextHandlers) => {
+      handlers.push(nextHandlers);
+      return { close: vi.fn() } as unknown as WebSocket;
+    });
+
+    await useRemoteStore.getState().load();
+    expect(handlers).toHaveLength(1);
+
+    handlers[0]?.onError?.();
+    await vi.waitFor(() => expect(handlers).toHaveLength(2), { timeout: 1_000, interval: 20 });
+
+    handlers[1]?.onAgents?.([{
+      session_id: "agent-1",
+      session_name: "Coder",
+      agent_class: "Coder",
+      provider: "codex",
+      workspace: "<absolute-workspace-path>",
+      status: "Idle",
+      latest_text: "Ready",
+    }]);
+    await vi.waitFor(() => expect(useRemoteStore.getState().remoteQueueItems).toEqual(nextQueueItems));
+
+    expect(useRemoteStore.getState().agents[0]?.status).toBe("Idle");
+  });
+
+  it("retries an initial status-stream failure", async () => {
+    const handlers: StatusStreamHandlers[] = [];
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream)
+      .mockRejectedValueOnce(new Error("status stream unavailable"))
+      .mockImplementationOnce(async (nextHandlers) => {
+        handlers.push(nextHandlers);
+        return { close: vi.fn() } as unknown as WebSocket;
+      });
+
+    await useRemoteStore.getState().load();
+
+    await vi.waitFor(() => expect(handlers).toHaveLength(1), { timeout: 1_000, interval: 20 });
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
+  });
+
+  it("backs off repeated runtime status-stream failures until a roster is accepted", async () => {
+    vi.useFakeTimers();
+    const handlers: StatusStreamHandlers[] = [];
+    const sockets: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream).mockImplementation(async (nextHandlers) => {
+      handlers.push(nextHandlers);
+      const socket = { close: vi.fn() };
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+
+    await useRemoteStore.getState().load();
+    await Promise.resolve();
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
+
+    for (const [attemptIndex, delay] of [250, 500, 1_000, 2_000, 4_000, 5_000].entries()) {
+      handlers[attemptIndex]?.onError?.();
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(attemptIndex + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(attemptIndex + 2);
+    }
+
+    const latestHandlers = handlers[handlers.length - 1];
+    latestHandlers?.onAgents?.([]);
+    latestHandlers?.onError?.();
+    await vi.advanceTimersByTimeAsync(249);
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(7);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(8);
+    expect(sockets).toHaveLength(8);
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "does not resurrect a status stream when teardown races with %s of ticket acquisition",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const pending = deferred<WebSocket>();
+      vi.mocked(remoteClient.openStatusStream).mockClear();
+      vi.mocked(remoteClient.openStatusStream).mockReturnValueOnce(pending.promise);
+
+      await useRemoteStore.getState().load();
+      expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
+
+      const socket = { close: vi.fn() };
+      useRemoteStore.getState().disconnectStatusStream();
+      if (outcome === "resolve") {
+        pending.resolve(socket as unknown as WebSocket);
+      } else {
+        pending.reject(new Error("status stream unavailable"));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
+      if (outcome === "resolve") expect(socket.close).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("ignores a late close from a retired socket after replacement", async () => {
+    vi.useFakeTimers();
+    const handlers: StatusStreamHandlers[] = [];
+    const sockets: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream).mockImplementation(async (nextHandlers) => {
+      handlers.push(nextHandlers);
+      const socket = { close: vi.fn() };
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+
+    await useRemoteStore.getState().load();
+    handlers[0]?.onError?.();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
+
+    handlers[0]?.onError?.();
+    handlers[0]?.onClose?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(2);
+    expect(sockets[1]?.close).not.toHaveBeenCalled();
+
+    useRemoteStore.getState().disconnectStatusStream();
+    expect(sockets[1]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconnect after an initial status-stream session expiry", async () => {
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream).mockRejectedValueOnce(new RemoteRequestError("expired", 401));
+
+    await useRemoteStore.getState().load();
+    await vi.waitFor(() => expect(useRemoteStore.getState().status).toBe("session_expired"));
+
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops reconnecting when the status stream reports session expiry", async () => {
+    vi.useFakeTimers();
+    const handlers: StatusStreamHandlers[] = [];
+    const socket = { close: vi.fn() };
+    vi.mocked(remoteClient.openStatusStream).mockClear();
+    vi.mocked(remoteClient.openStatusStream).mockImplementation(async (nextHandlers) => {
+      handlers.push(nextHandlers);
+      return socket as unknown as WebSocket;
+    });
+
+    await useRemoteStore.getState().load();
+    handlers[0]?.onSessionExpired();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(useRemoteStore.getState().status).toBe("session_expired");
+    expect(remoteClient.openStatusStream).toHaveBeenCalledTimes(1);
+    expect(socket.close).toHaveBeenCalledTimes(1);
   });
 
   it("scopes collapsed team state to the active remote watchlist", () => {
