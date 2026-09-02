@@ -76,12 +76,19 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
         .into_iter()
         .map(|(session_id, config_lock, status_lock)| {
             let config = config_lock.try_lock().ok().map(|config| config.clone());
-            let status = status_lock.try_lock().ok().map(|status| status.clone());
+            let live_status = status_lock.try_lock().ok().map(|status| status.clone());
+            if let Some(status) = live_status.as_deref() {
+                // A successful live snapshot is newer evidence than the
+                // fallback snapshot. Publish it so a later global-lock miss
+                // cannot overlay an older cached status onto this roster.
+                let sequence = state.next_status_observation_sequence(&session_id);
+                state.set_remote_agent_status(&session_id, status, sequence);
+            }
             let cached_status = || state.remote_agent_status(&session_id);
             match config {
                 Some(config) => Some(remote_agent_summary(
                     config,
-                    status
+                    live_status
                         .or_else(cached_status)
                         .or_else(|| {
                             previous_by_id
@@ -95,7 +102,7 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
                         .get(&session_id)
                         .cloned()
                         .or_else(|| persisted_by_id.get(&session_id).cloned())?;
-                    if let Some(status) = status.or_else(cached_status) {
+                    if let Some(status) = live_status.or_else(cached_status) {
                         summary.status = status;
                     }
                     Some(summary)
@@ -2023,13 +2030,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_agent_roster_uses_cached_status_when_global_state_is_busy() {
         let state = Arc::new(AppState::new());
-        insert_agent(
-            &state,
-            test_agent("agent-1", "CoderOne", "Coder", "Restoring"),
-        )
-        .await;
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Restoring");
+        let status = agent.current_status.clone();
+        insert_agent(&state, agent).await;
         let initial_roster = remote_agent_roster(&state).await;
-        state.set_remote_agent_status("agent-1", "Idle", 1);
+        *status.lock().expect("status") = "Idle".to_string();
+        let refreshed_roster = remote_agent_roster(&state).await;
 
         let agents_guard = state.agents.lock().await;
         let roster = tokio::time::timeout(
@@ -2041,6 +2047,7 @@ mod tests {
         drop(agents_guard);
 
         assert_eq!(initial_roster[0].status, "Restoring");
+        assert_eq!(refreshed_roster[0].status, "Idle");
         assert_eq!(roster[0].status, "Idle");
     }
 
