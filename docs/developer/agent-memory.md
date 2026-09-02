@@ -4,6 +4,12 @@ The authority is `crates/wardian-core/src/memory.rs`. It opens the Wardian-home
 `memory.db` with WAL, foreign keys, a busy timeout, and transactional lifecycle
 operations. The CLI and Tauri commands call the same store.
 
+Provider-integrated memory is gated by the global `memory_enabled` app setting,
+which defaults to false while the feature matures. When it is disabled, startup
+recall, direct-retention instructions, managed capabilities, and
+`memory_commit` execution are off; the desktop operator path may still inspect
+existing records.
+
 Startup integration lives in `src-tauri/src/manager/spawn.rs`; generated
 instruction projection lives in `src-tauri/src/utils/fs.rs`. Codex uses the same
 generated text through a runtime `developer_instructions` config override so

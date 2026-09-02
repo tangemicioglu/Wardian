@@ -861,32 +861,37 @@ pub async fn spawn_agent(
     } else {
         format!("fresh:{}:{born_to_save}", config.session_id)
     };
-    let memory_setup = match wardian_core::memory::MemoryStore::from_default_home() {
-        Ok(store) => match store.compile_brief(
-            &wardian_core::memory::MemoryActor::agent(&config.session_id),
-            &config.session_id,
-            Some(&expected_folder),
-            &config.provider,
-            &memory_process_key,
-            is_restored,
-            12_000,
-        ) {
-            Ok(brief) => Some((store, brief)),
+    let memory_enabled = crate::utils::memory_feature_enabled();
+    let memory_setup = if memory_enabled {
+        match wardian_core::memory::MemoryStore::from_default_home() {
+            Ok(store) => match store.compile_brief(
+                &wardian_core::memory::MemoryActor::agent(&config.session_id),
+                &config.session_id,
+                Some(&expected_folder),
+                &config.provider,
+                &memory_process_key,
+                is_restored,
+                12_000,
+            ) {
+                Ok(brief) => Some((store, brief)),
+                Err(error) => {
+                    log_debug(&format!(
+                        "[Wardian] memory recall unavailable for {}: {error}",
+                        config.session_id
+                    ));
+                    None
+                }
+            },
             Err(error) => {
                 log_debug(&format!(
-                    "[Wardian] memory recall unavailable for {}: {error}",
+                    "[Wardian] memory store unavailable for {}: {error}",
                     config.session_id
                 ));
                 None
             }
-        },
-        Err(error) => {
-            log_debug(&format!(
-                "[Wardian] memory store unavailable for {}: {error}",
-                config.session_id
-            ));
-            None
         }
+    } else {
+        None
     };
     let habitat_root = prepare_provider_habitat(
         &config.provider,
@@ -895,12 +900,14 @@ pub async fn spawn_agent(
         Some(&config.session_id),
     )?;
     if let Some(root) = habitat_root.as_ref() {
-        crate::utils::fs::append_habitat_memory_instructions(
-            root,
-            memory_setup
-                .as_ref()
-                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
-        )?;
+        if memory_enabled {
+            crate::utils::fs::append_habitat_memory_instructions(
+                root,
+                memory_setup.as_ref().and_then(|(_, brief)| {
+                    (!brief.is_empty).then_some(brief.context_text.as_str())
+                }),
+            )?;
+        }
         if !crate::utils::fs::provider_uses_projected_workspace(&config.provider) {
             let include = root.to_string_lossy().to_string();
             let includes = config
@@ -966,7 +973,7 @@ pub async fn spawn_agent(
         spawn_args,
     );
     provider_args.extend(spawn_args);
-    if config.provider == "codex" {
+    if config.provider == "codex" && memory_enabled {
         let runtime_instructions = wardian_memory_instructions(
             memory_setup
                 .as_ref()
@@ -994,7 +1001,9 @@ pub async fn spawn_agent(
     super::apply_managed_cli_path_to_pty(&mut cmd);
     super::apply_interactive_provider_runtime_env(&config.provider, &mut cmd)?;
     cmd.env("WARDIAN_SESSION_ID", &config.session_id);
-    let memory_capability = super::issue_memory_capability(&config.session_id);
+    let memory_capability = memory_enabled
+        .then(|| super::issue_memory_capability(&config.session_id))
+        .flatten();
     if let Some(capability) = memory_capability.as_ref() {
         cmd.env(
             wardian_core::memory::MEMORY_CAPABILITY_ENV,

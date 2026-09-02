@@ -105,13 +105,14 @@ struct ActiveCorrection {
     receipt: Option<oneshot::Sender<Result<NativeDispatchReceipt, NativeBrokerError>>>,
 }
 
-#[derive(Debug)]
 struct NativeRuntime {
     child: Child,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     stderr_tail: Arc<Mutex<VecDeque<u8>>>,
     binding: NativeSessionBinding,
+    // The lease revokes the provider's memory capability on runtime shutdown.
+    _memory_capability: Option<wardian_core::memory::MemoryCapabilityLease>,
 }
 
 #[derive(Debug, Default)]
@@ -1331,7 +1332,7 @@ async fn start_runtime(
     let prior = wardian_core::db::latest_native_session_binding(&spec.target_agent_id)
         .map_err(db_error)?
         .filter(|binding| binding.provider == spec.provider);
-    let mut command = native_command(spec, protocol, prior.as_ref())?;
+    let (mut command, memory_capability) = native_command(spec, protocol, prior.as_ref())?;
     let mut child = command.spawn().map_err(|err| {
         error(
             NativeDeliveryErrorCode::TransportUnavailable,
@@ -1388,6 +1389,7 @@ async fn start_runtime(
             capabilities: capabilities.clone(),
             observed_at: now(),
         },
+        _memory_capability: memory_capability,
     };
     for request in protocol.bootstrap_requests(
         &spec.target_agent_id,
@@ -1532,7 +1534,7 @@ fn native_command(
     spec: &NativeSessionSpec,
     protocol: NativeProviderProtocol,
     prior: Option<&NativeSessionBinding>,
-) -> Result<Command, NativeBrokerError> {
+) -> Result<(Command, Option<wardian_core::memory::MemoryCapabilityLease>), NativeBrokerError> {
     #[cfg(test)]
     if let Some(script) = std::env::var_os("WARDIAN_NATIVE_TEST_SCRIPT") {
         let mut command = Command::new("node");
@@ -1543,7 +1545,14 @@ fn native_command(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        return Ok(command);
+        let memory_enabled = crate::utils::memory_feature_enabled();
+        let memory_capability = crate::manager::headless::apply_headless_identity_env(
+            &mut command,
+            &spec.target_agent_id,
+            Some(&spec.target_agent_id),
+            memory_enabled,
+        );
+        return Ok((command, memory_capability));
     }
     let provider = ProviderFactory::resolve(&spec.provider)
         .map_err(|message| error(NativeDeliveryErrorCode::UnsupportedProvider, message, false))?;
@@ -1618,10 +1627,12 @@ fn native_command(
             )
         },
     )?;
-    let _memory_capability = crate::manager::headless::apply_headless_identity_env(
+    let memory_enabled = crate::utils::memory_feature_enabled();
+    let memory_capability = crate::manager::headless::apply_headless_identity_env(
         &mut command,
         &spec.target_agent_id,
         Some(&spec.target_agent_id),
+        memory_enabled,
     );
     for (key, value) in crate::manager::worktree_build_env(&config) {
         command.env(key, value);
@@ -1643,7 +1654,7 @@ fn native_command(
             }
         }
     }
-    Ok(command)
+    Ok((command, memory_capability))
 }
 
 fn reconcile_claude_native_session(
@@ -2106,6 +2117,27 @@ mod tests {
         }
     }
 
+    struct NativeHomeGuard {
+        previous_home: Option<std::ffi::OsString>,
+    }
+
+    impl NativeHomeGuard {
+        fn set(home: &std::path::Path) -> Self {
+            let previous_home = std::env::var_os("WARDIAN_HOME");
+            std::env::set_var("WARDIAN_HOME", home);
+            Self { previous_home }
+        }
+    }
+
+    impl Drop for NativeHomeGuard {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                Some(value) => std::env::set_var("WARDIAN_HOME", value),
+                None => std::env::remove_var("WARDIAN_HOME"),
+            }
+        }
+    }
+
     fn test_admission(id: &str, key: &str, body: &str) -> NativeDeliveryAdmission {
         NativeDeliveryAdmission {
             interaction_id: id.to_string(),
@@ -2242,6 +2274,104 @@ mod tests {
         assert!(diagnostic.starts_with("first second "));
         assert!(!diagnostic.contains('\n'));
         assert_eq!(diagnostic.chars().count(), 1024);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_runtime_retains_memory_lease_until_runtime_drop() {
+        let _lock = native_test_lock();
+        let temp = tempfile::tempdir().expect("native memory tempdir");
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize native broker db");
+        std::fs::create_dir_all(temp.path().join("settings")).expect("settings directory");
+        std::fs::write(
+            temp.path().join("settings/app.json"),
+            r#"{"schema_version":2,"overrides":{"memory_enabled":true}}"#,
+        )
+        .expect("enable memory");
+        let _home = NativeHomeGuard::set(temp.path());
+        let script = temp.path().join("native-provider.cjs");
+        std::fs::write(
+            &script,
+            r#"const readline = require('node:readline');
+const input = readline.createInterface({ input: process.stdin });
+input.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.type === 'get_state') {
+    console.log(JSON.stringify({ id: request.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'fixture-session' } }));
+  }
+});
+"#,
+        )
+        .expect("provider fixture");
+        unsafe { std::env::set_var("WARDIAN_NATIVE_TEST_SCRIPT", &script) };
+        let _script_guard = NativeTestScriptGuard;
+
+        let config = AgentConfig {
+            provider: "pi".to_string(),
+            session_id: "agent-native-test".to_string(),
+            ..AgentConfig::default()
+        };
+        let spec = NativeSessionSpec {
+            target_agent_id: "agent-native-test".to_string(),
+            provider: "pi".to_string(),
+            generation: 1,
+            workspace: temp.path().to_path_buf(),
+            config,
+        };
+        let capabilities = NativeProviderProtocol::PiRpc.capabilities("fixture");
+        let runtime = start_runtime(&spec, NativeProviderProtocol::PiRpc, &capabilities)
+            .await
+            .expect("start native runtime");
+        let token = runtime
+            ._memory_capability
+            .as_ref()
+            .expect("enabled native runtime capability")
+            .token()
+            .to_string();
+        let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
+        assert!(store
+            .validate_capability("agent-native-test", &token)
+            .unwrap());
+
+        drop(runtime);
+        assert!(!store
+            .validate_capability("agent-native-test", &token)
+            .unwrap());
+    }
+
+    #[test]
+    fn disabled_native_command_does_not_issue_a_memory_lease() {
+        let _lock = native_test_lock();
+        let temp = tempfile::tempdir().expect("native memory tempdir");
+        std::fs::create_dir_all(temp.path().join("settings")).expect("settings directory");
+        std::fs::write(
+            temp.path().join("settings/app.json"),
+            r#"{"schema_version":2,"overrides":{}}"#,
+        )
+        .expect("disable memory");
+        let _home = NativeHomeGuard::set(temp.path());
+        let script = temp.path().join("native-provider.cjs");
+        std::fs::write(&script, "").expect("provider fixture");
+        unsafe { std::env::set_var("WARDIAN_NATIVE_TEST_SCRIPT", &script) };
+        let _script_guard = NativeTestScriptGuard;
+
+        let config = AgentConfig {
+            provider: "claude".to_string(),
+            session_id: "agent-native-test".to_string(),
+            ..AgentConfig::default()
+        };
+        let spec = NativeSessionSpec {
+            target_agent_id: "agent-native-test".to_string(),
+            provider: "claude".to_string(),
+            generation: 1,
+            workspace: temp.path().to_path_buf(),
+            config,
+        };
+        let (_command, lease) =
+            native_command(&spec, NativeProviderProtocol::ClaudeStreamJson, None)
+                .expect("construct native command");
+        let token = lease.as_ref().map(|lease| lease.token().to_string());
+        assert!(token.is_none(), "disabled launch must not issue capability");
     }
 
     #[tokio::test]

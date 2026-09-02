@@ -23,7 +23,7 @@ computed defaults for the app and operating system.
 - `settings/app.json`: app preferences such as theme, top bar telemetry
   visibility, Agent card display, Watchlist new agent position, terminal font
   size, terminal font family, file opening preferences, Explorer behavior, and
-  Gemini auto-patch.
+  Gemini auto-patch, and Agent memory.
 - `settings/shell.json`: runtime preferences such as shell selection, default
   provider, regular agent session policy, and Codex runtime defaults.
 
@@ -39,7 +39,7 @@ Categories:
 
 - **General**: app version, update status, and onboarding guidance.
 - **Appearance**: app theme and top bar telemetry visibility.
-- **Grid**: display mode for agent cards in Agents surfaces.
+- **Agents**: display mode for agent cards in Agents surfaces.
 - **Inbox**: Inbox event desktop and sound notification rules.
 - **Explorer**: broad file-family opening behavior and the external app or
   editor used by Explorer, chat, and terminals.
@@ -253,6 +253,13 @@ conversation archive records. It defaults to enabled. When disabled, Wardian
 writes no new conversation records and does not backfill missed activity after
 the setting is re-enabled.
 
+**Agent memory** controls Wardian's experimental durable-memory integration. It
+is disabled by default. When disabled, new provider processes receive no
+startup memory recall, direct-retention instructions, or managed memory
+capability; existing records remain available for inspection. Enabling it
+applies to newly launched or restarted provider processes. The setting does not
+enable the optional Memory Consolidation automation by itself.
+
 Individual agents can override this from their own **Advanced Settings**. Set
 **Conversation Logging** to **Use global setting**, **Enabled**, or **Disabled**
 to control new archive writes for that agent without restarting its provider
@@ -313,6 +320,8 @@ OpenCode, or Pi behavior.
   screens that need direct terminal interaction.
 - Automation Agent nodes have their own execution mode and do not simply inherit
   the regular-agent resume default.
+- Agent memory is an opt-in experimental feature and changes apply to future
+  provider processes; restart an existing agent after changing the setting.
 - Provider utilities are provider-specific.
 
 ## Related Links

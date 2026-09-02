@@ -66,6 +66,7 @@ export interface ShellSettingsOverrides {
 export interface AppSettings {
   theme: AppThemeSetting;
   auto_patch_gemini: boolean;
+  memory_enabled: boolean;
   terminal_font_size: number;
   terminal_font_family: string | null;
   grid_card_display_mode: 'terminal' | 'chat';
@@ -80,6 +81,7 @@ export interface AppSettings {
 export interface AppSettingsOverrides {
   theme?: AppThemeSetting;
   auto_patch_gemini?: boolean;
+  memory_enabled?: boolean;
   terminal_font_size?: number;
   terminal_font_family?: string | null;
   grid_card_display_mode?: 'terminal' | 'chat';

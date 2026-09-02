@@ -47,6 +47,7 @@ describe("SettingsModal", () => {
     useSettingsStore.setState({
       theme: "dark",
       autoPatchGemini: false,
+      memoryEnabled: false,
       terminalFontSize: 14,
       terminalFontFamily: "",
       gridCardDisplayMode: "terminal",
@@ -457,6 +458,55 @@ describe("SettingsModal", () => {
       });
     });
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
+  });
+
+  it("keeps agent memory disabled until explicitly enabled", async () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+
+    const select = screen.getByLabelText("Agent memory");
+    expect(select).toHaveValue("disabled");
+
+    fireEvent.change(select, { target: { value: "enabled" } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_app_settings", {
+        settings: expect.objectContaining({
+          schema_version: 2,
+          overrides: expect.objectContaining({
+            memory_enabled: true,
+          }),
+        }),
+      });
+    });
+    expect(useSettingsStore.getState().memoryEnabled).toBe(true);
+  });
+
+  it("rolls agent memory back and reports a persistence failure", async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "save_app_settings") {
+        throw new Error("settings write failed");
+      }
+      if (command === "load_app_settings") {
+        return null;
+      }
+      return null;
+    });
+
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+    const select = screen.getByLabelText("Agent memory");
+    fireEvent.change(select, { target: { value: "enabled" } });
+
+    expect(select).toBeDisabled();
+    await waitFor(() => {
+      expect(select).toHaveValue("disabled");
+      expect(useSettingsStore.getState().memoryEnabled).toBe(false);
+      expect(screen.getByRole("status")).toHaveTextContent("Unable to save agent memory setting: Error: settings write failed");
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("load_app_settings");
   });
 
   it("loads and saves the workbench new tab button preference", async () => {
