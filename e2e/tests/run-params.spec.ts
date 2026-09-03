@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openSurface } from "../fixtures/workbench";
+import { openAutomationEditor } from "../fixtures/workbench";
 
 const blueprint = {
   schema: 2,
@@ -142,7 +142,7 @@ test("parameterized run dialog sends entry input to automation_run", async ({ pa
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.evaluate(async () => {
     const { useSettingsStore } = await import("/src/store/useSettingsStore.ts");
     useSettingsStore.setState({ default_provider: "codex" });

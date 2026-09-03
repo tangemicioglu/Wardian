@@ -140,3 +140,12 @@ export async function openSurface(
   await option.click();
   await surfaceTab(page, surfaceType, resourceKey).first().waitFor({ state: "visible" });
 }
+
+/** Open the desktop Automations surface in its authoring mode. */
+export async function openAutomationEditor(page: Page, resourceKey?: string): Promise<void> {
+  await openSurface(page, "automations", resourceKey);
+  const panel = surfacePanel(page, "automations", resourceKey).first();
+  const view = panel.getByTestId("automations-view");
+  await view.getByRole("button", { name: "edit", exact: true }).click();
+  await panel.getByTestId("automations-edit-mode").waitFor({ state: "visible" });
+}

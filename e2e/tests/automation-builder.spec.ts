@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openSurface } from "../fixtures/workbench";
+import { openAutomationEditor } from "../fixtures/workbench";
 
 type BlueprintNode = {
   id: string;
@@ -142,7 +142,7 @@ async function openAutomationBuilder(page: Page) {
   await page.setViewportSize({ width: 1700, height: 980 });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await expect(page.getByTestId("automations-view")).toBeVisible();
   await expect(page.getByTestId("automations-edit-mode")).toBeVisible();
   await page.evaluate(async () => {

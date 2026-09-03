@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openSurface, surfacePanel } from "../fixtures/workbench";
+import { openAutomationEditor, surfacePanel } from "../fixtures/workbench";
 
 test.describe("Critical browser flows", () => {
   test.describe.configure({ mode: "serial" });
@@ -26,7 +26,7 @@ test.describe("Critical browser flows", () => {
   });
 
   test("automation builder can add a manual trigger block from the library", async () => {
-    await openSurface(page, "automations");
+    await openAutomationEditor(page);
     const automations = surfacePanel(page, "automations");
     await expect(automations.getByTestId("automations-view")).toBeVisible();
     await expect(automations.getByTestId("automations-edit-mode")).toBeVisible();

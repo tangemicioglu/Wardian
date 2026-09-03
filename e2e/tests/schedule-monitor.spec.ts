@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openSurface } from "../fixtures/workbench";
+import { openAutomationEditor } from "../fixtures/workbench";
 import { mkdir } from "node:fs/promises";
 
 const adaptiveCardScreenshotDirectory =
@@ -236,7 +236,7 @@ test("schedule a blueprint and prove adaptive Monitor cards", async ({ page }) =
     timeZone: "America/New_York",
   });
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.evaluate(async () => {
     const { useSettingsStore } = await import("/src/store/useSettingsStore.ts");
     useSettingsStore.setState({ default_provider: "codex" });

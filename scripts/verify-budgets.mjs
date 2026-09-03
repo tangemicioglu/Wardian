@@ -26,7 +26,12 @@ import { pathToFileURL } from "node:url";
 
 const REPO_ROOT = process.cwd();
 const ESLINT_BIN = path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint.js");
-const LINT_POLICY_FILES = ["eslint.config.js", "package.json", "package-lock.json"];
+// The package manifest and ESLint configuration define the dependency/tooling
+// contract used for the comparison. A lockfile-only refresh must remain
+// budget-checkable: the base worktree intentionally reuses this checkout's
+// installed tooling, while the source debt metrics are independent of the
+// transitive package graph.
+const LINT_POLICY_FILES = ["eslint.config.js", "package.json"];
 const TRACKED_FILE_LINES = [
   "src-tauri/src/commands/agent.rs",
   "src-tauri/src/control.rs",

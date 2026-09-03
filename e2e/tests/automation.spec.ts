@@ -9,7 +9,7 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { openSurface } from "../fixtures/workbench";
+import { openAutomationEditor, openSurface } from "../fixtures/workbench";
 
 test.describe("Automation Builder UI", () => {
   test.describe.configure({ mode: "serial" });
@@ -34,15 +34,21 @@ test.describe("Automation Builder UI", () => {
     await expect(sidebar.getByRole("button", { name: "Monitor" })).toBeVisible();
   });
 
-  test("switching to Automations view renders the edit canvas", async () => {
+  test("switching to Automations view opens monitor mode by default", async () => {
     await openSurface(page, "automations");
+    await expect(page.getByTestId("automations-view")).toBeVisible();
+    await expect(page.getByTestId("automation-monitor")).toBeVisible();
+  });
+
+  test("switching to Automations view renders the edit canvas", async () => {
+    await openAutomationEditor(page);
     await expect(page.getByTestId("automations-view")).toBeVisible();
     await expect(page.getByTestId("automations-edit-mode")).toBeVisible();
     await expect(page.locator(".react-flow")).toBeVisible();
   });
 
   test("automation edit mode opens the node library", async () => {
-    await openSurface(page, "automations");
+    await openAutomationEditor(page);
     await page.getByTestId("automations-view").getByRole("button", { name: "Add node" }).click();
     await expect(page.getByTestId("node-library")).toBeVisible();
     await page.getByTestId("node-library").getByRole("button", { name: "Close" }).click();
@@ -50,12 +56,12 @@ test.describe("Automation Builder UI", () => {
   });
 
   test("add-node button is visible in edit mode", async () => {
-    await openSurface(page, "automations");
+    await openAutomationEditor(page);
     await expect(page.getByTestId("automations-view").getByRole("button", { name: "Add node" })).toBeVisible();
   });
 
   test("run button is disabled for an unsaved empty automation", async () => {
-    await openSurface(page, "automations");
+    await openAutomationEditor(page);
     await expect(page.getByTestId("automations-view").getByRole("button", { name: /^Run$/ })).toBeDisabled();
   });
 });
