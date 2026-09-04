@@ -1957,6 +1957,10 @@ impl TerminalSessionActor {
         runtime_generation: u64,
         bytes: Vec<u8>,
     ) -> Result<(), TerminalBrokerError> {
+        let profile = crate::utils::runtime_profile::RuntimeProfileSpan::wall(
+            crate::utils::runtime_profile::RuntimeMetric::TerminalBrokerOutput,
+        );
+        let input_bytes = bytes.len() as u64;
         self.ensure_generation(runtime_generation)?;
         if self.runtime_state != TerminalRuntimeState::Live || self.runtime.is_none() {
             return Err(TerminalBrokerError::RuntimeUnavailable);
@@ -1980,6 +1984,7 @@ impl TerminalSessionActor {
                 bytes: chunk.to_vec(),
             });
         }
+        profile.finish(input_bytes);
         Ok(())
     }
 

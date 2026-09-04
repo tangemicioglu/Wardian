@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tauri::{AppHandle, State};
 use wardian_core::control::AutomationRunResponse;
 use wardian_core::engine::store::{read_checkpoint, read_events};
@@ -164,58 +166,176 @@ pub(crate) fn automation_list_runs_blocking(
     automation_list_runs_page_from_root(&root, resolve_blueprint_path, offset.unwrap_or(0))
 }
 
+pub(crate) fn automation_list_runs_matching_blocking<F>(
+    offset: usize,
+    include: F,
+) -> Result<AutomationRunListResult, String>
+where
+    F: FnMut(&serde_json::Value) -> bool,
+{
+    let root = wardian_core::paths::automation_runs_dir().ok_or("no wardian home")?;
+    automation_list_runs_page_from_root_matching(&root, resolve_blueprint_path, offset, include)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutomationRunFileWatermark {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AutomationRunWatermark {
+    state: Option<AutomationRunFileWatermark>,
+}
+
+#[derive(Clone)]
+struct CachedAutomationRunSummary {
+    watermark: AutomationRunWatermark,
+    summary: serde_json::Value,
+}
+
+#[derive(Default)]
+struct CachedAutomationRunRoot {
+    runs: HashMap<PathBuf, CachedAutomationRunSummary>,
+    scanned_at: Option<Instant>,
+}
+
+type AutomationRunSummaryRoots = HashMap<PathBuf, CachedAutomationRunRoot>;
+
+static AUTOMATION_RUN_SUMMARY_CACHE: OnceLock<Mutex<AutomationRunSummaryRoots>> = OnceLock::new();
+
+fn automation_run_file_watermark(path: &Path) -> Option<AutomationRunFileWatermark> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(AutomationRunFileWatermark {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        created: metadata.created().ok(),
+    })
+}
+
+fn automation_run_watermark(dir: &Path) -> AutomationRunWatermark {
+    AutomationRunWatermark {
+        state: automation_run_file_watermark(&dir.join("state.json")),
+    }
+}
+
 fn automation_list_runs_page_from_root<F>(
     root: &Path,
-    mut resolve_blueprint_path: F,
+    resolve_blueprint_path: F,
     offset: usize,
 ) -> Result<AutomationRunListResult, String>
 where
     F: FnMut(&str) -> Option<PathBuf>,
 {
-    let retain_limit = offset.saturating_add(MAX_AUTOMATION_RUNS + 1);
-    let mut retained = Vec::with_capacity(retain_limit.min(MAX_AUTOMATION_RUNS + 1));
-    let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
-    if root.exists() {
-        for bp in std::fs::read_dir(root)
-            .map_err(|e| e.to_string())?
-            .flatten()
-        {
-            if !bp.path().is_dir() {
-                continue;
-            }
-            for run in std::fs::read_dir(bp.path())
+    automation_list_runs_page_from_root_matching(root, resolve_blueprint_path, offset, |_| true)
+}
+
+fn automation_list_runs_page_from_root_matching<F, I>(
+    root: &Path,
+    mut resolve_blueprint_path: F,
+    offset: usize,
+    mut include: I,
+) -> Result<AutomationRunListResult, String>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+    I: FnMut(&serde_json::Value) -> bool,
+{
+    let requested_at = Instant::now();
+    let cache = AUTOMATION_RUN_SUMMARY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root_cache = cache.entry(root.to_path_buf()).or_default();
+    let needs_scan = root_cache
+        .scanned_at
+        .is_none_or(|scanned_at| scanned_at < requested_at);
+    if needs_scan {
+        let mut blueprint_paths: HashMap<String, Option<PathBuf>> = HashMap::new();
+        let mut observed_runs = HashSet::new();
+        if root.exists() {
+            for bp in std::fs::read_dir(root)
                 .map_err(|e| e.to_string())?
                 .flatten()
             {
-                let dir = run.path();
-                if !dir.is_dir() {
+                if !bp.file_type().is_ok_and(|file_type| file_type.is_dir()) {
                     continue;
                 }
-                let Some(state) = read_checkpoint(&dir).ok().flatten() else {
-                    continue;
-                };
-                let blueprint_path = blueprint_paths
-                    .entry(state.blueprint_id.clone())
-                    .or_insert_with(|| resolve_blueprint_path(&state.blueprint_id));
-                retained.push(run_summary_from_state(
-                    &dir,
-                    state,
-                    blueprint_path.as_deref(),
-                ));
-                retained.sort_by(compare_run_summaries);
-                if retained.len() > retain_limit {
-                    retained.pop();
-                    let retained_blueprints: HashSet<String> = retained
-                        .iter()
-                        .filter_map(|run| run.get("blueprint_id").and_then(Value::as_str))
-                        .map(ToOwned::to_owned)
-                        .collect();
-                    blueprint_paths
-                        .retain(|blueprint_id, _| retained_blueprints.contains(blueprint_id));
+                for run in std::fs::read_dir(bp.path())
+                    .map_err(|e| e.to_string())?
+                    .flatten()
+                {
+                    let dir = run.path();
+                    if !run.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                        continue;
+                    }
+                    observed_runs.insert(dir.clone());
+                    let cached_is_terminal = root_cache.runs.get(&dir).is_some_and(|cached| {
+                        matches!(
+                            cached
+                                .summary
+                                .get("status")
+                                .and_then(serde_json::Value::as_str),
+                            Some("completed" | "failed")
+                        )
+                    });
+                    let watermark = (!cached_is_terminal).then(|| automation_run_watermark(&dir));
+                    if watermark.as_ref().is_some_and(|watermark| {
+                        !matches!(
+                            root_cache.runs.get(&dir),
+                            Some(cached) if &cached.watermark == watermark
+                        )
+                    }) {
+                        let Some(state) = read_checkpoint(&dir).ok().flatten() else {
+                            root_cache.runs.remove(&dir);
+                            continue;
+                        };
+                        let blueprint_path = blueprint_paths
+                            .entry(state.blueprint_id.clone())
+                            .or_insert_with(|| resolve_blueprint_path(&state.blueprint_id));
+                        let summary =
+                            run_summary_from_state(&dir, state, blueprint_path.as_deref());
+                        root_cache.runs.insert(
+                            dir.clone(),
+                            CachedAutomationRunSummary {
+                                watermark: watermark.expect("non-terminal runs have a watermark"),
+                                summary,
+                            },
+                        );
+                    }
+
+                    let Some(cached) = root_cache.runs.get_mut(&dir) else {
+                        continue;
+                    };
+                    if let Some(blueprint_id) = cached
+                        .summary
+                        .get("blueprint_id")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        let blueprint_path = blueprint_paths
+                            .entry(blueprint_id.to_string())
+                            .or_insert_with(|| resolve_blueprint_path(blueprint_id));
+                        cached.summary["blueprint_path"] = blueprint_path
+                            .as_ref()
+                            .map(|path| {
+                                serde_json::Value::String(path.to_string_lossy().into_owned())
+                            })
+                            .unwrap_or(serde_json::Value::Null);
+                    }
                 }
             }
         }
+        root_cache.runs.retain(|dir, _| observed_runs.contains(dir));
+        root_cache.scanned_at = Some(Instant::now());
     }
+
+    let mut retained = root_cache
+        .runs
+        .values()
+        .filter(|cached| include(&cached.summary))
+        .map(|cached| cached.summary.clone())
+        .collect::<Vec<_>>();
+    retained.sort_by(compare_run_summaries);
     let page_end = offset.saturating_add(MAX_AUTOMATION_RUNS);
     let truncated = retained.len() > page_end;
     Ok(AutomationRunListResult {
@@ -1204,6 +1324,50 @@ mod tests {
         assert_eq!(page.runs.len(), 1);
         assert!(!page.truncated);
         assert_eq!(page.next_offset, None);
+    }
+
+    #[test]
+    fn automation_run_status_filter_applies_before_pagination() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("automation-runs");
+        for index in 0..=MAX_AUTOMATION_RUNS {
+            let run_root = root.join("wf").join(format!("run-z-{index:04}"));
+            write_checkpoint(&run_root, &RunState::new(format!("run-z-{index:04}"), "wf")).unwrap();
+        }
+        let completed_root = root.join("wf").join("run-a-completed");
+        let mut completed = RunState::new("run-a-completed", "wf");
+        completed.status = RunStatus::Completed;
+        write_checkpoint(&completed_root, &completed).unwrap();
+
+        let result = automation_list_runs_page_from_root_matching(
+            &root,
+            |_| None,
+            0,
+            |run| run["status"] == "completed",
+        )
+        .unwrap();
+
+        assert_eq!(result.runs.len(), 1);
+        assert_eq!(result.runs[0]["run_id"], "run-a-completed");
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn automation_run_summary_cache_refreshes_changed_checkpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("automation-runs");
+        let run_root = root.join("wf").join("run-changing");
+        let state = RunState::new("run-changing", "wf");
+        write_checkpoint(&run_root, &state).unwrap();
+        let initial = automation_list_runs_page_from_root(&root, |_| None, 0).unwrap();
+        assert_eq!(initial.runs[0]["status"], "running");
+
+        let mut completed = state;
+        completed.status = RunStatus::Completed;
+        write_checkpoint(&run_root, &completed).unwrap();
+        let refreshed = automation_list_runs_page_from_root(&root, |_| None, 0).unwrap();
+
+        assert_eq!(refreshed.runs[0]["status"], "completed");
     }
 
     #[test]

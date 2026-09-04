@@ -2,7 +2,23 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../../views/DashboardView", () => ({ DashboardView: () => null }));
+const viewSpies = vi.hoisted(() => ({
+  dashboard: vi.fn(),
+  analytics: vi.fn(),
+}));
+
+vi.mock("../../../views/DashboardView", () => ({
+  DashboardView: (props: { enabled?: boolean }) => {
+    viewSpies.dashboard(props);
+    return null;
+  },
+}));
+vi.mock("../../../views/AnalyticsView", () => ({
+  AnalyticsView: (props: { enabled?: boolean }) => {
+    viewSpies.analytics(props);
+    return null;
+  },
+}));
 vi.mock("../../../views/InboxView", () => ({
   InboxView: ({ onOpenAgent }: { onOpenAgent?: (agentId: string) => void }) => (
     <button type="button" onClick={() => onOpenAgent?.("agent-1")}>Open queued agent</button>
@@ -16,6 +32,10 @@ import {
   CORE_VIEW_SURFACE_MAX_STATE_BYTES,
   CORE_VIEW_SURFACE_STATE_SCHEMA_VERSION,
   HEAVY_SURFACE_HIDDEN_GRACE_MS,
+  AnalyticsSurface,
+  DashboardSurface,
+  DEFAULT_ANALYTICS_SURFACE_STATE,
+  DEFAULT_DASHBOARD_SURFACE_STATE,
   InboxSurface,
   SuspendedSurfaceRenderer,
   DEFAULT_GRAPH_SURFACE_STATE,
@@ -26,6 +46,46 @@ import {
 describe("core view surface definitions", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("pauses telemetry reads in retained hidden Dashboard and Analytics surfaces", () => {
+    const dashboard = render(
+      <DashboardSurface
+        live_agents={[]}
+        state={DEFAULT_DASHBOARD_SURFACE_STATE}
+        surface_id="dashboard-1"
+        visibility="hidden"
+      />,
+    );
+    expect(viewSpies.dashboard).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    dashboard.rerender(
+      <DashboardSurface
+        live_agents={[]}
+        state={DEFAULT_DASHBOARD_SURFACE_STATE}
+        surface_id="dashboard-1"
+        visibility="visible"
+      />,
+    );
+    expect(viewSpies.dashboard).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
+    dashboard.unmount();
+
+    const analytics = render(
+      <AnalyticsSurface
+        state={DEFAULT_ANALYTICS_SURFACE_STATE}
+        surface_id="analytics-1"
+        visibility="hidden"
+      />,
+    );
+    expect(viewSpies.analytics).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }));
+    analytics.rerender(
+      <AnalyticsSurface
+        state={DEFAULT_ANALYTICS_SURFACE_STATE}
+        surface_id="analytics-1"
+        visibility="visible"
+      />,
+    );
+    expect(viewSpies.analytics).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }));
   });
 
   it("bounds the build-time heavy renderer grace override and defaults safely", () => {

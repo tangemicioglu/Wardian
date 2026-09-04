@@ -2001,16 +2001,16 @@ async fn apply_provider_status_observations(
         let readiness = super::publish_telemetry_status_observation(state, observation).await;
         let ready_evidence = (readiness == ProviderInputReadiness::Ready)
             .then_some(ProviderReadyEvidence::ProviderEvent);
-        state
+        let (_, became_ready) = state
             .interactions
-            .record_provider_input_state(
+            .record_provider_input_state_with_transition(
                 &observation.session_id,
                 observation.generation,
                 readiness,
                 ready_evidence,
             )
             .await;
-        if readiness == ProviderInputReadiness::Ready {
+        if became_ready {
             crate::control::drain_mailbox_for_idle_agent_from_status_observation(
                 None,
                 state,
