@@ -104,7 +104,7 @@ fn disk_artifact_show(
 }
 
 fn render_json(value: &serde_json::Value) -> Result<String, CliError> {
-    serde_json::to_string_pretty(value)
+    serde_json::to_string(value)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }

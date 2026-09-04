@@ -9,22 +9,43 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Discover command arguments as compact JSON; optionally name a command path.
+    Schema {
+        /// Command path, e.g. agent spawn or browser <target> snapshot.
+        #[arg(value_name = "COMMAND")]
+        path: Vec<String>,
+    },
+    /// Inspect identity and status, configure agents, or control their sessions.
     Agent(AgentArgs),
+    /// Present files and inspect durable artifact reviews.
     Artifact(ArtifactArgs),
     Browser(BrowserArgs),
+    /// List or read archived conversations.
     Conversation(ConversationArgs),
+    /// Read Inbox events and pending decisions.
     Inbox(InboxArgs),
+    /// Save, recall, and revise evidence-backed agent memory.
     Memory(MemoryArgs),
+    /// Read, author, and deploy reusable Library assets.
     Library(LibraryArgs),
+    /// Discover nodes, validate blueprints, and manage runs and schedules.
     Automation(AutomationArgs),
+    /// List and manage durable teams and their members.
     Team(TeamArgs),
+    /// List and manage monitoring watchlists.
     Watchlist(WatchlistArgs),
     Telemetry(TelemetryArgs),
+    /// Inspect and edit agent communication boundaries.
     Graph(GraphArgs),
+    /// Deliver a message or provider command to agents.
     Send(SendArgs),
+    /// Inspect, wait for, or cancel a queued delivery.
     Delivery(DeliveryArgs),
+    /// Send a user-facing update or approval request to Inbox.
     Notify(NotifyArgs),
+    /// Request an accountable done, blocked, or failed reply from one peer.
     Ask(AskArgs),
+    /// Complete an ask request with a structured result.
     Reply(ReplyArgs),
 }
 
@@ -82,7 +103,7 @@ pub enum BrowserCommand {
 /// The target comes first so `browser browser:7 click e2` reads the way an
 /// operator thinks about it, which clap cannot express as a normal subcommand.
 #[derive(Debug, Parser)]
-#[command(name = "wardian browser <target>", no_binary_name = true)]
+#[command(name = "wardian browser <target>", no_binary_name = true, about = "Act on one browser session. Use snapshot to obtain element refs.", long_about = None)]
 pub struct BrowserTargetArgs {
     #[command(subcommand)]
     pub command: BrowserTargetCommand,
@@ -124,34 +145,40 @@ pub enum BrowserTargetCommand {
         #[arg(long)]
         interactive: bool,
     },
+    /// Click an element from the latest snapshot.
     Click {
         element_ref: String,
         #[arg(long = "snapshot-after")]
         snapshot_after: bool,
     },
+    /// Replace an input's text using its snapshot ref.
     Fill {
         element_ref: String,
         value: String,
         #[arg(long = "snapshot-after")]
         snapshot_after: bool,
     },
+    /// Send a keyboard key or chord to an element.
     Press {
         element_ref: String,
         key: String,
         #[arg(long = "snapshot-after")]
         snapshot_after: bool,
     },
+    /// Choose an option by value in a select element.
     Select {
         element_ref: String,
         value: String,
         #[arg(long = "snapshot-after")]
         snapshot_after: bool,
     },
+    /// Move the pointer over an element.
     Hover {
         element_ref: String,
         #[arg(long = "snapshot-after")]
         snapshot_after: bool,
     },
+    /// Scroll an element into view.
     Scroll {
         element_ref: String,
         #[arg(long = "snapshot-after")]
@@ -234,6 +261,7 @@ pub enum BrowserTargetCommand {
 /// Cookie verbs. Omitting one lists the page's cookies.
 #[derive(Debug, Subcommand)]
 pub enum BrowserCookieCommand {
+    /// Set a cookie in the session's isolated profile.
     Set {
         name: String,
         value: String,
@@ -255,6 +283,7 @@ pub enum BrowserCookieCommand {
         #[arg(long)]
         expires: Option<i64>,
     },
+    /// Delete a cookie by name and optional scope.
     Delete {
         name: String,
         #[arg(long)]
@@ -271,18 +300,14 @@ pub enum BrowserCookieCommand {
 /// Storage verbs. A bare key reads it; no key at all lists the area.
 #[derive(Debug, Subcommand)]
 pub enum BrowserStorageCommand {
-    Set {
-        key: String,
-        value: String,
-    },
-    Remove {
-        key: String,
-    },
+    /// Set one key at the current page origin.
+    Set { key: String, value: String },
+    /// Remove one key at the current page origin.
+    Remove { key: String },
+    /// Clear the selected storage area at this origin.
     Clear,
     /// Read one key. Also reached by writing the key with no verb.
-    Get {
-        key: String,
-    },
+    Get { key: String },
     /// A bare key, which clap sees as an unrecognized subcommand.
     #[command(external_subcommand)]
     Key(Vec<String>),
@@ -447,15 +472,15 @@ pub struct ConversationArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConversationCommand {
+    /// List archived conversations for an agent, or all agents with --scope all.
     List {
         #[arg(long)]
         agent: Option<String>,
         #[arg(long, default_value = "current")]
         scope: String,
     },
-    Show {
-        conversation_id: String,
-    },
+    /// Read one archived conversation and its manifest.
+    Show { conversation_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -577,27 +602,23 @@ pub struct TeamArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum TeamCommand {
+    /// List persisted teams and their members.
     List,
-    Show {
-        target: String,
-    },
+    /// Show one team by name or ID.
+    Show { target: String },
+    /// Create a team with explicit member agents.
     Create {
         name: String,
         #[arg(long = "agent", required = true)]
         agents: Vec<String>,
     },
-    Rename {
-        target: String,
-        new_name: String,
-    },
-    Add {
-        target: String,
-        agents: Vec<String>,
-    },
-    Remove {
-        target: String,
-        agents: Vec<String>,
-    },
+    /// Rename a team without changing its membership.
+    Rename { target: String, new_name: String },
+    /// Add agents to a team.
+    Add { target: String, agents: Vec<String> },
+    /// Remove agents from a team without deleting them.
+    Remove { target: String, agents: Vec<String> },
+    /// Move selected members into a new team.
     Split {
         target: String,
         #[arg(long)]
@@ -605,9 +626,8 @@ pub enum TeamCommand {
         #[arg(long = "agent", required = true)]
         agents: Vec<String>,
     },
-    Delete {
-        target: String,
-    },
+    /// Delete the team record, preserving its agents.
+    Delete { target: String },
 }
 
 #[derive(Debug, Args)]
@@ -618,14 +638,23 @@ pub struct WatchlistArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum WatchlistCommand {
+    /// List persisted monitoring watchlists.
     List,
+    /// Show one watchlist by name or ID.
     Show { target: String },
+    /// Create an empty watchlist.
     Create { name: String },
+    /// Rename a watchlist.
     Rename { target: String, new_name: String },
+    /// Add a team to a watchlist.
     AddTeam { target: String, team: String },
+    /// Remove a team from a watchlist, preserving the team.
     RemoveTeam { target: String, team: String },
+    /// Add an agent to a watchlist.
     AddAgent { target: String, agent: String },
+    /// Remove an agent from a watchlist, preserving the agent.
     RemoveAgent { target: String, agent: String },
+    /// Delete the watchlist, preserving its teams and agents.
     Delete { target: String },
 }
 
@@ -670,6 +699,8 @@ pub struct AutomationArgs {
 pub enum AutomationCommand {
     /// Print the node type registry (the contract agents author against).
     NodeTypes {
+        /// Read only this node type's contract, e.g. task or branch.
+        node: Option<String>,
         /// Emit the machine-readable JSON schema instead of a summary table.
         #[arg(long)]
         json: bool,
@@ -684,7 +715,7 @@ pub enum AutomationCommand {
         /// Execution backend: live/real/full routes through the running app; mock is reserved for engine tests.
         #[arg(long, default_value = "live")]
         executor: String,
-        /// JSON object of run input (entry input_schema values).
+        /// Run input as a JSON object, @file, or - for piped UTF-8 JSON.
         #[arg(long)]
         input: Option<String>,
         /// Default provider for unbound automation roles.
@@ -735,7 +766,7 @@ pub enum AutomationCommand {
         #[arg(long)]
         check: bool,
     },
-    /// Manage automation schedules (schedules.json). UI lives in the app; these edit the file.
+    /// Manage persisted automation schedules; execution requires the running app.
     #[command(subcommand)]
     Schedule(Box<AutomationScheduleCommand>),
     /// Manage generic conversation-boundary automation invokers.
@@ -745,7 +776,9 @@ pub enum AutomationCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AutomationSessionCloseCommand {
+    /// List persisted conversation-boundary invokers.
     List,
+    /// Add an invoker; it remains disabled unless --enable is supplied.
     Add {
         #[arg(long)]
         blueprint: String,
@@ -759,9 +792,10 @@ pub enum AutomationSessionCloseCommand {
         provider: Option<String>,
         #[arg(long)]
         workspace: Option<String>,
+        /// Run input as a JSON object, @file, or - for piped UTF-8 JSON.
         #[arg(long)]
         input: Option<String>,
-        /// Typed assignments JSON; temporary providers may specify model and effort.
+        /// Typed assignments object, @file, or - for stdin; providers may specify model and effort.
         #[arg(long)]
         assignments: Option<String>,
         /// Enable immediately. Invokers are otherwise created disabled.
@@ -771,15 +805,12 @@ pub enum AutomationSessionCloseCommand {
         #[arg(long)]
         require_archive: bool,
     },
-    Enable {
-        id: String,
-    },
-    Disable {
-        id: String,
-    },
-    Remove {
-        id: String,
-    },
+    /// Enable an invoker for future matching conversation boundaries.
+    Enable { id: String },
+    /// Disable an invoker without deleting its configuration.
+    Disable { id: String },
+    /// Remove an invoker's configuration.
+    Remove { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -797,13 +828,13 @@ pub enum AutomationScheduleCommand {
         /// Existing directory used as the scheduled run workspace.
         #[arg(long)]
         workspace: String,
-        /// JSON object of run input.
+        /// Run input as a JSON object, @file, or - for piped UTF-8 JSON.
         #[arg(long)]
         input: Option<String>,
         /// Role/class -> provider binding, repeatable: --bind role=provider.
         #[arg(long)]
         bind: Vec<String>,
-        /// Typed role assignments as a JSON object keyed by role name.
+        /// Role assignments keyed by role name: JSON object, @file, or - for stdin.
         #[arg(long, alias = "assignment")]
         assignments: Option<String>,
         /// Create the schedule paused instead of active.
@@ -824,13 +855,13 @@ pub enum AutomationScheduleCommand {
         /// Existing directory used as the scheduled run workspace.
         #[arg(long)]
         workspace: Option<String>,
-        /// JSON object of run input.
+        /// Run input as a JSON object, @file, or - for piped UTF-8 JSON.
         #[arg(long)]
         input: Option<String>,
         /// Role/class -> provider binding, repeatable: --bind role=provider.
         #[arg(long)]
         bind: Vec<String>,
-        /// Typed role assignments as a JSON object keyed by role name.
+        /// Role assignments keyed by role name: JSON object, @file, or - for stdin.
         #[arg(long, alias = "assignment")]
         assignments: Option<String>,
         /// Pause the schedule after applying configuration changes.
@@ -840,19 +871,16 @@ pub enum AutomationScheduleCommand {
         #[arg(long, conflicts_with = "paused")]
         active: bool,
     },
+    /// List persisted schedules.
     List,
-    Pause {
-        id: String,
-    },
-    Resume {
-        id: String,
-    },
-    Remove {
-        id: String,
-    },
-    RunNow {
-        id: String,
-    },
+    /// Pause future scheduled runs.
+    Pause { id: String },
+    /// Resume a paused schedule.
+    Resume { id: String },
+    /// Remove a schedule, preserving existing run history.
+    Remove { id: String },
+    /// Unpause and mark due now; the running app must launch the run.
+    RunNow { id: String },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1018,7 +1046,7 @@ pub struct SendArgs {
     #[arg(long, conflicts_with_all = ["message", "stdin"])]
     pub file: Option<String>,
 
-    /// Thread name for grouped conversations
+    /// Reserved; thread delivery is not supported. Use --to for delivery.
     #[arg(long)]
     pub thread: Option<String>,
 
@@ -1247,33 +1275,38 @@ pub enum GraphCommand {
 
 #[derive(Debug, Args)]
 pub struct AgentArgs {
+    /// Agent name or UUID; omit to inspect the managed session.
     pub target: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<AgentCommand>,
 
-    #[arg(long, global = true)]
+    /// Comma-separated output fields for identity show/list/spawn/clone.
+    #[arg(long, global = true, conflicts_with = "field")]
     pub fields: Option<String>,
 
-    #[arg(long, global = true)]
+    /// Print one identity field as a bare value.
+    #[arg(long, global = true, conflicts_with_all = ["fields", "pretty", "verbose"])]
     pub field: Option<String>,
 
+    /// Include process and visibility metadata in identity output.
     #[arg(long, global = true)]
     pub verbose: bool,
 
+    /// Render identity output as human-readable text instead of JSON.
     #[arg(long, global = true)]
     pub pretty: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
-    Show {
-        target: Option<String>,
-    },
+    /// Show one agent, or the managed session when no target is supplied.
+    Show { target: Option<String> },
+    /// List visible agents; narrow with scope, status, class, or workspace.
     List {
         /// auto (neighbors when WARDIAN_SESSION_ID is set, else workspace),
         /// neighbors, workspace, or all
-        #[arg(long, default_value = "auto")]
+        #[arg(long, default_value = "auto", value_parser = ["auto", "neighbors", "workspace", "all"])]
         scope: String,
         #[arg(long)]
         status: Option<String>,
@@ -1309,15 +1342,12 @@ pub enum AgentCommand {
         new_name: String,
     },
     /// Restart the provider while preserving the Wardian agent and its history.
-    Restart {
-        target: String,
-    },
-    Pause {
-        target: String,
-    },
-    Resume {
-        target: String,
-    },
+    Restart { target: String },
+    /// Pause an agent's provider process.
+    Pause { target: String },
+    /// Resume a paused agent.
+    Resume { target: String },
+    /// Create an agent with an installed provider and existing class.
     Spawn {
         #[arg(long)]
         provider: String,
@@ -1359,15 +1389,18 @@ pub enum AgentCommand {
         /// Agent name or UUID.
         target: String,
     },
+    /// Clone an agent's configuration into a new agent.
     Clone {
         target: String,
         #[arg(long)]
         name: Option<String>,
     },
+    /// Inspect or change managed workspace assignments.
     Worktree {
         #[command(subcommand)]
         command: AgentWorktreeCommand,
     },
+    /// Read bounded output, optionally waiting for a marker.
     Watch {
         target: String,
         #[arg(long)]
@@ -1382,9 +1415,11 @@ pub enum AgentCommand {
         tail: Option<usize>,
         #[arg(long, default_value = "10m")]
         timeout: String,
+        /// Reserved; continuous streaming is not supported. Use bounded reads.
         #[arg(long)]
         follow: bool,
     },
+    /// Wait for a status; --next requires a new matching transition.
     Wait {
         target: String,
         #[arg(long)]
@@ -1398,20 +1433,22 @@ pub enum AgentCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentWorktreeCommand {
+    /// List managed worktrees and agent assignments.
     List,
+    /// Create and assign a managed worktree, starting a fresh provider session.
     Enable {
         target: String,
         #[arg(long)]
         name: Option<String>,
     },
+    /// Join an existing managed worktree, starting a fresh provider session.
     Join {
         target: String,
         #[arg(long)]
         worktree: String,
     },
-    Disable {
-        target: String,
-    },
+    /// Leave a managed worktree without deleting its project files.
+    Disable { target: String },
 }
 
 #[cfg(test)]
@@ -1778,7 +1815,10 @@ mod tests {
         };
         assert!(matches!(
             args.command,
-            AutomationCommand::NodeTypes { json: true }
+            AutomationCommand::NodeTypes {
+                json: true,
+                node: None
+            }
         ));
     }
 
@@ -2317,8 +2357,6 @@ mod tests {
             "coder-a1",
             "--fields",
             "name,status",
-            "--field",
-            "status",
             "--verbose",
             "--pretty",
         ])
@@ -2327,7 +2365,7 @@ mod tests {
             panic!("expected Agent command")
         };
         assert_eq!(args.fields.as_deref(), Some("name,status"));
-        assert_eq!(args.field.as_deref(), Some("status"));
+        assert_eq!(args.field, None);
         assert!(args.verbose);
         assert!(args.pretty);
     }

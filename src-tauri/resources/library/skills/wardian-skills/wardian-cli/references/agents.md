@@ -2,12 +2,11 @@
 
 ## Inspect Agents
 
-Begin a Wardian coordination task by checking yourself and the relevant roster:
+Inspect a known target directly, or discover relevant peers with a small projection:
 
 ```bash
-wardian agent
-wardian agent list --scope all --fields name,uuid,description,class,provider,workspace,status,status_source
-wardian agent doctor reviewer-a1
+wardian agent reviewer-a1 --fields name,status,status_source
+wardian agent list --fields name,uuid,class,status,status_source
 ```
 
 Use `wardian agent` or `wardian agent show` without a target only inside a
@@ -19,37 +18,49 @@ wardian agent show Wardian-Codex
 wardian agent show 019d331a-0500-7592-969f-8f437886f42b
 ```
 
-Default listings show neighbors: manually connected peers, team-seeded edges,
-or workspace-mates when no manual edge exists. Bare-name sends resolve among
-neighbors before an exact global fallback. Team-seeded edges are editable; if an
+Inside a managed session, default listings show neighbors: manually connected
+peers, team-seeded edges, or workspace-mates when no manual edge exists.
+Bare-name sends resolve among neighbors before an exact global fallback.
+Team-seeded edges are editable; if an
 edge is removed in Graph, its suppression persists until it is explicitly drawn
 again.
 
 Use scopes deliberately:
 
-- `auto` (default) uses neighbors in a managed session, otherwise the workspace.
+- `auto` (default) uses neighbors in a managed session and the current working
+  directory outside one.
 - `neighbors` returns self plus direct topology neighbors, with workspace
   fallback when isolated.
-- `workspace` returns all agents in the current workspace.
+- `workspace` uses the calling agent's workspace inside a managed session and
+  the current working directory outside. A managed agent without a workspace
+  gets an error directing it to pass `--workspace` or explicitly choose `--scope all`.
+- `--workspace <path>` filters the complete roster by that folder, overriding
+  neighbor scope without requiring `--scope all`.
 - `all` returns every known agent; reserve it for cross-community work.
 
-Use default indented JSON for automation. Use `--field` for one bare value,
+Workspace resolution never silently widens the listing to the fleet.
+
+Use compact JSON for automation. Use `--field` for one bare value,
 `--fields` for a small JSON projection, `--verbose` for process and visibility
 metadata, and `--pretty` only for human inspection. Use `agent doctor` to
 inspect effective provider policy, `CODEX_HOME`, plugin state, launch flags,
 and whether a restart is required.
 
+Agent show/list fall back to persisted state only when the control endpoint is
+unavailable. An answering app's rejection, protocol error, or timeout remains
+an error. Request `status_source` to distinguish `live` from `persisted`.
+
 ```bash
-wardian agent list --scope all --status idle
-wardian agent list --workspace <absolute-workspace-path>
+wardian agent list --status idle --fields name,uuid,class,status
+wardian agent list --workspace <absolute-workspace-path> --fields name,uuid,status
 wardian agent Wardian-Codex --field status
-wardian agent list --scope all --fields name,status,status_source
+wardian agent doctor reviewer-a1
 ```
 
 ## Create And Update Agents
 
-Mutating commands use the local control endpoint and require the desktop app
-for the same `WARDIAN_HOME`:
+Agent lifecycle and configuration mutations use the local control endpoint
+and require the desktop app for the same `WARDIAN_HOME`:
 
 ```bash
 wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --workspace <absolute-workspace-path>
@@ -61,15 +72,17 @@ wardian agent delete reviewer-a1 --confirm reviewer-a1
 wardian agent delete reviewer-a1 --confirm reviewer-a1 --force
 ```
 
-Supply both `--provider` and `--class` when spawning. `clone` carries the
-source agent's provider, class, workspace, and context unless overridden.
+Supply both `--provider` and `--class` when spawning. `clone` creates and starts
+a fresh agent using the source configuration; it does not copy provider
+conversation context. The CLI exposes only a name override (`--name`).
 
 Use `agent update` instead of editing `settings/state.json`. It updates live
 and persisted state together. It can update class, workspace, and the optional
 purpose description atomically, regenerates class instruction includes after a
 class change, and reports `updated_fields` plus `restart_required`. Description
 changes do not restart the provider and do not change its instructions or
-capabilities. Pass `--description ""` to clear the memo. Run
+capabilities. Pass `--description=` to clear the memo; the equals form preserves
+the empty value through Windows command wrappers. Run
 `wardian agent restart <target>` when required before relying on a new class or
 workspace. Restart preserves the Wardian agent, habitat, and saved session
 history. Do not use it to move a managed-worktree agent.
@@ -79,7 +92,7 @@ restarting its provider. The new name is available to `send`, `ask`, and other
 targeted commands as soon as the command succeeds; names must be unique and
 may contain only letters, numbers, underscores, or hyphens.
 
-`agent delete` is the only destructive CLI cleanup path. It always requires
+`agent delete` permanently removes the target agent. It always requires
 `--confirm <current-agent-name>` so automation must echo the exact target name.
 Without `--force`, it refuses an agent with an attached provider process; pass
 `--force` when explicit provider termination is intended. Deletion removes the
@@ -96,7 +109,7 @@ use `--refresh` when a newly installed provider version or account change
 needs to be reflected immediately:
 
 ```bash
-wardian agent models --provider codex --refresh
+wardian agent models --provider codex
 ```
 
 For routine, bounded tasks, leave model and effort on the provider default.
@@ -112,8 +125,8 @@ wardian agent restart reviewer-a1
 ```
 
 `agent update` reports `restart_required` when a changed model or effort must
-be applied to a running provider. Pass `--model ""` or
-`--reasoning-effort ""` to return an existing agent to its provider default.
+be applied to a running provider. Pass `--model=` or
+`--reasoning-effort=` to return an existing agent to its provider default.
 Providers that do not list an effort control accept model selection only.
 
 ## Assign A Managed Workspace

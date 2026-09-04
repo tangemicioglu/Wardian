@@ -59,28 +59,22 @@ mean the same thing for you: re-snapshot.
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `browser open [url] [--agent] [--workspace] [--width --height] [--detached] [--blank]` | Start a session. A bare host is treated as `http`. |
-| `browser list` | Open sessions, one line each. |
-| `browser <target> close` | End the session and stop its browser. |
-| `browser <target> navigate <url\|back\|forward\|reload\|stop>` | Move the page. |
-| `browser <target> get url\|title\|text\|html [selector]` | Read the page, optionally scoped to a CSS selector. |
-| `browser <target> wait --load-state\|--selector\|--text\|--url-contains\|--function [--timeout-ms]` | Block until a condition holds. Exactly one condition. |
-| `browser <target> snapshot [--interactive]` | Mint refs. `--interactive` returns only what actions can target. |
-| `browser <target> click\|hover\|scroll <ref> [--snapshot-after]` | Act on a ref. |
-| `browser <target> fill\|press\|select <ref> <value> [--snapshot-after]` | Act on a ref with a value. |
-| `browser <target> screenshot <path> [--full-page]` | Write a PNG. |
-| `browser <target> viewport <width> <height>\|reset` | Resize the rendered page. |
-| `browser <target> eval <expression>` | Evaluate an expression and print its JSON value. |
-| `browser <target> console [--level error\|warning\|info] [--clear]` | Console messages since the last navigation. |
-| `browser <target> network [--filter] [--method] [--status] [--type] [--failed] [--limit] [--clear]` | Requests the page made. |
-| `browser <target> network <request-id> [--body]` | One request in full, headers both ways. |
-| `browser <target> cookies [--all]` | Cookies in this session's profile. |
-| `browser <target> cookies set\|delete <name> [...]`, `cookies clear` | Change them. |
-| `browser <target> storage local\|session [key]` | Read web storage at the page's origin. |
-| `browser <target> storage local\|session set\|remove\|clear [...]` | Change it. |
-| `browser <target> downloads [--clear]` | Files this session downloaded, with resolved paths. |
+Discover the action needed without loading a full command catalogue:
+
+```bash
+wardian schema browser '<target>'
+wardian schema browser '<target>' network
+```
+
+Use the literal quoted `'<target>'` in schema requests; use `browser:1` or a
+session ID in actual actions. Schema discovery does not open a browser or read
+Wardian state. Browser action output defaults to text; `--json` selects compact
+JSON without changing response fields/types.
+
+`wait` accepts exactly one condition. `eval` and `wait --function` execute page
+JavaScript; expressions can have side effects. Clicks, navigation, cookie and
+storage writes can change application state. `screenshot` writes a file;
+ledger `--clear` options discard inspection evidence.
 
 ## Seeing what the page did
 
@@ -115,8 +109,8 @@ that output into a PR, an artifact, or anywhere else it outlives the task.
 
 ## Habits that keep this reliable
 
-- `wait` before `snapshot`. A snapshot of a half-loaded page mints refs that
-  the next paint invalidates.
+- Wait for the relevant page state before `snapshot`. Navigation invalidates
+  the generation; DOM changes can detach or change a ref even without navigation.
 - Prefer `snapshot --interactive` over a full snapshot. Snapshots are capped at
   400 elements, and the full walk spends that budget on text nodes.
 - Prefer `get text "<selector>"` over `get html` when checking an outcome. HTML

@@ -20,6 +20,10 @@ wardian team rename <team-name-or-id> <new-team-name>
 wardian team delete <team-name-or-id>
 ```
 
+Batch membership edits with `team add <team> <agent-a> <agent-b>` or
+`team remove <team> <agent-a> <agent-b>`. Creation and split accept repeated
+`--agent` flags; no per-agent loop is needed.
+
 Team membership is durable workstream context. It can span workspaces, but it
 does not change an agent's class, provider, workspace, or lifecycle. A team is
 not a supported `send` target; use an explicit agent name or UUID, or

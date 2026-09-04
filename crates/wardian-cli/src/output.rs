@@ -35,7 +35,32 @@ pub struct RenderOptions {
     pub pretty: bool,
 }
 
+/// Validate explicit projections independently of the number of returned agents.
+/// Callers may also use this before a control operation to avoid failing only
+/// after that operation has completed. Flag conflicts belong to argument parsing.
+pub fn validate_options(opts: &RenderOptions) -> Result<(), CliError> {
+    if let Some(field) = opts.field.as_deref() {
+        if !ALL_FIELDS.contains(&field) {
+            return Err(CliError::invalid_field(field));
+        }
+    }
+    if let Some(fields) = &opts.fields {
+        if fields.is_empty() {
+            let mut error = CliError::invalid_field("");
+            error.message = "--fields requires at least one field".to_string();
+            return Err(error);
+        }
+        for field in fields {
+            if !ALL_FIELDS.contains(&field.as_str()) {
+                return Err(CliError::invalid_field(field));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn render_show(agent: &AgentIdentity, opts: &RenderOptions) -> Result<String, CliError> {
+    validate_options(opts)?;
     if let Some(field) = opts.field.as_deref() {
         return render_single_field(agent, field);
     }
@@ -51,11 +76,12 @@ pub fn render_show(agent: &AgentIdentity, opts: &RenderOptions) -> Result<String
     });
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&envelope).map_err(json_error)?
+        serde_json::to_string(&envelope).map_err(json_error)?
     ))
 }
 
 pub fn render_list(agents: &[AgentIdentity], opts: &RenderOptions) -> Result<String, CliError> {
+    validate_options(opts)?;
     if let Some(field) = opts.field.as_deref() {
         let mut out = String::new();
         for agent in agents {
@@ -84,7 +110,7 @@ pub fn render_list(agents: &[AgentIdentity], opts: &RenderOptions) -> Result<Str
     });
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&envelope).map_err(json_error)?
+        serde_json::to_string(&envelope).map_err(json_error)?
     ))
 }
 
@@ -225,20 +251,45 @@ mod tests {
     #[test]
     fn render_show_outputs_json_envelope() {
         let rendered = render_show(&agent(), &RenderOptions::default()).unwrap();
-        assert!(rendered.contains("{\n"));
-        assert!(rendered.contains(r#"  "schema": 1"#));
-        assert!(rendered.contains(r#""agent""#));
-        assert!(rendered.contains(r#""name": "coder-a1""#));
-        assert!(rendered.contains(r#""description": "Owns frontend release follow-up""#));
-        assert!(!rendered.contains(r#""pid""#));
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "schema": 1,
+                "agent": {
+                    "name": "coder-a1",
+                    "uuid": "uuid-1",
+                    "description": "Owns frontend release follow-up",
+                    "class": "Coder",
+                    "provider": "codex",
+                    "workspace": "D:/Development/Wardian",
+                    "status": "processing",
+                },
+            })
+        );
+        assert_eq!(
+            rendered,
+            format!("{}\n", serde_json::to_string(&value).unwrap())
+        );
+        assert_eq!(rendered.lines().count(), 1);
     }
 
     #[test]
     fn render_list_outputs_agents_envelope() {
         let rendered = render_list(&[agent()], &RenderOptions::default()).unwrap();
-        assert!(rendered.contains("{\n"));
-        assert!(rendered.contains(r#"  "schema": 1"#));
-        assert!(rendered.contains(r#""agents": ["#));
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+        let show: Value =
+            serde_json::from_str(&render_show(&agent(), &RenderOptions::default()).unwrap())
+                .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"schema": 1, "agents": [show["agent"]]})
+        );
+        assert_eq!(
+            rendered,
+            format!("{}\n", serde_json::to_string(&value).unwrap())
+        );
+        assert_eq!(rendered.lines().count(), 1);
     }
 
     #[test]
@@ -257,7 +308,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(rendered.contains(r#""status_source": "persisted""#));
+        assert!(rendered.contains(r#""status_source":"persisted""#));
     }
 
     #[test]
@@ -278,8 +329,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(rendered.contains(r#""pid": 111"#));
-        assert!(rendered.contains(r#""workspace": "D:/Development/Wardian""#));
+        assert!(rendered.contains(r#""pid":111"#));
+        assert!(rendered.contains(r#""workspace":"D:/Development/Wardian""#));
     }
 
     #[test]
@@ -294,7 +345,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(rendered.contains(r#""visibility": "manual""#));
+        assert!(rendered.contains(r#""visibility":"manual""#));
 
         let default_rendered = render_show(&visible, &RenderOptions::default()).unwrap();
         assert!(!default_rendered.contains(r#""visibility""#));
@@ -310,8 +361,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(rendered.contains(r#""name": "coder-a1""#));
-        assert!(rendered.contains(r#""status": "processing""#));
+        assert!(rendered.contains(r#""name":"coder-a1""#));
+        assert!(rendered.contains(r#""status":"processing""#));
         assert!(!rendered.contains(r#""uuid""#));
     }
 
@@ -339,6 +390,135 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "invalid_field");
+    }
+
+    #[test]
+    fn invalid_projections_fail_for_show_and_empty_or_populated_lists() {
+        for opts in [
+            RenderOptions {
+                field: Some("nonsense".into()),
+                ..Default::default()
+            },
+            RenderOptions {
+                field: Some(String::new()),
+                ..Default::default()
+            },
+            RenderOptions {
+                fields: Some(vec!["name".into(), "nonsense".into()]),
+                ..Default::default()
+            },
+            RenderOptions {
+                fields: Some(vec![]),
+                ..Default::default()
+            },
+            RenderOptions {
+                fields: Some(vec![String::new()]),
+                ..Default::default()
+            },
+            RenderOptions {
+                fields: Some(vec![" ".into()]),
+                ..Default::default()
+            },
+        ] {
+            for pretty in [false, true] {
+                let opts = RenderOptions {
+                    pretty,
+                    ..opts.clone()
+                };
+                for result in [
+                    render_show(&agent(), &opts),
+                    render_list(&[], &opts),
+                    render_list(&[agent()], &opts),
+                ] {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, "invalid_field");
+                    assert_eq!(error.code_i32(), 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_lists_preserve_each_output_mode() {
+        assert_eq!(
+            render_list(&[], &RenderOptions::default()).unwrap(),
+            "{\"schema\":1,\"agents\":[]}\n"
+        );
+        for opts in [
+            RenderOptions {
+                field: Some("name".into()),
+                ..Default::default()
+            },
+            RenderOptions {
+                pretty: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(render_list(&[], &opts).unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn projection_preserves_order_and_omits_absent_optional_fields() {
+        let opts = RenderOptions {
+            fields: Some(vec!["status".into(), "visibility".into(), "name".into()]),
+            verbose: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            render_show(&agent(), &opts).unwrap(),
+            "{\"schema\":1,\"agent\":{\"status\":\"processing\",\"name\":\"coder-a1\"}}\n"
+        );
+        assert_eq!(
+            render_list(&[agent()], &opts).unwrap(),
+            "{\"schema\":1,\"agents\":[{\"status\":\"processing\",\"name\":\"coder-a1\"}]}\n"
+        );
+    }
+
+    #[test]
+    fn bare_list_preserves_one_line_per_agent_and_missing_values() {
+        let opts = RenderOptions {
+            field: Some("pid".into()),
+            ..Default::default()
+        };
+        let mut missing_pid = agent();
+        missing_pid.pid = None;
+        assert_eq!(render_show(&missing_pid, &opts).unwrap(), "\n");
+        assert_eq!(
+            render_list(&[agent(), missing_pid], &opts).unwrap(),
+            "111\n\n"
+        );
+    }
+
+    #[test]
+    fn compact_json_escapes_embedded_newlines() {
+        let mut multiline = agent();
+        multiline.description = "first\n\"second\"".into();
+        for rendered in [
+            render_show(&multiline, &RenderOptions::default()).unwrap(),
+            render_list(&[multiline], &RenderOptions::default()).unwrap(),
+        ] {
+            assert_eq!(rendered.lines().count(), 1);
+            assert!(rendered.contains(r#"first\n\"second\""#));
+            serde_json::from_str::<Value>(&rendered).unwrap();
+        }
+    }
+
+    #[test]
+    fn pretty_projection_preserves_alignment_and_list_separators() {
+        let opts = RenderOptions {
+            fields: Some(vec!["name".into(), "status".into()]),
+            pretty: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            render_show(&agent(), &opts).unwrap(),
+            "name    coder-a1\nstatus  processing\n"
+        );
+        assert_eq!(
+            render_list(&[agent(), agent()], &opts).unwrap(),
+            "name    coder-a1\nstatus  processing\n\nname    coder-a1\nstatus  processing\n\n"
+        );
     }
 
     #[test]

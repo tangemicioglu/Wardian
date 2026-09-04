@@ -26,6 +26,79 @@ building repeatable automation around Wardian.
 4. Run `wardian agent list` to confirm the CLI sees your neighbors, or `wardian agent list --scope all` to see all agents.
 5. Use live-control commands only while the desktop app is running for that same home.
 
+## Agent Discovery And Efficient Output
+
+Discover one command at a time:
+
+```bash
+wardian schema
+wardian schema agent spawn
+wardian schema browser '<target>' snapshot
+wardian automation node-types task --json
+```
+
+The same commands work in PowerShell. Quote the literal `<target>` placeholder
+when discovering browser syntax; use an actual session such as `browser:1`
+when executing an action. `schema` describes arguments, defaults, enumerated
+choices, conflicts, usage, and immediate subcommands from the CLI parser. It
+does not describe response DTOs or every conditional/runtime requirement.
+Schema discovery, node-type discovery, and help require no app or state
+migration. Unknown command paths passed to `schema`, or unknown node IDs passed
+to `automation node-types`, return a structured error and exit 2. Ordinary CLI
+syntax errors, including unknown commands, return `invalid_arguments` and exit 1.
+
+`automation node-types` lists the registry; an optional node ID selects its
+complete contract. `--json` still returns the builder-compatible schema, with
+unsupported nodes explicitly marked. `automation gen-schema` retains the
+formatted generated file used by the Builder.
+
+Generated JSON responses are compact. Parse JSON fields, not indentation.
+Existing `--pretty` modes produce human-readable text. Browser output defaults
+to text and accepts `--json`; `library read` returns raw content. For agent
+identity commands, prefer `--fields name,status,status_source` or `--field status`
+when you need less output. These flags apply to show/list/spawn/clone, not every
+agent command; incompatible flags and unknown fields fail before control work.
+
+Agent show/list, conversation list/show, and Inbox reads use persisted data
+only when the live endpoint is unavailable. Live rejections, malformed
+responses, and timeouts remain errors. Conversation and Inbox responses include
+`status_source`; agent identity exposes it through `--fields` or `--field`.
+An empty persisted response is not evidence of current live state.
+
+`agent wait --timeout` bounds the whole wait, including IPC and polling;
+`--next` charges its initial cursor read to the same budget. A zero timeout
+expires without contacting the endpoint. A response received after the
+deadline is not reported as a timely match.
+
+Offline commands are not uniformly free of writes. Compatibility readers can
+migrate the state database or automation directories; memory can initialize or
+recover its store; Library reads can initialize default classes. Library,
+memory, team/watchlist, and schedule mutations also work offline. Use isolated
+fixtures for read-only-effect testing; use schema/help for static discovery.
+
+## JSON Arguments Across Shells
+
+Automation `--input` and `--assignments` accept an inline JSON object,
+`@<path-to-json-file>`, or `-` for piped UTF-8 JSON. Files avoid native shell
+quoting differences and support UTF-8 with or without a BOM. For example:
+
+```bash
+wardian automation exec ./automation.md --input @./input.json
+printf '%s' '{"target":"HEAD"}' | wardian automation exec ./automation.md --input -
+```
+
+PowerShell:
+
+```powershell
+wardian automation exec .\automation.md --input '@.\input.json'
+'{"target":"HEAD"}' | wardian automation exec .\automation.md --input -
+```
+
+Use a UTF-8 file for non-ASCII input when the shell's pipe encoding is not
+UTF-8. When a command accepts both input and assignments, use files for one or
+both; standard input can supply only one document. Invalid documents return
+`invalid_json` with a recovery hint before execution or configuration changes.
+
 ## Telemetry Read Path
 
 Read telemetry without changing the app-owned source cursors:
@@ -33,6 +106,9 @@ Read telemetry without changing the app-owned source cursors:
 ```bash
 wardian telemetry summary --horizon week --dimension provider
 ```
+
+The ranked breakdown returns at most `row_limit` (24) rows. `truncated: true`
+means additional groups exist; summary totals still cover the entire window.
 
 Telemetry retention is an application-owned operation, not a CLI command.
 Wardian's existing ingest coordinator considers the documented 90-day detail
@@ -173,7 +249,7 @@ Wardian maintains a communication topology that shapes which agents you see and 
 **Scope modes for `wardian agent list`:**
 - `--scope auto` (default): neighbors when `WARDIAN_SESSION_ID` is set (inside a Wardian agent terminal), else workspace.
 - `--scope neighbors`: self + direct topology neighbors (manual edges, workspace fallback when you have no manual edges).
-- `--scope workspace`: all agents in your workspace.
+- `--scope workspace`: all agents in the managed caller's assigned workspace, or the current working directory outside a managed session. A missing managed assignment is an error.
 - `--scope all`: all known agents across all workspaces.
 
 **When to use each scope:**
@@ -240,7 +316,7 @@ wardian agent spawn --provider codex --class Reviewer --name reviewer-a1 --works
 wardian agent update <name-or-uuid> --class Reviewer
 wardian agent update <name-or-uuid> --workspace <absolute-workspace-path>
 wardian agent update <name-or-uuid> --description "Owns frontend release follow-up"
-wardian agent update <name-or-uuid> --description "" # clear the memo
+wardian agent update <name-or-uuid> --description= # clear the memo
 wardian agent update <name-or-uuid> --model <model-id> --reasoning-effort <effort>
 wardian agent clone <name-or-uuid> --name coder-a2
 wardian agent worktree list
@@ -547,7 +623,7 @@ and persisted state as one update. The JSON response reports `updated_fields`
 and `restart_required`. Wardian does not interrupt a running provider process,
 so restart the agent when `restart_required` is true before relying on the new
 class instructions, working directory, model, or reasoning effort. Pass
-`--model ""` or `--reasoning-effort ""` to return to the provider default.
+`--model=` or `--reasoning-effort=` to return to the provider default.
 Managed worktree agents must use
 `agent worktree join` or `agent worktree disable` instead.
 
@@ -609,13 +685,13 @@ List filters:
 
 Output options:
 
-- `--fields name,status,uuid` returns indented JSON with only those fields.
+- `--fields name,status,uuid` returns compact JSON with only those fields.
 - `--field status` returns one bare value plus a newline.
 - `--field status_source` returns `live` or `persisted`.
 - `--verbose` adds `pid`, `started_at`, `last_status_at`, and `visibility` (why each neighbor is visible: `manual` or `rule:workspace-fallback`).
 - `--pretty` returns aligned text for interactive inspection instead of JSON.
 
-Default JSON is indented for terminal readability. It includes `schema: 1` and an `agent` or `agents` payload with `name`, `uuid`, `class`, `provider`, `workspace`, and `status`.
+Default JSON is compact. It includes `schema: 1` and an `agent` or `agents` payload with `name`, `uuid`, `description`, `class`, `provider`, `workspace`, and `status` (optional values may be absent).
 
 ## Presenting artifacts
 
@@ -647,7 +723,7 @@ live runtime contracts.
 
 ## Important Limits
 
-- The desktop app must be running for live-control commands such as `send`, `spawn`, `pause`, `resume`, `kill`, and default `automation exec`.
+- The desktop app must be running for live-control commands such as `send`, `agent spawn`, `agent pause`, `agent resume`, `agent delete`, and default `automation exec`.
 - `WARDIAN_HOME` must match between the app and CLI when you expect shared live state.
 - Team and watchlist mutation commands write disk state directly and best-effort notify the running app. `send --to team:<name>` is not implemented yet.
 - Raw terminal output can include escape sequences; prefer transcript or sanitized output unless debugging PTY behavior.
@@ -657,14 +733,25 @@ live runtime contracts.
 | Code | Meaning |
 |---:|---|
 | 0 | Success |
-| 1 | Generic command error |
-| 2 | Agent not found |
+| 1 | Invalid arguments, validation failure, or another command error |
+| 2 | Requested entity, schema command path, or node type not found |
 | 3 | `WARDIAN_SESSION_ID` is not set for self lookup |
 | 4 | Wardian state database is unavailable |
 | 5 | Lookup matched multiple agents |
 | 6 | Desktop app is not running for a live control command |
+| 7 | Live control endpoint timed out |
 
 Errors are written to stderr as JSON:
+
+Argument errors use `invalid_arguments` and suggest syntax discovery. Backend
+error codes and details are preserved, including newly introduced codes, so
+callers can distinguish stale generations, idempotency conflicts, and uncertain
+submission from retryable failures. A timeout does not establish whether a
+mutation ran: inspect delivery evidence before deciding to retry.
+
+`automation validate` exits 1 on semantic failure and returns `validation_failed`
+with the original `ok: false` and diagnostics under `error.details`. Valid
+blueprints still return `ok: true` on stdout and exit 0.
 
 ```json
 {

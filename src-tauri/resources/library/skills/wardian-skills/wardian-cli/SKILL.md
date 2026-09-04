@@ -1,105 +1,57 @@
 ---
 name: wardian-cli
-description: "Use immediately when a request mentions Wardian, Wardian agents, other agents, peers, delegation, orchestration, automations, agent identity, agent status, agent workspaces, live or persisted Wardian state, the Wardian CLI, or any interaction from inside a Wardian-managed terminal."
+description: "Inspect or control Wardian agents, messaging, memory, browser sessions, assets, and automations through the Wardian CLI. Use for Wardian state or coordination tasks, not unrelated work merely running in a managed terminal."
 ---
 
 # Wardian CLI
 
-Use `wardian` as the source of truth for Wardian state and peer coordination.
-Do not infer agent state from UI, terminal titles, or files such as
-`settings/state.json`.
+Use official commands for Wardian state and changes; do not infer live state
+from terminal titles or edit persisted state to replace commands.
 
-## Start Safely
+## Discover And Inspect
 
-- In a Wardian-managed terminal, inspect yourself with `wardian agent`. Outside
-  one, pass an explicit agent name or UUID.
-- Default agent listings and `send` targeting are intentionally local: they use
-  neighbors in a managed session and the workspace otherwise. Use `--scope all`
-  only for real cross-community orchestration.
-- Treat default JSON as the automation contract. Request `status_source` when
-  it matters whether state is `live` (desktop app) or `persisted` (`state.db`).
-- Require the running desktop app with the same `WARDIAN_HOME` for mutating
-  commands. Never edit persisted state to replace official agent or workspace
-  assignment commands.
-
-## Choose A Command Family
-
-| Need | Start with | Read for details |
-| --- | --- | --- |
-| Inspect, create, update, or assign workspaces to agents | `wardian agent` | [agents](references/agents.md) |
-| Read Inbox events or filter cross-fleet signals | `wardian inbox list` | [Inbox](references/inbox.md) |
-| Control a live task, wait, watch output, or delegate work | `wardian agent wait`, `wardian agent watch` | [orchestration](references/orchestration.md) |
-| Inspect or change communication boundaries | `wardian graph` | [topology](references/topology.md) |
-| Send work, request an accountable reply, respond, or inspect conversations | `wardian send`, `wardian ask`, `wardian reply`, `wardian conversation` | [messaging](references/messaging.md) |
-| Save, inspect, update, or recall durable agent memory | `wardian memory` | [memory](references/memory.md) |
-| See a rendered page, or verify a frontend change in a real browser | `wardian browser` | [browser](references/browser.md) |
-| Manage reusable assets or present durable work for review | `wardian library`, `wardian artifact` | [assets](references/assets.md) |
-| Validate, run, or inspect automation | `wardian automation` | [automations](references/automations.md) |
-| Organize durable teams and monitoring watchlists | `wardian team`, `wardian watchlist` | [teams and watchlists](references/coordination-groups.md) |
-| Diagnose CLI errors or run a shared dev/runtime check | `wardian` | [runtime debugging](references/runtime-debugging.md) |
-
-## Surface Automation Opportunities
-
-Proactively suggest a Wardian automation when a user asks to schedule a recurring
-task, automate a repeatable sequence, or coordinate durable multi-step work.
-Briefly explain why the automation fits (for example, its schedule, agent, or
-command steps), then ask whether the user wants to design one.
-
-When the user wants to author an automation, start from a relevant bundled sample
-when one fits. Read [automation samples](references/automation-samples.md) before
-proposing the graph.
-
-Do not create, edit, schedule, or run an automation merely because the request
-matches. Keep one-off work as a direct request, and wait for the user to choose
-automation authoring before making a blueprint or changing automation state.
-
-## Select a Provider Model Deliberately
-
-When spawning an agent, use the selected provider's default model and effort
-unless the task's complexity makes an explicit override useful. Before setting
-an override, inspect the provider-owned catalogue through the running app:
+`wardian schema [command path]` returns shallow, compact Clap-derived syntax,
+not response schemas or runtime guarantees. Drill into the relevant command:
 
 ```bash
-wardian agent models --provider <provider> --refresh
+wardian schema agent list
+wardian schema browser '<target>'
+wardian agent <name-or-uuid> --fields name,status,status_source
+wardian agent list --fields name,uuid,class,status,status_source
 ```
 
-- Keep the provider default for bounded implementation, routine investigation,
-  summarization, formatting, and straightforward review.
-- Select a stronger compatible model or a higher available effort only for
-  complex, ambiguous, multi-step work such as architecture, deep debugging,
-  security review, or a difficult integration plan.
-- Treat model and effort as a latency and capacity trade-off. Do not use high
-  effort merely because an agent's class sounds senior.
-- Never invent a model ID or effort level. Use only values returned by
-  `agent models`; some provider versions expose no launch-time effort option.
-- Pass an explicit selection at spawn, or update it and restart before relying
-  on it. Selection changes do not alter an active provider turn.
+Bare `wardian agent` requires a managed session. Listings default to neighbors
+inside one and the current working directory outside. `--workspace <path>`
+overrides neighbor scope; `--scope all` explicitly requests the full roster.
+Keep broadcasts local unless wider targeting is authorized.
 
-## Non-Negotiable Defaults
+Generated JSON is compact with unchanged fields/types. Browser defaults to
+text: use `browser --json`. Existing `--pretty` modes remain human-readable.
+Request `status_source` to distinguish live from persisted agent state.
 
-- Use `agent update` rather than editing `settings/state.json`; restart an
-  agent when its result reports `restart_required`.
-- Use `send` for a live message. Use `ask` when one named peer must return a
-  structured `done`, `blocked`, or `failed` reply with delivery evidence.
-  Use `reply` only to complete an ask request.
-- Keep broadcasts and class sends neighbor-scoped unless `--scope all` is
-  genuinely required. `ask` accepts one named peer or UUID, never a broadcast,
-  class selector, or thread.
-- Use `send --as-command` only for one explicit agent or UUID when a provider
-  slash command must be the first input token; it intentionally omits sender
-  attribution.
-- Treat `library deploy --targets` as the complete desired target set. Pass a
-  non-empty, explicit list, or use `--clear` to remove every deployment.
+## Boundaries
 
-Read the linked reference before using a conditional command shape or relying
-on command-specific behavior. Keep prompts bounded, verify delivery or replies,
-and report provider/runtime failures plainly.
+- Live control requires the desktop app for the same `WARDIAN_HOME`; Library,
+  memory, team/watchlist and schedule writes can work offline. Inspection may
+  initialize or migrate stores; see runtime debugging for strict read-only work.
+- Use `send` for delivery, `ask` for structured replies from explicit peers,
+  and `reply` to complete an ask. Delivery, completion, and approval differ;
+  a timeout does not authorize replay. Off agents may execute sends headlessly.
+- Keep provider defaults unless complexity warrants a catalogue-listed override.
+  Apply configuration through `agent update`; honor `restart_required`.
+- Suggest automations for recurring work, but require user opt-in before
+  authoring, editing, scheduling, or running one. Keep one-off work direct.
+- `library deploy --targets` replaces the entire target set; `--clear` removes it.
 
-## Inbox Read and Write
+## Read Only The Relevant Reference
 
-Use `wardian inbox list` to inspect the shared Inbox projection, including
-`--type`, `--source`, `--unread`, `--limit`, and `--offset` filters. Use the
-write path, `wardian notify update` or `wardian notify approval`, when a result
-materially affects the user or a consequential decision is required. Keep
-routine progress in the transcript. Read [Inbox](references/inbox.md) for the
-event types, evidence sources, and examples.
+- [Agents](references/agents.md): scope, configuration, deletion, worktrees.
+- [Messaging](references/messaging.md): send, ask, reply, delivery, history.
+- [Orchestration](references/orchestration.md): bounded wait/watch and delegation.
+- [Inbox](references/inbox.md): events and user notifications/approvals.
+- [Memory](references/memory.md): ownership, evidence, scope, revisions.
+- [Browser](references/browser.md): page actions and sensitive output.
+- [Assets](references/assets.md): Library deployment and artifact presentation.
+- [Automations](references/automations.md): node discovery, JSON input, samples.
+- [Topology](references/topology.md) and [groups](references/coordination-groups.md): communication edges versus teams/watchlists.
+- [Runtime debugging](references/runtime-debugging.md): errors, offline effects, runtime setup.

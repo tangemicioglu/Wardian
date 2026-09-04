@@ -35,15 +35,27 @@ wardian agent wait reviewer-a1 --until idle --next --timeout 10m
 `agent wait` accepts normalized statuses such as `idle`, `processing`,
 `action_required`, `off`, and `error`. It returns immediately for an already
 matching status; add `--next` to wait for a newer matching observation.
+The timeout covers snapshot reads, IPC, and polling, including the initial
+cursor read for `--next`. A zero budget expires without contacting the app.
 
 ## Observe Bounded Work
 
 Use `agent watch` when completion evidence is output, delivery, or a specific
-event rather than a status alone:
+event rather than a status alone. Watch requires the running app and has no
+disk fallback. If unavailable, report that limit or inspect persisted
+conversations through the messaging reference. Check message roles before
+calling retained text an assistant reply.
 
 ```bash
-wardian agent watch reviewer-a1 --until output:REVIEW_DONE --include status,output --timeout 10m
+wardian agent watch reviewer-a1 --include transcript --tail 2048
+wardian agent watch reviewer-a1 --since <cursor> --include transcript --tail 2048
+wardian agent watch reviewer-a1 --until output:REVIEW_DONE --include status,output --tail 2048 --timeout 10m
 ```
+
+Retain the returned cursor for incremental reads. A conditional watch without
+`--since` starts at command entry; it will not match an earlier completion
+marker. Omit `--until` for retained output. `--tail` bounds text bytes, not the
+entire JSON envelope. Use `--include status,delivery` when text is unnecessary.
 
 The default response includes status, provider-adapted transcript text,
 sanitized terminal output, delivery details, and a cursor. Use `--raw` or
@@ -59,15 +71,16 @@ retain watch-based behavior.
 ## Delegate Bounded Work
 
 Give a peer a bounded, independently checkable task, state the expected reply
-shape, then verify delivery and its eventual result. If no suitable peer is
-idle, create one through the [agents](agents.md) reference.
+shape, then verify delivery and its eventual result. If creating a peer is
+within the authorized task, use the [agents](agents.md) reference; otherwise
+use the existing peer's queue or report its availability.
 
 ```bash
-wardian ask review-cli-surface --file review-request.md --timeout 10m
-wardian agent wait review-cli-surface --until idle --next --timeout 10m
+wardian ask review-cli-surface --file review-request.md --tail 0 --timeout 10m
 ```
 
-Treat missing responses or timeouts as delivery failures, especially when
-provider PTY behavior varies by platform. `ask` uses its default structured
-reply condition; use output-marker matching only for explicit compatibility.
-Use [messaging](messaging.md) for send, ask, and reply contracts.
+Inspect the structured reply and delivery evidence; an additional `wait --next`
+would wait for a later status observation, not prove the completed ask.
+Timeout means the requested observation did not arrive, not necessarily that
+delivery failed or execution stopped. Do not resend automatically. Use
+[messaging](messaging.md) for reply outcomes and delivery inspection.

@@ -30,7 +30,7 @@ fn send_requires_to_flag() {
     // clap exits 1 when required flag is missing
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains(r#""code":"generic""#));
+    assert!(stderr.contains(r#""code":"invalid_arguments""#));
 }
 
 #[test]
@@ -181,5 +181,5 @@ fn send_approval_rejects_as_command_conflict() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains(r#""code":"generic""#));
+    assert!(stderr.contains(r#""code":"invalid_arguments""#));
 }

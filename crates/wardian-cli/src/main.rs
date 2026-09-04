@@ -6,10 +6,12 @@ mod disk;
 mod errors;
 mod graph;
 mod inbox;
+mod json_input;
 mod library;
 mod live;
 mod memory;
 mod output;
+mod schema;
 mod telemetry;
 mod watchlist;
 use args::{
@@ -57,6 +59,27 @@ fn run() -> i32 {
         Ok(cli) => cli,
         Err(error) => return handle_parse_error(error),
     };
+    // Static discovery must work without a home, migrations, or running app.
+    if let Command::Schema { path } = &cli.command {
+        return finish(schema::render(path));
+    }
+    if let Command::Browser(args) = &cli.command {
+        if let Some(help) = browser::target_help(args) {
+            return finish(Ok(help));
+        }
+    }
+    if let Command::Agent(args) = &cli.command {
+        if let Err(error) = validate_agent_output(args) {
+            return finish(Err(error));
+        }
+    }
+    if let Command::Automation(AutomationArgs {
+        command: AutomationCommand::NodeTypes { node, json },
+        ..
+    }) = &cli.command
+    {
+        return finish(render_automation_node_types(node.as_deref(), *json));
+    }
     if let Err(error) = wardian_core::automation_migration::migrate_current_home() {
         let error = CliError::generic(format!(
             "could not migrate legacy automation storage: {error}"
@@ -65,6 +88,7 @@ fn run() -> i32 {
         return error.code_i32();
     }
     let result = match cli.command {
+        Command::Schema { path } => schema::render(&path),
         Command::Agent(args) => handle_agent(args),
         Command::Artifact(args) => artifact::handle_artifact(args),
         Command::Browser(args) => browser::handle_browser(args),
@@ -84,6 +108,10 @@ fn run() -> i32 {
         Command::Reply(args) => handle_reply(args),
     };
 
+    finish(result)
+}
+
+fn finish(result: Result<String, CliError>) -> i32 {
     match result {
         Ok(stdout) => {
             print!("{stdout}");
@@ -105,8 +133,17 @@ fn handle_parse_error(error: clap::Error) -> i32 {
         return ExitCode::Success as i32;
     }
 
-    CliError::generic(error.to_string()).emit();
+    parse_error(error).emit();
     ExitCode::Generic as i32
+}
+
+fn parse_error(error: clap::Error) -> CliError {
+    let mut result = CliError::backend(ExitCode::Generic, "invalid_arguments", error.to_string());
+    result.hint = Some(
+        "Use `wardian schema <command path>` or `<command> --help` to inspect accepted arguments."
+            .to_string(),
+    );
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -131,29 +168,51 @@ fn render_conversation_list(agent: Option<String>, scope: &str) -> Result<String
         }
     };
     let effective_agent = resolve_conversation_agent(agent, scope_all)?;
-    let response = live::conversation_list(effective_agent.as_deref(), scope_all).or_else(|_| {
-        disk::load_conversation_list(effective_agent.as_deref(), scope_all)
-            .map(wardian_core::control::ConversationListResponse::new)
-    });
-    render_conversation_response(response)
+    let (response, source) = read_snapshot(
+        live::conversation_list(effective_agent.as_deref(), scope_all),
+        || {
+            disk::load_conversation_list(effective_agent.as_deref(), scope_all)
+                .map(wardian_core::control::ConversationListResponse::new)
+        },
+    )?;
+    render_conversation_response(response, source)
 }
 
 fn render_conversation_show(conversation_id: &str) -> Result<String, CliError> {
-    let response = live::conversation_show(conversation_id)
-        .or_else(|_| disk::load_conversation_show(conversation_id));
-    render_conversation_response(response)
+    let (response, source) = read_snapshot(live::conversation_show(conversation_id), || {
+        disk::load_conversation_show(conversation_id)
+    })?;
+    render_conversation_response(response, source)
 }
 
 fn render_conversation_response<T: serde::Serialize>(
-    response: std::io::Result<T>,
+    response: T,
+    source: &str,
 ) -> Result<String, CliError> {
-    response
-        .map_err(|error| CliError::generic(error.to_string()))
-        .and_then(|body| {
-            serde_json::to_string_pretty(&body)
-                .map(|json| format!("{json}\n"))
-                .map_err(|error| CliError::generic(error.to_string()))
-        })
+    let mut body =
+        serde_json::to_value(response).map_err(|error| CliError::generic(error.to_string()))?;
+    body["status_source"] = serde_json::json!(source);
+    render_json(body)
+}
+
+/// Persisted snapshots are an offline fallback, never a substitute for a live rejection.
+fn read_snapshot<T>(
+    result: std::io::Result<T>,
+    offline: impl FnOnce() -> std::io::Result<T>,
+) -> Result<(T, &'static str), CliError> {
+    match result {
+        Ok(value) => Ok((value, "live")),
+        Err(error) if is_control_endpoint_unavailable(&error) => offline()
+            .map(|value| (value, "persisted"))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    CliError::backend(ExitCode::NotFound, "not_found", error.to_string())
+                } else {
+                    CliError::generic(error.to_string())
+                }
+            }),
+        Err(error) => Err(control_error(error)),
+    }
 }
 
 fn resolve_conversation_agent(
@@ -161,7 +220,7 @@ fn resolve_conversation_agent(
     scope_all: bool,
 ) -> Result<Option<String>, CliError> {
     if let Some(agent) = agent {
-        return Ok(Some(resolve_conversation_agent_target(&agent)));
+        return resolve_conversation_agent_target(&agent).map(Some);
     }
     if scope_all {
         return Ok(None);
@@ -175,22 +234,65 @@ fn resolve_conversation_agent(
         .ok_or_else(|| CliError::generic("--agent, --scope all, or WARDIAN_SESSION_ID is required"))
 }
 
-fn resolve_conversation_agent_target(target: &str) -> String {
+fn resolve_conversation_agent_target(target: &str) -> Result<String, CliError> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
-        return String::new();
+        return Err(CliError::not_found(target));
     }
-
-    open_db()
-        .ok()
-        .and_then(|conn| identity::resolve_by_name_or_uuid(&conn, trimmed).ok())
-        .map(|agent| agent.uuid)
-        .unwrap_or_else(|| trimmed.to_string())
+    let agents = match live::list_agents() {
+        Ok(agents) => agents,
+        Err(error) if is_control_endpoint_unavailable(&error) => {
+            if wardian_core::paths::state_db_path().is_some_and(|path| path.exists()) {
+                identity::list_agents(&open_db()?, &ListFilters::default())
+                    .map_err(identity_error)?
+            } else {
+                Vec::new()
+            }
+        }
+        Err(error) => return Err(control_error(error)),
+    };
+    if let Some(agent) = agents
+        .iter()
+        .find(|agent| agent.uuid == trimmed)
+        .or_else(|| agents.iter().find(|agent| agent.name == trimmed))
+    {
+        return Ok(agent.uuid.clone());
+    }
+    // Removed agents can still have archived conversations addressable by ID.
+    if !disk::load_conversation_list(Some(trimmed), false)
+        .map_err(|error| CliError::generic(error.to_string()))?
+        .is_empty()
+    {
+        return Ok(trimmed.to_string());
+    }
+    Err(CliError::not_found(trimmed))
 }
 
 // ---------------------------------------------------------------------------
 // wardian agent
 // ---------------------------------------------------------------------------
+
+fn validate_agent_output(args: &AgentArgs) -> Result<(), CliError> {
+    output::validate_options(&render_options(args))?;
+    if (args.field.is_some() || args.fields.is_some() || args.pretty || args.verbose)
+        && !matches!(
+            args.command,
+            None | Some(
+                AgentCommand::Show { .. }
+                    | AgentCommand::List { .. }
+                    | AgentCommand::Spawn { .. }
+                    | AgentCommand::Clone { .. }
+            )
+        )
+    {
+        return Err(CliError::backend(
+            ExitCode::Generic,
+            "invalid_arguments",
+            "identity output flags apply only to agent show, list, spawn, and clone",
+        ));
+    }
+    Ok(())
+}
 
 fn handle_agent(args: AgentArgs) -> Result<String, CliError> {
     match &args.command {
@@ -293,7 +395,7 @@ fn handle_agent_delete(target: &str, confirm_name: &str, force: bool) -> Result<
     live::agent_delete(target, confirm_name, force).map_err(control_error)?;
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::json!({
+        serde_json::to_string(&serde_json::json!({
             "schema": 1,
             "ok": true,
             "target": target,
@@ -306,7 +408,7 @@ fn handle_agent_delete(target: &str, confirm_name: &str, force: bool) -> Result<
 
 fn handle_agent_rename(target: &str, new_name: &str) -> Result<String, CliError> {
     let response = live::agent_rename(target, new_name).map_err(control_error)?;
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -315,7 +417,7 @@ fn handle_agent_restart(target: &str) -> Result<String, CliError> {
     live::agent_restart(target).map_err(control_error)?;
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::json!({"schema":1,"ok":true,"target":target,"preserved":["agent","habitat","session_history"]}))
+        serde_json::to_string(&serde_json::json!({"schema":1,"ok":true,"target":target,"preserved":["agent","habitat","session_history"]}))
             .unwrap()
     ))
 }
@@ -324,8 +426,7 @@ fn handle_agent_pause(target: &str) -> Result<String, CliError> {
     live::agent_pause(target).map_err(control_error)?;
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::json!({"schema":1,"ok":true,"target":target}))
-            .unwrap()
+        serde_json::to_string(&serde_json::json!({"schema":1,"ok":true,"target":target})).unwrap()
     ))
 }
 
@@ -333,8 +434,7 @@ fn handle_agent_resume(target: &str) -> Result<String, CliError> {
     live::agent_resume(target).map_err(control_error)?;
     Ok(format!(
         "{}\n",
-        serde_json::to_string_pretty(&serde_json::json!({"schema":1,"ok":true,"target":target}))
-            .unwrap()
+        serde_json::to_string(&serde_json::json!({"schema":1,"ok":true,"target":target})).unwrap()
     ))
 }
 
@@ -354,7 +454,7 @@ fn handle_agent_spawn(
 
 fn handle_agent_models(provider: &str, force_refresh: bool) -> Result<String, CliError> {
     let catalog = live::agent_models(provider, force_refresh).map_err(control_error)?;
-    serde_json::to_string_pretty(&catalog)
+    serde_json::to_string(&catalog)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -376,14 +476,14 @@ fn handle_agent_update(
         reasoning_effort,
     )
     .map_err(control_error)?;
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
 
 fn handle_agent_doctor(target: &str) -> Result<String, CliError> {
     let response = live::agent_doctor(target).map_err(control_error)?;
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -422,7 +522,7 @@ fn handle_agent_worktree(command: &AgentWorktreeCommand) -> Result<String, CliEr
 fn render_worktree_list(
     worktrees: &[wardian_core::control::AgentWorktreeSummary],
 ) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::to_string(&serde_json::json!({
         "schema": 1,
         "worktrees": worktrees,
     }))
@@ -433,7 +533,7 @@ fn render_worktree_list(
 fn render_worktree_mutation_response(
     response: &wardian_core::control::AgentWorktreeMutationResponse,
 ) -> Result<String, CliError> {
-    serde_json::to_string_pretty(response)
+    serde_json::to_string(response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -449,7 +549,7 @@ fn handle_agent_wait(
     if next {
         let response =
             live::wait_agent_until_next(target, until, timeout).map_err(control_error)?;
-        return serde_json::to_string_pretty(&response)
+        return serde_json::to_string(&response)
             .map(|json| format!("{json}\n"))
             .map_err(|e| CliError::generic(e.to_string()));
     }
@@ -477,7 +577,7 @@ fn handle_agent_watch(target: &str, options: AgentWatchCliOptions<'_>) -> Result
         timeout,
     )
     .map_err(control_error)?;
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -498,7 +598,9 @@ struct AgentWatchCliOptions<'a> {
 
 fn handle_automation(args: AutomationArgs) -> Result<String, CliError> {
     match args.command {
-        AutomationCommand::NodeTypes { json } => render_automation_node_types(json),
+        AutomationCommand::NodeTypes { node, json } => {
+            render_automation_node_types(node.as_deref(), json)
+        }
         AutomationCommand::List => render_automation_list(args.pretty),
         AutomationCommand::Validate { path } => render_automation_validate(&path),
         AutomationCommand::Exec {
@@ -538,13 +640,32 @@ fn handle_automation(args: AutomationArgs) -> Result<String, CliError> {
     }
 }
 
-fn render_automation_node_types(json: bool) -> Result<String, CliError> {
+fn render_automation_node_types(node: Option<&str>, json: bool) -> Result<String, CliError> {
+    let definitions = if let Some(id) = node {
+        let definition = wardian_core::automation::find_node_type(id).ok_or_else(|| {
+            let mut error = CliError::backend(
+                ExitCode::NotFound,
+                "unknown_node_type",
+                format!("unknown automation node type `{id}`"),
+            );
+            error.hint =
+                Some("Run `wardian automation node-types` to list node types.".to_string());
+            error
+        })?;
+        std::slice::from_ref(definition)
+    } else {
+        wardian_core::automation::node_types()
+    };
     if json {
-        return Ok(format!("{}\n", wardian_core::automation::ts_schema_json()));
+        return render_json(serde_json::json!({"schema": 2, "node_types": definitions}));
+    }
+    if node.is_some() {
+        // A selected contract is useful without needing a second --json call.
+        return render_json(serde_json::json!({"schema": 2, "node_types": definitions}));
     }
     // Human summary: one line per node type.
     let mut lines = String::from("NODE TYPES\n");
-    for def in wardian_core::automation::node_types() {
+    for def in definitions {
         let status = if def.supported { "" } else { " [unsupported]" };
         lines.push_str(&format!(
             "  {:<18} {:<8} {}{}\n",
@@ -652,7 +773,15 @@ fn render_automation_validate(path: &str) -> Result<String, CliError> {
         "ok": report.is_valid(),
         "diagnostics": report.diagnostics,
     });
-    serde_json::to_string_pretty(&body)
+    if !report.is_valid() {
+        return Err(CliError::backend_with_details(
+            ExitCode::Generic,
+            "validation_failed",
+            "automation blueprint failed validation",
+            body,
+        ));
+    }
+    serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -728,7 +857,7 @@ fn render_automation_exec_with_live_launcher(
 fn render_live_automation_exec_response(
     response: AutomationRunResponse,
 ) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -743,7 +872,7 @@ fn render_automation_exec_mock(path: &str, input: serde_json::Value) -> Result<S
             "ok": false,
             "diagnostics": report.diagnostics,
         });
-        return serde_json::to_string_pretty(&body)
+        return serde_json::to_string(&body)
             .map(|json| format!("{json}\n"))
             .map_err(|e| CliError::generic(e.to_string()));
     }
@@ -768,7 +897,7 @@ fn render_automation_exec_mock(path: &str, input: serde_json::Value) -> Result<S
         "run_dir": run_root,
         "executor": "mock",
     });
-    serde_json::to_string_pretty(&body)
+    serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -777,12 +906,7 @@ fn parse_automation_exec_input(input: Option<&str>) -> Result<serde_json::Value,
     let Some(raw) = input else {
         return Ok(serde_json::json!({}));
     };
-    let value = serde_json::from_str::<serde_json::Value>(raw)
-        .map_err(|error| CliError::generic(format!("invalid --input JSON: {error}")))?;
-    if !value.is_object() {
-        return Err(CliError::generic("--input must be a JSON object"));
-    }
-    Ok(value)
+    json_input::parse(raw, "--input")
 }
 
 fn parse_automation_bindings(bind: &[String]) -> Result<HashMap<String, String>, CliError> {
@@ -1133,9 +1257,8 @@ fn render_automation_session_close(
             let input = parse_automation_exec_input(input.as_deref())?;
             let assignments: AutomationAssignments = assignments
                 .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|error| CliError::generic(format!("invalid assignments JSON: {error}")))?
+                .map(|raw| json_input::parse(raw, "--assignments"))
+                .transpose()?
                 .unwrap_or_default();
             wardian_core::automation::assignment::validate_assignments(&assignments)
                 .map_err(CliError::generic)?;
@@ -1145,7 +1268,9 @@ fn render_automation_session_close(
                 name,
                 enabled: enable,
                 require_archive,
-                source_agent_id: agent.map(|target| resolve_conversation_agent_target(&target)),
+                source_agent_id: agent
+                    .map(|target| resolve_conversation_agent_target(&target))
+                    .transpose()?,
                 boundary_reasons: boundary,
                 provider,
                 workspace,
@@ -1433,10 +1558,7 @@ fn parse_schedule_assignments(
 
     let explicit_bindings = parse_automation_bindings(bind)?;
     let typed = typed_json
-        .map(|raw| {
-            serde_json::from_str::<AutomationAssignments>(raw)
-                .map_err(|error| CliError::generic(format!("invalid --assignments JSON: {error}")))
-        })
+        .map(|raw| json_input::parse::<AutomationAssignments>(raw, "--assignments"))
         .transpose()?;
     let assignments = if let Some(typed) = typed {
         wardian_core::automation::assignment::normalize_assignments(
@@ -1482,7 +1604,7 @@ fn current_epoch_ms() -> u64 {
 }
 
 fn render_json(body: serde_json::Value) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&body)
+    serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -1636,7 +1758,7 @@ fn handle_notify(args: NotifyArgs) -> Result<String, CliError> {
     } else {
         created
     };
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -1720,10 +1842,7 @@ fn handle_send(args: SendArgs) -> Result<String, CliError> {
         })
     };
 
-    Ok(format!(
-        "{}\n",
-        serde_json::to_string_pretty(&response).unwrap()
-    ))
+    Ok(format!("{}\n", serde_json::to_string(&response).unwrap()))
 }
 
 fn handle_delivery(args: DeliveryArgs) -> Result<String, CliError> {
@@ -1755,7 +1874,7 @@ fn handle_delivery(args: DeliveryArgs) -> Result<String, CliError> {
             .and_then(|response| serde_json::to_value(response).map_err(std::io::Error::other)),
     }
     .map_err(control_error)?;
-    serde_json::to_string_pretty(&value)
+    serde_json::to_string(&value)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -1871,7 +1990,7 @@ fn handle_reply(args: ReplyArgs) -> Result<String, CliError> {
         &body,
     )
     .map_err(control_error)?;
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::to_string(&serde_json::json!({
         "schema": 1,
         "ok": true,
         "request_id": response.request_id,
@@ -2019,7 +2138,7 @@ fn render_ask_response(
         "transcript": watch.transcript,
         "events": watch.events,
     });
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
 }
@@ -2027,7 +2146,7 @@ fn render_ask_response(
 fn render_ask_many_response(
     ask: &wardian_core::control::AskManyResponse,
 ) -> Result<String, CliError> {
-    serde_json::to_string_pretty(ask)
+    serde_json::to_string(ask)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -2082,72 +2201,18 @@ pub(crate) fn control_error(e: std::io::Error) -> CliError {
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<live::ControlEndpointError>())
     {
-        let backend_error = |exit_code, code: &'static str| {
-            endpoint_error.details().cloned().map_or_else(
-                || CliError::backend(exit_code, code, endpoint_error.to_string()),
-                |details| {
-                    CliError::backend_with_details(
-                        exit_code,
-                        code,
-                        endpoint_error.to_string(),
-                        details,
-                    )
-                },
-            )
+        let exit_code = match endpoint_error.code() {
+            "not_found" | "artifact_not_found" | "review_not_found" | "browser_not_found" => {
+                ExitCode::NotFound
+            }
+            "ambiguous" | "browser_ambiguous" | "ref_ambiguous" => ExitCode::Ambiguous,
+            "invalid_origin" => ExitCode::NotInSession,
+            _ => ExitCode::Generic,
         };
-        match endpoint_error.code() {
-            "not_supported" => backend_error(ExitCode::Generic, "not_supported"),
-            "not_found" => backend_error(ExitCode::NotFound, "not_found"),
-            "bad_request" => backend_error(ExitCode::Generic, "bad_request"),
-            "request_failed" => backend_error(ExitCode::Generic, "request_failed"),
-            "not_managed_worktree" => backend_error(ExitCode::Generic, "not_managed_worktree"),
-            "watch_timeout" => backend_error(ExitCode::Generic, "watch_timeout"),
-            "cursor_expired" => backend_error(ExitCode::Generic, "cursor_expired"),
-            "gap_detected" => backend_error(ExitCode::Generic, "gap_detected"),
-            "invalid_cursor" => backend_error(ExitCode::Generic, "invalid_cursor"),
-            "invalid_origin" => backend_error(ExitCode::NotInSession, "invalid_origin"),
-            "self_serve_required" => backend_error(ExitCode::Generic, "self_serve_required"),
-            "unauthorized_path" => backend_error(ExitCode::Generic, "unauthorized_path"),
-            "unreadable_file" => backend_error(ExitCode::Generic, "unreadable_file"),
-            "unstable_file_timeout" => backend_error(ExitCode::Generic, "unstable_file_timeout"),
-            "artifact_not_found" => backend_error(ExitCode::NotFound, "artifact_not_found"),
-            "review_not_found" => backend_error(ExitCode::NotFound, "review_not_found"),
-            "ui_delivery_failed" => backend_error(ExitCode::Generic, "ui_delivery_failed"),
-            // Browser codes are preserved rather than flattened to "generic".
-            // `snapshot_stale` in particular is the signal that tells an agent
-            // to re-snapshot instead of retrying the same ref.
-            "browser_not_found" => backend_error(ExitCode::NotFound, "browser_not_found"),
-            "browser_ambiguous" => backend_error(ExitCode::Ambiguous, "browser_ambiguous"),
-            "browser_engine_unavailable" => {
-                backend_error(ExitCode::Generic, "browser_engine_unavailable")
-            }
-            "browser_protocol_error" => backend_error(ExitCode::Generic, "browser_protocol_error"),
-            "browser_wait_timeout" => backend_error(ExitCode::Generic, "browser_wait_timeout"),
-            "browser_invalid_request" => {
-                backend_error(ExitCode::Generic, "browser_invalid_request")
-            }
-            "browser_io_error" => backend_error(ExitCode::Generic, "browser_io_error"),
-            "snapshot_stale" => backend_error(ExitCode::Generic, "snapshot_stale"),
-            "snapshot_missing" => backend_error(ExitCode::Generic, "snapshot_missing"),
-            "ref_malformed" => backend_error(ExitCode::Generic, "ref_malformed"),
-            "ref_detached" => backend_error(ExitCode::Generic, "ref_detached"),
-            "ref_changed" => backend_error(ExitCode::Generic, "ref_changed"),
-            "ref_ambiguous" => backend_error(ExitCode::Ambiguous, "ref_ambiguous"),
-            "browser_read_only_presentation" => {
-                backend_error(ExitCode::Generic, "browser_read_only_presentation")
-            }
-            _ => endpoint_error.details().cloned().map_or_else(
-                || CliError::generic(endpoint_error.to_string()),
-                |details| {
-                    CliError::backend_with_details(
-                        ExitCode::Generic,
-                        "generic",
-                        endpoint_error.to_string(),
-                        details,
-                    )
-                },
-            ),
-        }
+        let mut error =
+            CliError::backend(exit_code, endpoint_error.code(), endpoint_error.to_string());
+        error.details = endpoint_error.details().cloned().map(Box::new);
+        error
     } else {
         CliError::generic(e.to_string())
     }
@@ -2242,7 +2307,12 @@ fn filter_to_neighbors(
 }
 
 fn handle_show(target: Option<&str>, args: &AgentArgs) -> Result<String, CliError> {
-    if let Ok(agents) = live::list_agents() {
+    let live_agents = match live::list_agents() {
+        Ok(agents) => Some(agents),
+        Err(error) if is_control_endpoint_unavailable(&error) => None,
+        Err(error) => return Err(control_error(error)),
+    };
+    if let Some(agents) = live_agents {
         let agent = match target {
             Some(target) => agents
                 .into_iter()
@@ -2268,94 +2338,80 @@ fn handle_list(
     workspace: Option<String>,
     args: &AgentArgs,
 ) -> Result<String, CliError> {
-    let in_session = std::env::var("WARDIAN_SESSION_ID").is_ok();
-    let scope_choice = decide_scope(scope, in_session)?;
-
-    let requested_scope = if workspace.is_some() {
-        Scope::All
+    let session = live::current_session_id();
+    let scope_choice = if workspace.is_some() {
+        ScopeChoice::All
     } else {
-        match scope_choice {
-            ScopeChoice::Neighbors => Scope::All, // Fetch all first, then filter
-            ScopeChoice::Workspace => Scope::Workspace,
-            ScopeChoice::All => Scope::All,
-        }
+        decide_scope(scope, session.is_some())?
     };
-
-    if let Ok(live_agents) = live::list_agents() {
-        let caller_workspace = if scope_choice == ScopeChoice::Workspace {
-            resolve_live_self(&live_agents)
-                .and_then(|agent| agent.workspace.clone())
-                .filter(|workspace| !workspace.is_empty())
-        } else {
-            None
-        };
-        let effective_scope =
-            if scope_choice == ScopeChoice::Workspace && caller_workspace.is_none() {
-                Scope::All
-            } else {
-                requested_scope
-            };
-        let mut agents = identity::filter_agents(
-            live_agents,
+    let mut agents = match live::list_agents() {
+        Ok(agents) => agents,
+        Err(error) if is_control_endpoint_unavailable(&error) => identity::list_agents(
+            &open_db()?,
             &ListFilters {
-                scope: effective_scope,
-                caller_workspace,
-                status: status.clone(),
-                class: class_name.clone(),
-                workspace: workspace.clone(),
+                scope: Scope::All,
+                ..Default::default()
             },
-        );
-
-        // Apply neighbors filter if requested
-        if scope_choice == ScopeChoice::Neighbors {
-            let session_id =
-                std::env::var("WARDIAN_SESSION_ID").map_err(|_| CliError::not_in_session())?;
-            let home = wardian_core::paths::wardian_home().ok_or_else(|| {
-                CliError::generic("Could not determine Wardian home (required for neighbors scope)")
-            })?;
-            agents = filter_to_neighbors(agents, &session_id, &home);
-        }
-
-        return render_list(&agents, &render_options(args));
-    }
-
-    let conn = open_db()?;
-    let caller_workspace = caller_workspace_from_db(&conn, requested_scope);
-    let effective_scope = if scope_choice == ScopeChoice::Workspace && caller_workspace.is_none() {
-        Scope::All
-    } else {
-        requested_scope
+        )
+        .map_err(identity_error)?,
+        Err(error) => return Err(control_error(error)),
     };
-    let mut agents = identity::list_agents(
-        &conn,
+    let caller_workspace = if scope_choice == ScopeChoice::Workspace {
+        Some(match session.as_deref() {
+            Some(id) => agents
+                .iter()
+                .find(|agent| agent.uuid == id)
+                .ok_or_else(|| CliError::not_found(id))?
+                .workspace
+                .clone()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    CliError::generic("agent has no workspace; pass --workspace or --scope all")
+                })?,
+            None => std::env::current_dir()
+                .map_err(|error| CliError::generic(error.to_string()))?
+                .to_string_lossy()
+                .into_owned(),
+        })
+    } else {
+        None
+    };
+    // Resolve topology against the whole roster before applying display filters.
+    if scope_choice == ScopeChoice::Neighbors {
+        let session_id = session.as_deref().ok_or_else(CliError::not_in_session)?;
+        if !agents.iter().any(|agent| agent.uuid == session_id) {
+            return Err(CliError::not_found(session_id));
+        }
+        let home = wardian_core::paths::wardian_home()
+            .ok_or_else(|| CliError::generic("could not determine Wardian home"))?;
+        agents = filter_to_neighbors(agents, session_id, &home);
+    }
+    if let Some(expected) = workspace.as_deref().or(caller_workspace.as_deref()) {
+        // Resolve existing directory identities consistently with agent creation,
+        // including Windows casing and junctions. Keep unavailable historical
+        // paths comparable without widening scope or changing returned paths.
+        let expected_path = Path::new(expected);
+        let expected_canonical = expected_path.canonicalize().ok();
+        agents.retain(|agent| {
+            agent.workspace.as_deref().is_some_and(|actual| {
+                let actual_path = Path::new(actual);
+                match (expected_canonical.as_ref(), actual_path.canonicalize().ok()) {
+                    (Some(expected), Some(actual)) => *expected == actual,
+                    _ => actual_path == expected_path,
+                }
+            })
+        });
+    }
+    let agents = identity::filter_agents(
+        agents,
         &ListFilters {
-            scope: effective_scope,
-            caller_workspace,
+            scope: Scope::All,
             status,
             class: class_name,
-            workspace,
+            ..Default::default()
         },
-    )
-    .map_err(identity_error)?;
-
-    // Apply neighbors filter if requested
-    if scope_choice == ScopeChoice::Neighbors {
-        let session_id =
-            std::env::var("WARDIAN_SESSION_ID").map_err(|_| CliError::not_in_session())?;
-        let home = wardian_core::paths::wardian_home().ok_or_else(|| {
-            CliError::generic("Could not determine Wardian home (required for neighbors scope)")
-        })?;
-        agents = filter_to_neighbors(agents, &session_id, &home);
-    }
-
+    );
     render_list(&agents, &render_options(args))
-}
-
-fn resolve_live_self(
-    agents: &[wardian_core::identity::AgentIdentity],
-) -> Option<&wardian_core::identity::AgentIdentity> {
-    let session_id = std::env::var("WARDIAN_SESSION_ID").ok()?;
-    agents.iter().find(|agent| agent.uuid == session_id)
 }
 
 fn resolve_live_self_for_show(
@@ -2368,23 +2424,12 @@ fn resolve_live_self_for_show(
         .ok_or_else(|| CliError::not_found(&session_id))
 }
 
-fn caller_workspace_from_db(conn: &rusqlite::Connection, scope: Scope) -> Option<String> {
-    if scope != Scope::Workspace {
-        return None;
-    }
-    identity::resolve_self(conn)
-        .ok()
-        .and_then(|agent| agent.workspace)
-        .filter(|workspace| !workspace.is_empty())
-}
-
 fn render_options(args: &AgentArgs) -> RenderOptions {
     RenderOptions {
         fields: args.fields.as_deref().map(|fields| {
             fields
                 .split(',')
                 .map(str::trim)
-                .filter(|field| !field.is_empty())
                 .map(ToOwned::to_owned)
                 .collect()
         }),
@@ -2516,7 +2561,7 @@ mod tests {
 
     #[test]
     fn automation_node_types_json_lists_task_type() {
-        let out = render_automation_node_types(true).unwrap();
+        let out = render_automation_node_types(None, true).unwrap();
         let json: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(json["schema"], 2);
         assert!(json["node_types"]
@@ -2535,8 +2580,9 @@ mod tests {
             "---\nschema: 2\nid: bad\nname: Bad\nnodes:\n  - id: x\n    type: frobnicate\nedges: []\n---\n",
         )
         .unwrap();
-        let out = render_automation_validate(path.to_str().unwrap()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let error = render_automation_validate(path.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.code, "validation_failed");
+        let json = error.details.unwrap();
         assert_eq!(json["ok"], false);
         assert!(json["diagnostics"]
             .as_array()
@@ -2628,6 +2674,63 @@ mod tests {
         let out = render_automation_gen(&path.to_string_lossy(), GenKind::Schema, false).unwrap();
         assert!(out.contains("wrote"));
         assert!(path.exists());
+    }
+
+    #[test]
+    fn backend_codes_and_details_survive_without_a_cli_whitelist() {
+        for code in [
+            "idempotency_conflict",
+            "stale_generation",
+            "native_submitted_unconfirmed",
+            "native_capability_unavailable",
+            "future_error",
+        ] {
+            let details = serde_json::json!({"delivery_id": "delivery-1"});
+            let error = control_error(std::io::Error::other(
+                live::ControlEndpointError::with_details(
+                    code,
+                    "requires reconciliation",
+                    details.clone(),
+                ),
+            ));
+            assert_eq!(error.code, code);
+            assert_eq!(error.details.as_deref(), Some(&details));
+            assert_eq!(error.code_i32(), 1);
+        }
+    }
+
+    #[test]
+    fn snapshot_fallback_occurs_only_when_the_endpoint_is_unavailable() {
+        for kind in [
+            std::io::ErrorKind::ConnectionRefused,
+            std::io::ErrorKind::NotFound,
+        ] {
+            assert_eq!(
+                read_snapshot(Err(std::io::Error::new(kind, "offline")), || Ok(42)).unwrap(),
+                (42, "persisted")
+            );
+        }
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::InvalidData,
+        ] {
+            let result = read_snapshot::<u8>(Err(std::io::Error::new(kind, "failed")), || {
+                panic!("must not hide live errors")
+            });
+            assert!(result.is_err());
+        }
+        let rejection = std::io::Error::other(live::ControlEndpointError::new(
+            "bad_request",
+            "invalid query",
+        ));
+        let error =
+            read_snapshot::<u8>(Err(rejection), || panic!("must not hide rejection")).unwrap_err();
+        assert_eq!(error.code, "bad_request");
+        assert_eq!(
+            read_snapshot(Ok(42), || panic!("live succeeded")).unwrap(),
+            (42, "live")
+        );
     }
 
     #[test]
