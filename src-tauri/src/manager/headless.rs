@@ -600,20 +600,26 @@ pub async fn run_headless_with_options(
             .args
             .iter()
             .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox");
+        let automatic_review = launch_spec.args.iter().any(|arg| arg == "--approve-for-me");
         let sandbox_mode = launch_spec
             .args
             .iter()
             .position(|arg| arg == "--sandbox")
             .and_then(|index| launch_spec.args.get(index + 1))
             .map(String::as_str)
+            .or(automatic_review.then_some("workspace-write"))
             .unwrap_or("<bypassed>");
-        let approval_policy = launch_spec
-            .args
-            .iter()
-            .position(|arg| arg == "--ask-for-approval")
-            .and_then(|index| launch_spec.args.get(index + 1))
-            .map(String::as_str)
-            .unwrap_or("<bypassed>");
+        let approval_policy = if automatic_review {
+            "approve-for-me"
+        } else {
+            launch_spec
+                .args
+                .iter()
+                .position(|arg| arg == "--ask-for-approval")
+                .and_then(|index| launch_spec.args.get(index + 1))
+                .map(String::as_str)
+                .unwrap_or("<bypassed>")
+        };
         log_debug(&format!(
             "[Wardian] run_headless Codex policy: bypass={}, sandbox={}, approval={}",
             bypasses_sandbox, sandbox_mode, approval_policy

@@ -256,8 +256,8 @@ const rowDefinitions: SettingsRowDefinition[] = [
     category: "Agent Runtime",
     subgroup: "Codex",
     label: "Approval",
-    detail: "Default approval policy for Codex launches.",
-    keywords: ["codex", "approval", "runtime", "permissions"],
+    detail: "Default approval policy for Codex launches, including automatic review.",
+    keywords: ["codex", "approval", "runtime", "permissions", "approve for me", "automatic review"],
   },
   {
     id: "codex-full-auto",
@@ -1157,7 +1157,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               onChange={(event) => setCodexApprovalPolicy(event.target.value as typeof codex_runtime_policy.approval_policy)}
               className={optionClass}
             >
-              <option value="on-request">On request</option>
+              <option value="on-request">Ask for approval</option>
+              <option value="approve-for-me">Approve for me</option>
               <option value="untrusted">Untrusted</option>
               <option value="never">Never</option>
             </select>

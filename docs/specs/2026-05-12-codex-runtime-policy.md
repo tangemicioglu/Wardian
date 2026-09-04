@@ -17,11 +17,17 @@ Wardian stores a global Codex runtime policy in `settings/shell.json`:
 - `approval_policy`
 - `full_auto`
 
-The default policy is autonomous:
+The current default policy is bounded:
 
-- `sandbox_mode: danger-full-access`
-- `approval_policy: never`
-- `full_auto: true`
+- `sandbox_mode: workspace-write`
+- `approval_policy: on-request`
+- `full_auto: false`
+
+The approval policy also accepts the user-facing automatic-review choice
+`approve-for-me`. Wardian maps that choice to Codex's `--approve-for-me` flag;
+it is not passed as a value to `--ask-for-approval`. Codex owns the resulting
+workspace-write sandbox and routes eligible approval requests through automatic
+review.
 
 For current Codex CLI versions, Wardian maps `full_auto: true` to `--dangerously-bypass-approvals-and-sandbox`. On Windows, Wardian also passes `-c windows.sandbox="unelevated"` so a user-level `[windows].sandbox = "elevated"` Codex config cannot launch a UAC setup helper during tool execution. Wardian does not pass the older unsupported `--full-auto` flag.
 
@@ -30,8 +36,11 @@ Agent-level Codex `provider_config.sandbox_mode`, `provider_config.approval_poli
 ## Consequences
 
 - Regular agents, CLI-launched clones, queues, and workflows share the same Codex default unless an agent overrides it.
-- Default Codex launches avoid Windows sandbox setup prompts and inline approval prompts.
+- Default Codex launches stay inside the workspace sandbox and surface approval prompts to the user.
 - Users can still opt individual agents into more restrictive Codex modes through advanced agent settings.
+- Users can choose **Approve for me** for the global or per-agent approval
+  policy when they want Codex to review eligible approval requests automatically
+  while retaining the workspace-write sandbox.
 - The policy is intentionally visible in Settings so blank per-agent fields no longer look equivalent to full access.
 
 ## Verification

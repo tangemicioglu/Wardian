@@ -232,6 +232,37 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("option", { name: "On: bypass approvals and sandbox" })).toBeInTheDocument();
   });
 
+  it("offers Codex automatic review in the global approval selection", () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+
+    expect(screen.getByLabelText("Codex approval")).toHaveValue("on-request");
+    expect(screen.getByRole("option", { name: "Approve for me" })).toBeInTheDocument();
+    expect(
+      Array.from(screen.getByLabelText("Codex approval").querySelectorAll("option")).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["on-request", "approve-for-me", "untrusted", "never"]);
+
+    fireEvent.change(screen.getByLabelText("Codex approval"), {
+      target: { value: "approve-for-me" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Agent Runtime" }));
+
+    return waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_shell_settings", {
+        settings: expect.objectContaining({
+          overrides: expect.objectContaining({
+            codex_runtime_policy: expect.objectContaining({
+              approval_policy: "approve-for-me",
+            }),
+          }),
+        }),
+      });
+    });
+  });
+
   it("saves Codex launch workspace trust as an explicit off-by-default setting", async () => {
     render(<SettingsModal isOpen onClose={vi.fn()} />);
 

@@ -258,6 +258,11 @@ impl CodexProvider {
                 args.push(r#"windows.sandbox="unelevated""#.into());
             }
             args.push("--dangerously-bypass-approvals-and-sandbox".into());
+        } else if effective_policy.approval_policy == "approve-for-me" {
+            // Codex's automatic-review preset owns both the approval reviewer
+            // and its workspace-write sandbox. Do not pass it through the
+            // value-taking approval flag; that would be rejected by Codex.
+            args.push("--approve-for-me".into());
         } else {
             if !effective_policy.sandbox_mode.trim().is_empty() {
                 args.push("--sandbox".into());
@@ -382,7 +387,12 @@ fn effective_codex_runtime_policy(
         .approval_policy
         .as_deref()
         .map(str::trim)
-        .filter(|value| matches!(*value, "untrusted" | "on-request" | "never"));
+        .filter(|value| {
+            matches!(
+                *value,
+                "untrusted" | "on-request" | "approve-for-me" | "never"
+            )
+        });
     let explicit_policy = explicit_sandbox.is_some() || explicit_approval.is_some();
     let full_auto = config.full_auto.unwrap_or({
         if explicit_policy {
@@ -773,6 +783,41 @@ mod tests {
         assert!(args.contains(&"--ask-for-approval".to_string()));
         assert!(args.contains(&"on-request".to_string()));
         assert!(!args.contains(&"--full-auto".to_string()));
+    }
+
+    #[test]
+    fn spawn_args_use_codex_automatic_review_policy() {
+        let p = make_provider();
+        let config = AgentConfig::default();
+        let policy = CodexRuntimePolicy {
+            approval_policy: "approve-for-me".into(),
+            ..Default::default()
+        };
+
+        let args = p.spawn_args_with_runtime_policy(&config, false, &policy);
+
+        assert!(args.contains(&"--approve-for-me".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
+    }
+
+    #[test]
+    fn explicit_codex_automatic_review_override_uses_the_same_launch_flag() {
+        let p = make_provider();
+        let config = AgentConfig {
+            provider: "codex".into(),
+            provider_config: ProviderConfig::Codex(CodexProviderConfig {
+                approval_policy: Some("approve-for-me".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let args = p.get_spawn_args(&config, false);
+
+        assert!(args.contains(&"--approve-for-me".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
     }
 
     #[cfg(target_os = "windows")]
