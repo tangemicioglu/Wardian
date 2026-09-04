@@ -357,6 +357,7 @@ export const RemoteAutomationsView: React.FC = () => {
                     ? <RunCard key={`attention:${item.value.run_id}`} run={item.value} onOpen={openDetail} />
                     : <ScheduleCard key={`attention:${item.value.id}`} schedule={item.value} onOpen={openDetail} />
                 ))}
+                {filter === "attention" && snapshot.active_runs_next_offset !== null ? <LoadMore label="Load more active runs" loading={loadingPage === "active"} onClick={() => void loadMore("active")} /> : null}
               </MonitorSection>
             ) : null}
             {filter === "attention" && attention.length === 0 ? <EmptyState>Nothing needs attention.</EmptyState> : null}

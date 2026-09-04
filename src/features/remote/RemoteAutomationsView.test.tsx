@@ -207,4 +207,27 @@ describe("RemoteAutomationsView", () => {
 
     await waitFor(() => expect(remoteClient.loadAutomationMonitor).toHaveBeenCalledTimes(2));
   });
+
+  it("offers more active runs from the attention filter when the first page is truncated", async () => {
+    const first = snapshot();
+    first.active_runs_truncated = true;
+    first.active_runs_next_offset = 25;
+    const second = snapshot();
+    second.active_runs = [
+      { ...snapshot().active_runs[0], run_id: "approval-2", automation_name: "Nightly security sweep" },
+    ];
+    second.active_runs_truncated = false;
+    second.active_runs_next_offset = null;
+    vi.mocked(remoteClient.loadAutomationMonitor)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    render(<RemoteAutomationsView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Attention" }));
+    await userEvent.click(screen.getByRole("button", { name: "Load more active runs" }));
+
+    expect(await screen.findByText("Nightly security sweep")).toBeVisible();
+    expect(screen.getByText("1 active runs loaded.")).toBeInTheDocument();
+    expect(remoteClient.loadAutomationMonitor).toHaveBeenLastCalledWith({ active_offset: 25 });
+  });
 });
