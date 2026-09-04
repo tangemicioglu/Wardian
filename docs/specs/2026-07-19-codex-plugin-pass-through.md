@@ -18,6 +18,11 @@ Keep the existing base-plus-agent-overlay configuration projection, but treat
 the resulting per-agent Codex home as the plugin source of truth:
 
 - Wardian does not select, install, enable, disable, or remove Codex plugins.
+- Wardian projects the native marketplace catalogs and plugin implementation
+  cache into each agent home as provider-owned directory links, without
+  sharing agent databases, sessions, or configuration files.
+- Native marketplace and MCP runtime records refresh stale provider paths in an
+  existing agent overlay; agent-only MCP entries remain available.
 - Wardian does not append global `--disable plugins` or `--disable apps`
   switches to normal Codex launches.
 - The existing approval settings remain unchanged; this decision does not add a

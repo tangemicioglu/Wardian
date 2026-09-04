@@ -629,9 +629,13 @@ pub(crate) fn sync_codex_agent_home(
         }
     }
 
+    sync_codex_provider_assets(real_codex_home, projected_home)?;
+
     reconcile_codex_config(
         &real_codex_home.join("config.toml"),
         &projected_home.join("config.toml"),
+        real_codex_home,
+        projected_home,
     )?;
 
     sync_codex_windows_sandbox_support(real_codex_home, projected_home)?;
@@ -660,6 +664,13 @@ pub(crate) fn sync_codex_agent_home(
 }
 
 const CODEX_SHARED_HOME_FILES: &[&str] = &["auth.json", "cap_sid"];
+
+// Plugin packages and marketplace catalogs are provider-owned assets.
+// Projecting them keeps the agent's plugin implementation surface aligned with
+// the native Codex installation without sharing agent databases or config.
+const CODEX_PROVIDER_ASSET_DIRECTORIES: &[&str] =
+    &[".tmp/bundled-marketplaces", ".tmp/plugins", "plugins/cache"];
+const CODEX_PROVIDER_ASSET_FILES: &[&str] = &[".tmp/plugins.sha"];
 
 const CODEX_INDEX_FILES: &[&str] = &["session_index.jsonl", "history.jsonl"];
 const CODEX_INDEX_LOCK_FILE: &str = ".wardian-codex-index.lock";
@@ -1143,11 +1154,14 @@ fn read_codex_jsonl_records(
     Ok((records, needs_repair))
 }
 
-/// Compose the shared Codex configuration into an agent-local overlay without
-/// replacing agent-owned keys such as projects and local overrides.
+/// Compose the shared Codex configuration into an agent-local overlay,
+/// refreshing provider-owned marketplace/MCP records without replacing
+/// agent-owned keys such as projects and local overrides.
 fn reconcile_codex_config(
     base_config_path: &std::path::Path,
     agent_config_path: &std::path::Path,
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
 ) -> Result<(), String> {
     let base_content = match std::fs::read_to_string(base_config_path) {
         Ok(content) => content,
@@ -1171,11 +1185,16 @@ fn reconcile_codex_config(
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| format!("Could not parse agent Codex config.toml: {error}"))?;
 
-    merge_codex_config_items(base.as_item(), agent.as_item_mut());
-    std::fs::write(agent_config_path, agent.to_string()).map_err(|error| error.to_string())
+    merge_codex_config_items(base.as_item(), agent.as_item_mut(), real_codex_home);
+    let rendered = rewrite_codex_home_paths(&agent.to_string(), real_codex_home, projected_home);
+    std::fs::write(agent_config_path, rendered).map_err(|error| error.to_string())
 }
 
-fn merge_codex_config_items(base: &toml_edit::Item, agent: &mut toml_edit::Item) {
+fn merge_codex_config_items(
+    base: &toml_edit::Item,
+    agent: &mut toml_edit::Item,
+    real_codex_home: &std::path::Path,
+) {
     let (Some(base_table), Some(agent_table)) = (base.as_table(), agent.as_table_mut()) else {
         if agent.is_none() {
             *agent = base.clone();
@@ -1188,8 +1207,147 @@ fn merge_codex_config_items(base: &toml_edit::Item, agent: &mut toml_edit::Item)
         if key == "projects" || key == "wardian" {
             continue;
         }
-        merge_codex_config_items(base_value, &mut agent_table[key]);
+        if key == "marketplaces" {
+            merge_codex_provider_table(base_value, &mut agent_table[key], false, real_codex_home);
+            continue;
+        }
+        if key == "mcp_servers" {
+            merge_codex_provider_table(base_value, &mut agent_table[key], true, real_codex_home);
+            continue;
+        }
+        if key == "hooks" {
+            merge_codex_hooks_table(base_value, &mut agent_table[key], real_codex_home);
+            continue;
+        }
+        merge_codex_config_items(base_value, &mut agent_table[key], real_codex_home);
     }
+}
+
+fn merge_codex_hooks_table(
+    base: &toml_edit::Item,
+    agent: &mut toml_edit::Item,
+    real_codex_home: &std::path::Path,
+) {
+    let (Some(base_table), Some(agent_table)) = (base.as_table(), agent.as_table_mut()) else {
+        if agent.is_none() {
+            *agent = base.clone();
+        }
+        return;
+    };
+
+    for (key, base_value) in base_table.iter() {
+        if key == "state" {
+            merge_codex_provider_table(base_value, &mut agent_table[key], false, real_codex_home);
+        } else {
+            merge_codex_config_items(base_value, &mut agent_table[key], real_codex_home);
+        }
+    }
+}
+
+fn merge_codex_provider_table(
+    base: &toml_edit::Item,
+    agent: &mut toml_edit::Item,
+    remove_stale_servers: bool,
+    real_codex_home: &std::path::Path,
+) {
+    let Some(base_table) = base.as_table() else {
+        if agent.is_none() {
+            *agent = base.clone();
+        }
+        return;
+    };
+
+    let Some(agent_table) = agent.as_table_mut() else {
+        *agent = base.clone();
+        return;
+    };
+
+    if remove_stale_servers {
+        let stale_keys = agent_table
+            .iter()
+            .filter(|(key, value)| {
+                base_table.get(key).is_none() && is_codex_managed_mcp_server(value, real_codex_home)
+            })
+            .map(|(key, _)| key.to_string())
+            .collect::<Vec<_>>();
+        for key in stale_keys {
+            agent_table.remove(&key);
+        }
+    }
+
+    // Native Codex owns these provider-generated records. Agent-only entries
+    // remain available, while matching native entries refresh stale runtimes.
+    for (key, base_value) in base_table {
+        agent_table[key] = base_value.clone();
+    }
+}
+
+fn is_codex_managed_mcp_server(item: &toml_edit::Item, real_codex_home: &std::path::Path) -> bool {
+    let item_text = item.to_string().replace('\\', "/").to_ascii_lowercase();
+    let native_home = real_codex_home
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+
+    item_text.contains(&native_home)
+        || item_text.contains("/openai/codex/runtimes/")
+        || item_text.contains("/windowsapps/openai.codex_")
+        || item_text.contains("cua_node")
+}
+
+fn rewrite_codex_home_paths(
+    content: &str,
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
+) -> String {
+    let real_text = real_codex_home.to_string_lossy().to_string();
+    let projected_text = projected_home.to_string_lossy().to_string();
+    let real_slash = real_text.replace('\\', "/");
+    let projected_slash = projected_text.replace('\\', "/");
+    let real_verbatim = format!(r"\\?\{}", real_text.trim_start_matches(r"\\?\"));
+    let projected_verbatim = format!(r"\\?\{}", projected_text.trim_start_matches(r"\\?\"));
+    let real_toml = real_text.replace('\\', "\\\\");
+    let projected_toml = projected_text.replace('\\', "\\\\");
+    let real_verbatim_toml = real_verbatim.replace('\\', "\\\\");
+    let projected_verbatim_toml = projected_verbatim.replace('\\', "\\\\");
+
+    content
+        .replace(&real_verbatim_toml, &projected_verbatim_toml)
+        .replace(&real_verbatim, &projected_verbatim)
+        .replace(&real_toml, &projected_toml)
+        .replace(&real_text, &projected_text)
+        .replace(&real_slash, &projected_slash)
+}
+
+fn sync_codex_provider_assets(
+    real_codex_home: &std::path::Path,
+    projected_home: &std::path::Path,
+) -> Result<(), String> {
+    for relative_path in CODEX_PROVIDER_ASSET_DIRECTORIES {
+        let source = real_codex_home.join(relative_path);
+        if !source.is_dir() {
+            continue;
+        }
+        let target = projected_home.join(relative_path);
+        project_directory_link(&source, &target)?;
+    }
+
+    for relative_path in CODEX_PROVIDER_ASSET_FILES {
+        let source = real_codex_home.join(relative_path);
+        if !source.is_file() {
+            continue;
+        }
+        let target = projected_home.join(relative_path);
+        if target.exists() || target.symlink_metadata().is_ok() {
+            remove_existing_projection_path(&target)?;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        project_file(&source, &target)?;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -1339,7 +1497,6 @@ pub(crate) fn sync_codex_windows_sandbox_support(
     Ok(())
 }
 
-#[cfg(windows)]
 fn project_directory_link(
     source: &std::path::Path,
     target: &std::path::Path,
@@ -1348,7 +1505,7 @@ fn project_directory_link(
         return Ok(());
     }
 
-    remove_projected_path(target)?;
+    remove_existing_projection_path(target)?;
     create_directory_link(source, target)
 }
 
@@ -1391,8 +1548,10 @@ fn remove_existing_projection_path(path: &std::path::Path) -> Result<(), String>
         Err(error) => return Err(error.to_string()),
     };
 
-    if metadata.file_type().is_symlink() || metadata.is_dir() {
-        std::fs::remove_dir(path).map_err(|e| e.to_string())
+    if metadata.file_type().is_symlink() {
+        std::fs::remove_file(path).map_err(|e| e.to_string())
+    } else if metadata.is_dir() {
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
     } else {
         std::fs::remove_file(path).map_err(|e| e.to_string())
     }
@@ -1985,6 +2144,80 @@ mod tests {
     }
 
     #[test]
+    fn codex_home_projection_shares_provider_assets_without_sharing_agent_state() {
+        let root = unique_temp_dir("codex-home-provider-assets");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        let wardian_skills = root.join("wardian-skills");
+        let bundled_marketplace = real_home
+            .join(".tmp")
+            .join("bundled-marketplaces")
+            .join("plugins")
+            .join("example");
+        let remote_marketplace = real_home
+            .join(".tmp")
+            .join("plugins")
+            .join("plugins")
+            .join("remote-example");
+        let plugin_cache = real_home
+            .join("plugins")
+            .join("cache")
+            .join("example")
+            .join("1.0.0");
+
+        std::fs::create_dir_all(&bundled_marketplace).expect("create bundled marketplace");
+        std::fs::create_dir_all(&remote_marketplace).expect("create remote marketplace");
+        std::fs::create_dir_all(&plugin_cache).expect("create plugin cache");
+        std::fs::create_dir_all(&projected_home).expect("create projected home");
+        std::fs::create_dir_all(&wardian_skills).expect("create wardian skills");
+        std::fs::write(
+            real_home.join(".tmp").join("plugins.sha"),
+            "provider-assets",
+        )
+        .expect("write provider asset marker");
+        std::fs::write(bundled_marketplace.join("plugin.json"), "bundled")
+            .expect("write bundled plugin");
+        std::fs::write(remote_marketplace.join("plugin.json"), "remote")
+            .expect("write remote plugin");
+        std::fs::write(plugin_cache.join("plugin.json"), "cached").expect("write cached plugin");
+        std::fs::write(real_home.join("state_5.sqlite"), "agent state")
+            .expect("write private state");
+
+        sync_codex_agent_home(&real_home, &projected_home, &wardian_skills)
+            .expect("sync codex agent home");
+
+        for relative_path in [".tmp/bundled-marketplaces", ".tmp/plugins", "plugins/cache"] {
+            assert!(
+                projected_link_matches_target(
+                    &projected_home.join(relative_path),
+                    &real_home.join(relative_path)
+                ),
+                "provider asset directory should be projected: {relative_path}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(projected_home.join(".tmp").join("plugins.sha"))
+                .expect("read provider asset marker"),
+            "provider-assets"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                projected_home
+                    .join("plugins")
+                    .join("cache")
+                    .join("example")
+                    .join("1.0.0")
+                    .join("plugin.json")
+            )
+            .expect("read cached plugin through projection"),
+            "cached"
+        );
+        assert!(!projected_home.join("state_5.sqlite").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn codex_sessions_projection_migrates_without_renaming_and_is_idempotent() {
         let root = unique_temp_dir("codex-sessions-projection");
         let real_home = root.join("real-codex-home");
@@ -2230,17 +2463,27 @@ mod tests {
         let root = unique_temp_dir("codex-home-merge-config");
         let real_home = root.join("real-codex-home");
         let projected_home = root.join("projected-home");
+        let real_home_text = real_home.to_string_lossy().replace('\\', "/");
+        let projected_home_text = projected_home.to_string_lossy().replace('\\', "/");
+        let real_home_toml = real_home.to_string_lossy().replace('\\', "\\\\");
+        let projected_home_toml = projected_home.to_string_lossy().replace('\\', "\\\\");
+        let real_home_verbatim = format!(r"\\?\{}", real_home.to_string_lossy());
+        let projected_home_verbatim = format!(r"\\?\{}", projected_home.to_string_lossy());
 
         std::fs::create_dir_all(&real_home).expect("create real codex home");
         std::fs::create_dir_all(&projected_home).expect("create projected codex home");
         std::fs::write(
             real_home.join("config.toml"),
-            "model = \"gpt-5\"\n[mcp_servers.shared]\ncommand = \"shared\"\n",
+            format!(
+                "model = \"gpt-5\"\n[marketplaces.shared]\nsource = \"{real_home_text}/marketplace\"\nlast_updated = \"base\"\n[marketplaces.backslash]\nsource = \"{real_home_toml}\\\\marketplace\"\n[marketplaces.verbatim]\nsource = '{real_home_verbatim}\\marketplace'\n[mcp_servers.shared]\ncommand = \"{real_home_text}/runtime.exe\"\n[hooks.state.shared]\ntrusted_hash = \"base\"\n"
+            ),
         )
         .expect("write base config");
         std::fs::write(
             projected_home.join("config.toml"),
-            "model = \"agent-model\"\n[projects.\"/agent\"]\ntrust_level = \"trusted\"\n",
+            format!(
+                "model = \"agent-model\"\n[projects.\"/agent\"]\ntrust_level = \"trusted\"\n[marketplaces.shared]\nsource = \"stale-marketplace\"\nlast_updated = \"stale\"\n[mcp_servers.shared]\ncommand = \"stale-runtime\"\n[mcp_servers.agent_only]\ncommand = \"agent-custom\"\n[mcp_servers.stale_provider]\ncommand = \"{real_home_text}/plugins/cache/stale/mcp.exe\"\nenabled = false\n[hooks.state.shared]\ntrusted_hash = \"stale\"\n"
+            ),
         )
         .expect("write agent config");
         std::fs::write(projected_home.join("history.jsonl"), "agent history")
@@ -2253,7 +2496,30 @@ mod tests {
         let config = std::fs::read_to_string(projected_home.join("config.toml"))
             .expect("read reconciled config");
         assert!(config.contains("model = \"agent-model\""), "{config}");
-        assert!(config.contains("[mcp_servers.shared]"), "{config}");
+        assert!(
+            config.contains(&format!("source = \"{projected_home_text}/marketplace\"")),
+            "{config}"
+        );
+        assert!(config.contains("last_updated = \"base\""), "{config}");
+        assert!(config.contains("trusted_hash = \"base\""), "{config}");
+        assert!(
+            config.contains(&format!(
+                "source = \"{projected_home_toml}\\\\marketplace\""
+            )),
+            "{config}"
+        );
+        assert!(
+            config.contains(&format!(
+                "source = '{projected_home_verbatim}\\marketplace'"
+            )),
+            "{config}"
+        );
+        assert!(
+            config.contains(&format!("command = \"{projected_home_text}/runtime.exe\"")),
+            "{config}"
+        );
+        assert!(config.contains("[mcp_servers.agent_only]"), "{config}");
+        assert!(!config.contains("stale_provider"), "{config}");
         assert!(config.contains("trust_level = \"trusted\""), "{config}");
         assert_eq!(
             std::fs::read_to_string(projected_home.join("history.jsonl")).expect("read history"),

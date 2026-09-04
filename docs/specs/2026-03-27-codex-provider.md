@@ -29,9 +29,16 @@ We will add Codex as a first-class provider in the Rust backend and expose it in
 
 ### 3. Codex Native Projection
 - Codex receives a projected `CODEX_HOME` inside the habitat rather than reading Wardian context directly from `--add-dir`.
-- The projected Codex home preserves only shared native Codex profile files from the user's real Codex home: `auth.json`, `config.toml`, and `cap_sid`.
+- The projected Codex home preserves shared native Codex profile files from the
+  user's real Codex home: `auth.json`, `config.toml`, and `cap_sid`. Native
+  marketplace catalogs (`.tmp/bundled-marketplaces`, `.tmp/plugins`) and the
+  provider plugin cache (`plugins/cache`) are also projected as directory
+  links so the isolated home can resolve the current provider-owned plugin
+  implementation surface.
 - Agent-local Codex homes retain the provider's `history.jsonl` and `session_index.jsonl` inputs, while Wardian observes complete records into the native central copies. The `sessions/**` tree is projected from the native Codex home through a directory link, with existing local rollouts migrated without renaming.
-- SQLite state, provider logs, caches, and other runtime files remain local to each agent. SQLite databases and WAL/SHM sidecars are never shared or hardlinked.
+- SQLite state, provider logs, and other runtime files remain local to each
+  agent. SQLite databases and WAL/SHM sidecars are never shared or hardlinked;
+  only the provider-owned marketplace catalogs and plugin cache are linked.
 - `auth.json` and `cap_sid` are copied inward from the native Codex home only; they are never copied back outward.
 - On Windows, Codex elevated sandbox support is projected narrowly: `.sandbox-secrets` and `.sandbox-bin` are shared, and `.sandbox/setup_marker.json` is copied. The `.sandbox` runtime directory itself remains local so sandbox logs and setup errors are not merged across agents.
 - The projected `skills/` directory overlays Wardian’s merged skill set on top of the user’s existing Codex skills and system skills.
