@@ -348,9 +348,10 @@ export const AdvancedSettings: React.FC<AdvancedSettingsProps> = ({
                       onChange={(e) => updateProviderConfigField("approval_policy", (e.target.value as AgentConfig["codex_approval_policy"]) || undefined)}
                       >
                           <option value="">(None - Inherit Default)</option>
-                          <option value="untrusted">untrusted</option>
-                          <option value="on-request">on-request</option>
-                          <option value="never">never</option>
+                          <option value="on-request">Ask for approval</option>
+                          <option value="approve-for-me">Approve for me</option>
+                          <option value="untrusted">Untrusted</option>
+                          <option value="never">Never</option>
                       </select>
                   </div>
 

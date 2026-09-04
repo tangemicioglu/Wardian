@@ -178,6 +178,27 @@ test.describe("Wardian Core Feature Tests", () => {
     expect(options).toBeGreaterThan(0);
   });
 
+  test("9a. Settings - Codex automatic review policy", async () => {
+    const dialog = await openSettings(page);
+    await dialog.getByRole("button", { name: "Agent Runtime" }).click();
+
+    const approval = dialog.getByLabel("Codex approval");
+    await expect(approval).toHaveValue("on-request");
+    await expect(approval.locator("option")).toContainText(["Approve for me"]);
+    await approval.selectOption("approve-for-me");
+    await expect(approval).toHaveValue("approve-for-me");
+    await dialog.screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "codex-approval-policy",
+        "2026-09-04",
+        "automatic-review-selection.png",
+      ),
+      animations: "disabled",
+    });
+  });
+
   test("10. Library - Create class entry form", async () => {
     await openSurface(page, "library");
     const library = surfacePanel(page, "library");

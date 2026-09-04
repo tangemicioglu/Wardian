@@ -225,6 +225,12 @@ folder as trusted.
 
 ### Approval and status handling
 
+Wardian's Codex approval setting is shared by global runtime defaults and
+explicit per-agent overrides. `on-request`, `untrusted`, and `never` are passed
+through `--ask-for-approval`; **Approve for me** is translated to Codex's
+`--approve-for-me` flag, which selects the workspace-write sandbox and automatic
+review. It is never passed as an argument value to `--ask-for-approval`.
+
 Codex emits several different event shapes across live PTY output and persisted session logs.
 
 Wardian treats these as the important lifecycle markers:

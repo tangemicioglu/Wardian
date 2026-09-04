@@ -205,6 +205,17 @@ describe('Codex runtime defaults', () => {
     );
   });
 
+  it('preserves the Codex automatic-review approval policy', () => {
+    expect(normalizeCodexRuntimePolicy({
+      ...DEFAULT_CODEX_RUNTIME_POLICY,
+      approval_policy: 'approve-for-me',
+    })).toMatchObject({
+      sandbox_mode: 'workspace-write',
+      approval_policy: 'approve-for-me',
+      full_auto: false,
+    });
+  });
+
   it('saves Codex workspace trust only when explicitly enabled', async () => {
     mockedInvoke.mockReset();
     mockedInvoke.mockResolvedValueOnce({

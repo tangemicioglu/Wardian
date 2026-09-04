@@ -270,7 +270,22 @@ process.
 The **Codex** subsection contains Codex-specific runtime defaults. These apply
 when Codex agents do not set explicit advanced sandbox or approval overrides.
 Wardian's default Codex policy is workspace write access with approval prompts
-and autonomous mode off.
+and autonomous mode off. The **Approval** selector also includes **Approve for
+me**, which routes eligible approval requests through Codex automatic review
+using its workspace-write sandbox. This is distinct from **Autonomous mode**:
+automatic review still evaluates approval requests, while autonomous mode
+bypasses approvals and sandboxing entirely.
+
+The Codex approval choices map to the provider launch behavior:
+
+- **Ask for approval** uses Codex's `on-request` policy and surfaces requests
+  to the user.
+- **Approve for me** uses Codex's `--approve-for-me` option. It does not pass
+  the value through `--ask-for-approval`.
+- **Untrusted** and **Never** retain their Codex approval-policy behavior.
+
+These settings affect future Codex launches and resumes. An explicit per-agent
+approval override in Advanced Settings takes precedence over the global choice.
 
 **Trust launch workspaces** is off by default. When enabled, new Codex launches
 mark the agent's configured workspace as a trusted Codex project for that

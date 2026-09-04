@@ -104,6 +104,32 @@ describe("AdvancedSettings", () => {
     });
   });
 
+  it("offers Codex automatic review as a per-agent approval override", () => {
+    const updateField = vi.fn();
+
+    render(
+      <AdvancedSettings
+        config={{ provider: "codex", provider_config: { type: "codex" } }}
+        updateField={updateField}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Advanced Settings" }));
+    expect(
+      Array.from(screen.getByLabelText("Approval Policy").querySelectorAll("option")).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["", "on-request", "approve-for-me", "untrusted", "never"]);
+    fireEvent.change(screen.getByLabelText("Approval Policy"), {
+      target: { value: "approve-for-me" },
+    });
+
+    expect(updateField).toHaveBeenCalledWith("provider_config", {
+      type: "codex",
+      approval_policy: "approve-for-me",
+    });
+  });
+
   it("only renders controls for the selected provider", () => {
     const updateField = vi.fn();
 

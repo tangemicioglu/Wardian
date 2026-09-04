@@ -7,7 +7,7 @@ use wardian_core::models::AgentSessionPersistence;
 
 const SHELL_SETTINGS_FILE: &str = "settings/shell.json";
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
-const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never"];
+const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "approve-for-me", "never"];
 const DEFAULT_PROVIDER_VALUES: &[&str] = &[
     "auto",
     "claude",
@@ -1356,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_settings_default_codex_policy_is_autonomous() {
+    fn shell_settings_default_codex_policy_is_bounded() {
         let settings = ShellSettings::default();
 
         assert_eq!(
@@ -1484,6 +1484,33 @@ mod tests {
         let loaded = load_shell_settings_from_path(&path).expect("load settings");
 
         assert_eq!(loaded.codex_runtime_policy, CodexRuntimePolicy::default());
+    }
+
+    #[test]
+    fn shell_settings_loads_codex_automatic_review_policy() {
+        let temp_dir = tempdir().expect("temp dir");
+        let path = temp_dir.path().join("shell_settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": 2,
+              "overrides": {
+                "codex_runtime_policy": {
+                  "approval_policy": "approve-for-me"
+                }
+              }
+            }"#,
+        )
+        .expect("write settings");
+
+        let loaded = load_shell_settings_from_path(&path).expect("load settings");
+
+        assert_eq!(
+            loaded.codex_runtime_policy.approval_policy,
+            "approve-for-me"
+        );
+        assert_eq!(loaded.codex_runtime_policy.sandbox_mode, "workspace-write");
+        assert!(!loaded.codex_runtime_policy.full_auto);
     }
 
     #[test]
