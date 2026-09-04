@@ -43,6 +43,14 @@ impl IngestOutcome {
 pub enum IngestError {
     #[error("no telemetry source for provider {0}")]
     UnsupportedProvider(String),
+    #[error("telemetry source {source_key} is owned by agent {owner}, not {claimant}")]
+    SourceOwnership {
+        source_key: String,
+        owner: String,
+        claimant: String,
+    },
+    #[error("telemetry source returned facts for the wrong agent: {0}")]
+    InvalidFacts(String),
     #[error(transparent)]
     Source(#[from] SourceError),
     #[error("telemetry store error: {0}")]
@@ -76,6 +84,15 @@ pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOut
     let source_path = canonical_path(&ctx.path).to_string_lossy().to_string();
     let key = source_key(&ctx.provider, &ctx.session_id, &source_path);
     let existing = load_source_state(conn, &key)?;
+    if let Some(existing) = &existing {
+        if existing.session_id != ctx.session_id {
+            return Err(IngestError::SourceOwnership {
+                source_key: key,
+                owner: existing.session_id.clone(),
+                claimant: ctx.session_id.clone(),
+            });
+        }
+    }
 
     // Two reasons to start over. A parser version bump means previously
     // extracted facts may be wrong; a changed fingerprint means the cursor
@@ -95,6 +112,7 @@ pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOut
     let cursor_before = cursor.value;
 
     let (facts, next_cursor) = source.read_since(ctx, cursor, carry)?;
+    validate_fact_ownership(ctx, &facts)?;
 
     let (last_size, last_modified) = file_stats(&ctx.path);
     let state = SourceState {
@@ -160,6 +178,45 @@ pub fn ingest_source(conn: &Connection, ctx: &SourceContext) -> Result<IngestOut
         cursor_before,
         cursor_after: next_cursor.value,
     })
+}
+
+fn validate_fact_ownership(ctx: &SourceContext, facts: &ParsedFacts) -> Result<(), IngestError> {
+    if let Some(foreign) = facts
+        .turns
+        .iter()
+        .find(|fact| fact.session_id != ctx.session_id || fact.provider != ctx.provider)
+    {
+        return Err(IngestError::InvalidFacts(format!(
+            "turn {} belongs to {}/{} but source context is {}/{}",
+            foreign.event_key, foreign.provider, foreign.session_id, ctx.provider, ctx.session_id
+        )));
+    }
+    if let Some(foreign) = facts
+        .edits
+        .iter()
+        .find(|fact| fact.session_id != ctx.session_id || fact.provider != ctx.provider)
+    {
+        return Err(IngestError::InvalidFacts(format!(
+            "edit {} belongs to {}/{} but source context is {}/{}",
+            foreign.event_key, foreign.provider, foreign.session_id, ctx.provider, ctx.session_id
+        )));
+    }
+    if let Some(foreign) = facts
+        .intervals
+        .iter()
+        .find(|fact| fact.session_id != ctx.session_id || fact.provider != ctx.provider)
+    {
+        return Err(IngestError::InvalidFacts(format!(
+            "interval {}..{} belongs to {}/{} but source context is {}/{}",
+            foreign.started_at,
+            foreign.ended_at,
+            foreign.provider,
+            foreign.session_id,
+            ctx.provider,
+            ctx.session_id
+        )));
+    }
+    Ok(())
 }
 
 /// Turn a source's output into activity intervals.
@@ -320,6 +377,46 @@ mod tests {
         assert_eq!(outcome.turns, 1);
         assert!(outcome.advanced());
         assert!(outcome.buckets_recomputed >= 1);
+    }
+
+    #[test]
+    fn a_shared_file_cannot_be_ingested_under_a_second_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{TURN_CONTEXT}\n{}\n",
+            token_count("2026-08-13T18:42:49.628Z", 100)
+        );
+        let path = write_log(dir.path(), &contents);
+        let conn = db();
+        let physical = canonical_path(&path).to_string_lossy().to_string();
+        let key = source_key("codex", "agent-a", &physical);
+        conn.execute(
+            "INSERT INTO telemetry_sources(
+                 source_key, source_path, session_id, provider, source_kind,
+                 cursor_kind, cursor_value, parser_version
+             ) VALUES (?1,?2,'agent-a','codex','jsonl','byte_offset',0,2)",
+            params![key, physical],
+        )
+        .unwrap();
+
+        let err = ingest_source(&conn, &SourceContext::new("agent-b", "codex", &path)).unwrap_err();
+        assert!(matches!(
+            err,
+            IngestError::SourceOwnership {
+                owner,
+                claimant,
+                ..
+            } if owner == "agent-a" && claimant == "agent-b"
+        ));
+        assert_eq!(
+            conn.query_row(
+                "SELECT session_id FROM telemetry_sources WHERE source_key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "agent-a"
+        );
     }
 
     #[test]

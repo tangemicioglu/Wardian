@@ -1,16 +1,18 @@
 //! `wardian telemetry` — read the habitat telemetry store from a shell.
 //!
 //! Ingest belongs to the running app, which owns the cursors; a CLI that
-//! advanced them too would let two writers race for the same source. The CLI
-//! remains read-only; destructive telemetry maintenance is owned by the core
-//! application service.
+//! advanced them too would let two writers race for the same source. Summary
+//! remains read-only. Attribution recovery is explicit and requires both an
+//! operator-selected database and a backup destination.
 
 use crate::args::{TelemetryArgs, TelemetryCommand};
 use crate::errors::CliError;
 use crate::open_db;
+use std::path::Path;
 use wardian_core::telemetry::horizon::{resolve_horizon, Horizon, HorizonWindow};
 use wardian_core::telemetry::models::{ActiveTime, BreakdownRow, TokenCounts};
 use wardian_core::telemetry::query::{breakdown, latest_limits, summary, Dimension};
+use wardian_core::telemetry::recovery::{inspect_attribution, repair_attribution};
 
 pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
     match args.command {
@@ -54,7 +56,52 @@ pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
                 "limits": limits,
             }))
         }
+        TelemetryCommand::Repair { db, backup, apply } => {
+            if apply {
+                let backup = backup.ok_or_else(|| {
+                    CliError::generic(
+                        "--backup is required with --apply; choose a new or existing verified backup path",
+                    )
+                })?;
+                let conn = open_telemetry_db(&db, false)?;
+                let report = repair_attribution(&conn, &backup).map_err(db_error)?;
+                render_json(serde_json::json!({
+                    "schema": 1,
+                    "mode": "apply",
+                    "database": db,
+                    "backup": backup,
+                    "report": report,
+                }))
+            } else {
+                let conn = open_telemetry_db(&db, true)?;
+                let status = inspect_attribution(&conn).map_err(db_error)?;
+                render_json(serde_json::json!({
+                    "schema": 1,
+                    "mode": "dry_run",
+                    "database": db,
+                    "status": status,
+                }))
+            }
+        }
     }
+}
+
+fn open_telemetry_db(path: &Path, read_only: bool) -> Result<rusqlite::Connection, CliError> {
+    if !path.exists() {
+        return Err(CliError::db_unavailable(format!(
+            "state.db was not found at {}",
+            path.display()
+        )));
+    }
+    let conn = if read_only {
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    } else {
+        rusqlite::Connection::open(path)
+    }
+    .map_err(|error| CliError::db_unavailable(error.to_string()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))
+        .map_err(db_error)?;
+    Ok(conn)
 }
 
 /// Matches the Dashboard, so the two do not disagree about where the tail ends.
@@ -146,6 +193,8 @@ fn render_json(body: serde_json::Value) -> Result<String, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
 
     #[test]
     fn horizon_names_are_accepted_in_both_spellings() {
@@ -224,5 +273,58 @@ mod tests {
         let json = row_json(&row);
         assert_eq!(json["processed_tokens"], 2_357_271);
         assert_eq!(json["tokens"]["cache_write_tokens"], 1_885_871);
+    }
+
+    #[test]
+    fn repair_command_dry_runs_read_only_then_applies_with_backup() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        let backup_path = temp.path().join("telemetry-before-repair.db");
+        let conn = Connection::open(&db_path).unwrap();
+        wardian_core::telemetry::run_telemetry_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_sources(
+                 source_key, source_path, session_id, provider, source_kind,
+                 cursor_kind, cursor_value
+             ) VALUES ('codex|rollout.jsonl','rollout.jsonl','agent-a',
+                       'codex','jsonl','byte_offset',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_turns(
+                 event_key, session_id, provider, ended_at, source_key, source_path
+             ) VALUES ('foreign-turn','agent-b','codex',
+                       '2026-09-01T10:00:00Z','codex|rollout.jsonl','rollout.jsonl')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let dry_run = handle_telemetry(TelemetryArgs {
+            command: TelemetryCommand::Repair {
+                db: db_path.clone(),
+                backup: None,
+                apply: false,
+            },
+        })
+        .unwrap();
+        let dry_run: serde_json::Value = serde_json::from_str(&dry_run).unwrap();
+        assert_eq!(dry_run["mode"], "dry_run");
+        assert_eq!(dry_run["status"]["foreign_turns"], 1);
+        assert!(!backup_path.exists());
+
+        let applied = handle_telemetry(TelemetryArgs {
+            command: TelemetryCommand::Repair {
+                db: db_path,
+                backup: Some(backup_path.clone()),
+                apply: true,
+            },
+        })
+        .unwrap();
+        let applied: serde_json::Value = serde_json::from_str(&applied).unwrap();
+        assert_eq!(applied["mode"], "apply");
+        assert_eq!(applied["report"]["after"]["foreign_turns"], 0);
+        assert!(backup_path.exists());
     }
 }
