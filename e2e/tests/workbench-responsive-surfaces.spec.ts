@@ -185,6 +185,8 @@ test("keeps every core surface usable in a half-width Workbench pane", async ({ 
 
   await surfaceTab(page, "automations").click();
   const automationsPanel = surfacePanel(page, "automations");
+  await automationsPanel.getByRole("button", { name: "edit", exact: true }).click();
+  await expect(automationsPanel.getByTestId("automations-edit-mode")).toBeVisible();
   const toolbar = automationsPanel.locator(".automations-toolbar");
   const primaryBounds = await toolbar.locator(".automations-toolbar__primary").boundingBox();
   const actionBounds = await toolbar.locator(".automations-toolbar__actions").boundingBox();

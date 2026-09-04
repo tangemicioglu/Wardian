@@ -41,6 +41,7 @@ use super::{
 use crate::providers::gemini::gemini_status_from_title;
 
 const OUTPUT_READY_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+const ANTIGRAVITY_TRANSCRIPT_OVERLAP_STEPS: u64 = 16;
 
 type PendingMemoryInjection = (
     wardian_core::memory::MemoryStore,
@@ -246,12 +247,13 @@ fn open_pi_log_at_cursor(
 fn antigravity_watcher_conversation(
     existing: Option<String>,
     workspace_before: Option<&str>,
-    discovered: Option<String>,
+    discover: impl FnOnce() -> Option<String>,
 ) -> (Option<String>, bool) {
     if existing.is_some() {
         return (existing, false);
     }
 
+    let discovered = discover();
     let conversation_id = changed_workspace_conversation(workspace_before, discovered.as_deref());
     let capture_identity = conversation_id.is_some();
     (conversation_id, capture_identity)
@@ -365,6 +367,34 @@ struct AntigravityUserTurnReceiptTracker {
 struct AntigravityTranscriptTracker {
     initialized: bool,
     observed_text: HashMap<(u64, &'static str), String>,
+    latest_step_index: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AntigravityFileWatermark {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AntigravityDatabaseWatermark {
+    database: AntigravityFileWatermark,
+    wal: Option<AntigravityFileWatermark>,
+}
+
+fn antigravity_file_watermark(path: &std::path::Path) -> Option<AntigravityFileWatermark> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(AntigravityFileWatermark {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn antigravity_database_watermark(path: &std::path::Path) -> Option<AntigravityDatabaseWatermark> {
+    let database = antigravity_file_watermark(path)?;
+    let file_name = path.file_name()?.to_string_lossy();
+    let wal = antigravity_file_watermark(&path.with_file_name(format!("{file_name}-wal")));
+    Some(AntigravityDatabaseWatermark { database, wal })
 }
 
 #[derive(Default)]
@@ -401,6 +431,11 @@ impl ClaudeStartupReadiness {
 }
 
 impl AntigravityTranscriptTracker {
+    fn minimum_step_index(&self) -> Option<u64> {
+        self.latest_step_index
+            .map(|index| index.saturating_sub(ANTIGRAVITY_TRANSCRIPT_OVERLAP_STEPS))
+    }
+
     /// Projects provider-authored SQLite messages once. Restored agents first
     /// position at existing history, while fresh agents expose messages already
     /// present when Wardian discovers the provider-owned conversation.
@@ -413,6 +448,12 @@ impl AntigravityTranscriptTracker {
         let mut projected = Vec::new();
 
         for message in messages {
+            self.latest_step_index = Some(
+                self.latest_step_index
+                    .map_or(message.step_index, |current| {
+                        current.max(message.step_index)
+                    }),
+            );
             let role = match message.role {
                 AgentChatRole::User => "user",
                 AgentChatRole::Assistant => "assistant",
@@ -433,6 +474,10 @@ impl AntigravityTranscriptTracker {
             }
         }
 
+        if let Some(minimum_step_index) = self.minimum_step_index() {
+            self.observed_text
+                .retain(|(step_index, _), _| *step_index >= minimum_step_index);
+        }
         self.initialized = true;
         projected
     }
@@ -861,32 +906,37 @@ pub async fn spawn_agent(
     } else {
         format!("fresh:{}:{born_to_save}", config.session_id)
     };
-    let memory_setup = match wardian_core::memory::MemoryStore::from_default_home() {
-        Ok(store) => match store.compile_brief(
-            &wardian_core::memory::MemoryActor::agent(&config.session_id),
-            &config.session_id,
-            Some(&expected_folder),
-            &config.provider,
-            &memory_process_key,
-            is_restored,
-            12_000,
-        ) {
-            Ok(brief) => Some((store, brief)),
+    let memory_enabled = crate::utils::memory_feature_enabled();
+    let memory_setup = if memory_enabled {
+        match wardian_core::memory::MemoryStore::from_default_home() {
+            Ok(store) => match store.compile_brief(
+                &wardian_core::memory::MemoryActor::agent(&config.session_id),
+                &config.session_id,
+                Some(&expected_folder),
+                &config.provider,
+                &memory_process_key,
+                is_restored,
+                12_000,
+            ) {
+                Ok(brief) => Some((store, brief)),
+                Err(error) => {
+                    log_debug(&format!(
+                        "[Wardian] memory recall unavailable for {}: {error}",
+                        config.session_id
+                    ));
+                    None
+                }
+            },
             Err(error) => {
                 log_debug(&format!(
-                    "[Wardian] memory recall unavailable for {}: {error}",
+                    "[Wardian] memory store unavailable for {}: {error}",
                     config.session_id
                 ));
                 None
             }
-        },
-        Err(error) => {
-            log_debug(&format!(
-                "[Wardian] memory store unavailable for {}: {error}",
-                config.session_id
-            ));
-            None
         }
+    } else {
+        None
     };
     let habitat_root = prepare_provider_habitat(
         &config.provider,
@@ -895,12 +945,14 @@ pub async fn spawn_agent(
         Some(&config.session_id),
     )?;
     if let Some(root) = habitat_root.as_ref() {
-        crate::utils::fs::append_habitat_memory_instructions(
-            root,
-            memory_setup
-                .as_ref()
-                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
-        )?;
+        if memory_enabled {
+            crate::utils::fs::append_habitat_memory_instructions(
+                root,
+                memory_setup.as_ref().and_then(|(_, brief)| {
+                    (!brief.is_empty).then_some(brief.context_text.as_str())
+                }),
+            )?;
+        }
         if !crate::utils::fs::provider_uses_projected_workspace(&config.provider) {
             let include = root.to_string_lossy().to_string();
             let includes = config
@@ -966,7 +1018,7 @@ pub async fn spawn_agent(
         spawn_args,
     );
     provider_args.extend(spawn_args);
-    if config.provider == "codex" {
+    if config.provider == "codex" && memory_enabled {
         let runtime_instructions = wardian_memory_instructions(
             memory_setup
                 .as_ref()
@@ -994,7 +1046,9 @@ pub async fn spawn_agent(
     super::apply_managed_cli_path_to_pty(&mut cmd);
     super::apply_interactive_provider_runtime_env(&config.provider, &mut cmd)?;
     cmd.env("WARDIAN_SESSION_ID", &config.session_id);
-    let memory_capability = super::issue_memory_capability(&config.session_id);
+    let memory_capability = memory_enabled
+        .then(|| super::issue_memory_capability(&config.session_id))
+        .flatten();
     if let Some(capability) = memory_capability.as_ref() {
         cmd.env(
             wardian_core::memory::MEMORY_CAPABILITY_ENV,
@@ -1278,6 +1332,10 @@ pub async fn spawn_agent(
                     break;
                 }
                 Ok(n) => {
+                    crate::utils::runtime_profile::record_event(
+                        crate::utils::runtime_profile::RuntimeMetric::PtyRead,
+                        n as u64,
+                    );
                     if let Err(error) = crate::state::terminal_session::forward_terminal_output(
                         &terminal_sessions,
                         &sid_for_pty,
@@ -1291,6 +1349,10 @@ pub async fn spawn_agent(
                         );
                         break;
                     }
+                    let pty_postprocess_profile =
+                        crate::utils::runtime_profile::RuntimeProfileSpan::wall(
+                            crate::utils::runtime_profile::RuntimeMetric::PtyPostprocess,
+                        );
                     if provider_name_for_pty == "opencode" && opencode_chunks_logged < 40 {
                         log_debug(&format!(
                             "[Wardian] OpenCode PTY chunk {} for session {}: {}",
@@ -1662,6 +1724,7 @@ pub async fn spawn_agent(
                     if current_line.len() > 10000 {
                         current_line.clear();
                     }
+                    pty_postprocess_profile.finish(n as u64);
                 }
                 Err(err) => {
                     log_terminal_trace_note(
@@ -1705,6 +1768,9 @@ pub async fn spawn_agent(
                 if current == "Off" {
                     break;
                 }
+                let watcher_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                    crate::utils::runtime_profile::RuntimeMetric::CodexWatcherPoll,
+                );
 
                 let path = {
                     let lookup_session = watcher_config
@@ -1757,6 +1823,10 @@ pub async fn spawn_agent(
                                 if read == 0 {
                                     break;
                                 }
+                                crate::utils::runtime_profile::record_event(
+                                    crate::utils::runtime_profile::RuntimeMetric::ProviderLogRead,
+                                    read as u64,
+                                );
                                 offset += read as u64;
                                 if let Ok(parsed) =
                                     serde_json::from_str::<serde_json::Value>(line.trim())
@@ -1790,6 +1860,7 @@ pub async fn spawn_agent(
                     }
                 }
 
+                watcher_profile.finish(0);
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
@@ -1818,6 +1889,9 @@ pub async fn spawn_agent(
                 if current == "Off" {
                     break;
                 }
+                let watcher_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                    crate::utils::runtime_profile::RuntimeMetric::PiWatcherPoll,
+                );
 
                 let provider_session_id = watcher_config
                     .lock()
@@ -1851,6 +1925,10 @@ pub async fn spawn_agent(
                             if read == 0 {
                                 break;
                             }
+                            crate::utils::runtime_profile::record_event(
+                                crate::utils::runtime_profile::RuntimeMetric::ProviderLogRead,
+                                read as u64,
+                            );
                             cursor.offset += read as u64;
                             let trimmed = line.trim();
                             if trimmed.is_empty() {
@@ -1919,6 +1997,7 @@ pub async fn spawn_agent(
                         let _ = refresh_pi_log_boundary(&mut file, &mut cursor);
                     }
                 }
+                watcher_profile.finish(0);
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
@@ -1953,6 +2032,9 @@ pub async fn spawn_agent(
                 if current == "Off" {
                     break;
                 }
+                let watcher_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                    crate::utils::runtime_profile::RuntimeMetric::ClaudeWatcherPoll,
+                );
 
                 let (path, captured_identity) = {
                     let mut lock = watcher_log_path.lock().unwrap_or_else(|e| e.into_inner());
@@ -2017,6 +2099,10 @@ pub async fn spawn_agent(
                                 if read == 0 {
                                     break;
                                 }
+                                crate::utils::runtime_profile::record_event(
+                                    crate::utils::runtime_profile::RuntimeMetric::ProviderLogRead,
+                                    read as u64,
+                                );
                                 offset += read as u64;
                                 if let Some(message) =
                                     extract_transcript_message("claude", line.trim())
@@ -2105,6 +2191,7 @@ pub async fn spawn_agent(
                     }
                 }
 
+                watcher_profile.finish(0);
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
@@ -2145,6 +2232,9 @@ pub async fn spawn_agent(
                     if current == "Off" {
                         break;
                     }
+                    let watcher_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                        crate::utils::runtime_profile::RuntimeMetric::ClaudeHookPoll,
+                    );
 
                     if let Ok(mut file) = std::fs::File::open(&hook_event_log) {
                         if let Ok(metadata) = file.metadata() {
@@ -2161,6 +2251,10 @@ pub async fn spawn_agent(
                                 if read == 0 {
                                     break;
                                 }
+                                crate::utils::runtime_profile::record_event(
+                                    crate::utils::runtime_profile::RuntimeMetric::ProviderLogRead,
+                                    read as u64,
+                                );
                                 offset += read as u64;
                                 if let Ok(parsed) =
                                     serde_json::from_str::<serde_json::Value>(line.trim())
@@ -2202,6 +2296,7 @@ pub async fn spawn_agent(
                         }
                     }
 
+                    watcher_profile.finish(0);
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
             });
@@ -2227,6 +2322,7 @@ pub async fn spawn_agent(
             let mut last_conversation_id = String::new();
             let mut user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
             let mut transcript_tracker = AntigravityTranscriptTracker::default();
+            let mut database_watermark = None;
             loop {
                 let current = watcher_current_status
                     .lock()
@@ -2235,6 +2331,9 @@ pub async fn spawn_agent(
                 if current == "Off" {
                     break;
                 }
+                let watcher_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                    crate::utils::runtime_profile::RuntimeMetric::AntigravityWatcherPoll,
+                );
 
                 let home = AntigravityProvider::antigravity_home();
                 let (conversation_id, captured_identity) = {
@@ -2244,26 +2343,27 @@ pub async fn spawn_agent(
                         .as_ref()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());
-                    let excluded = cfg.antigravity_config().cleared_conversations;
-                    let discovered = home.as_ref().and_then(|home| {
-                        AntigravityProvider::fresh_database_conversation_for_workspace(
-                            home,
-                            &watcher_workspace,
-                            &watcher_database_baseline,
-                            &excluded,
-                        )
-                        .or_else(|| {
-                            AntigravityProvider::verified_conversation_for_workspace(
-                                home,
-                                &watcher_workspace,
-                                &excluded,
-                            )
-                        })
-                    });
                     let (conversation_id, capture_identity) = antigravity_watcher_conversation(
                         existing,
                         watcher_workspace_before.as_deref(),
-                        discovered,
+                        || {
+                            let excluded = cfg.antigravity_config().cleared_conversations;
+                            home.as_ref().and_then(|home| {
+                                AntigravityProvider::fresh_database_conversation_for_workspace(
+                                    home,
+                                    &watcher_workspace,
+                                    &watcher_database_baseline,
+                                    &excluded,
+                                )
+                                .or_else(|| {
+                                    AntigravityProvider::verified_conversation_for_workspace(
+                                        home,
+                                        &watcher_workspace,
+                                        &excluded,
+                                    )
+                                })
+                            })
+                        },
                     );
                     if capture_identity {
                         if let Some(conversation_id) = conversation_id.as_deref() {
@@ -2304,6 +2404,7 @@ pub async fn spawn_agent(
                         positioned_initial_log = !watcher_skip_existing_log;
                         user_turn_receipt_tracker = AntigravityUserTurnReceiptTracker::default();
                         transcript_tracker = AntigravityTranscriptTracker::default();
+                        database_watermark = None;
                         last_conversation_id = conversation_id.to_string();
                     }
                 }
@@ -2328,31 +2429,43 @@ pub async fn spawn_agent(
                 };
 
                 if let Some(database_path) = database_path.as_ref() {
-                    if let Ok(latest_step_index) =
-                        AntigravityProvider::latest_user_message_step_index(database_path)
-                    {
-                        if user_turn_receipt_tracker
-                            .observe(latest_step_index, watcher_skip_existing_log)
+                    let observed_watermark = antigravity_database_watermark(database_path);
+                    let source_changed = observed_watermark.is_none()
+                        || database_watermark.as_ref() != observed_watermark.as_ref();
+                    if source_changed {
+                        // Preserve the watermark seen before the query. If the
+                        // provider commits during this read, the next poll sees
+                        // the newer file/WAL state and cannot miss that change.
+                        database_watermark = observed_watermark;
+                        if let Ok(latest_step_index) =
+                            AntigravityProvider::latest_user_message_step_index(database_path)
                         {
-                            apply_agent_event(
-                                &watcher_app,
-                                &watcher_session,
-                                AgentEvent::UserQuery,
-                                &watcher_query_count,
-                                &watcher_init_timestamp,
-                                &watcher_current_status,
-                            );
+                            if user_turn_receipt_tracker
+                                .observe(latest_step_index, watcher_skip_existing_log)
+                            {
+                                apply_agent_event(
+                                    &watcher_app,
+                                    &watcher_session,
+                                    AgentEvent::UserQuery,
+                                    &watcher_query_count,
+                                    &watcher_init_timestamp,
+                                    &watcher_current_status,
+                                );
+                            }
                         }
-                    }
-                    if let Ok(messages) =
-                        AntigravityProvider::conversation_messages_from_database(database_path)
-                    {
-                        let projected =
-                            transcript_tracker.observe(&messages, watcher_skip_existing_log);
-                        if !projected.is_empty() {
-                            if let Ok(mut watch_state) = watcher_watch_state.lock() {
-                                for message in projected {
-                                    watch_state.push_transcript(message);
+                        if let Ok(messages) =
+                            AntigravityProvider::conversation_messages_from_database_since(
+                                database_path,
+                                transcript_tracker.minimum_step_index(),
+                            )
+                        {
+                            let projected =
+                                transcript_tracker.observe(&messages, watcher_skip_existing_log);
+                            if !projected.is_empty() {
+                                if let Ok(mut watch_state) = watcher_watch_state.lock() {
+                                    for message in projected {
+                                        watch_state.push_transcript(message);
+                                    }
                                 }
                             }
                         }
@@ -2367,6 +2480,7 @@ pub async fn spawn_agent(
                     // The database projection above feeds live watch state; the
                     // streaming watcher below remains for legacy JSONL logs.
                     if path.extension().is_some_and(|extension| extension == "db") {
+                        watcher_profile.finish(0);
                         std::thread::sleep(std::time::Duration::from_millis(250));
                         continue;
                     }
@@ -2390,6 +2504,10 @@ pub async fn spawn_agent(
                                 if read == 0 {
                                     break;
                                 }
+                                crate::utils::runtime_profile::record_event(
+                                    crate::utils::runtime_profile::RuntimeMetric::ProviderLogRead,
+                                    read as u64,
+                                );
                                 offset += read as u64;
                                 let trimmed = line.trim();
                                 if trimmed.is_empty() {
@@ -2426,6 +2544,7 @@ pub async fn spawn_agent(
                     }
                 }
 
+                watcher_profile.finish(0);
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
@@ -3012,15 +3131,72 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_fresh_launch_ignores_preexisting_workspace_mapping() {
-        let (conversation_id, capture_identity) = antigravity_watcher_conversation(
-            None,
-            Some("conversation-123"),
-            Some("conversation-123".to_string()),
+    fn antigravity_transcript_tracker_bounds_retained_history_to_the_overlap() {
+        let mut tracker = AntigravityTranscriptTracker::default();
+        let messages = (0..64)
+            .map(|index| antigravity_message(index, AgentChatRole::Assistant, "progress"))
+            .collect::<Vec<_>>();
+
+        tracker.observe(&messages, false);
+
+        assert_eq!(tracker.latest_step_index, Some(63));
+        assert_eq!(tracker.minimum_step_index(), Some(47));
+        assert!(tracker
+            .observed_text
+            .keys()
+            .all(|(step_index, _)| *step_index >= 47));
+        assert!(tracker.observed_text.len() <= 17);
+    }
+
+    #[test]
+    fn antigravity_database_watermark_changes_with_database_or_wal_content() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let wal = temp.path().join("conversation.db-wal");
+        std::fs::write(&database, b"database").expect("write database");
+
+        let initial = antigravity_database_watermark(&database).expect("initial watermark");
+        assert_eq!(
+            antigravity_database_watermark(&database),
+            Some(initial.clone())
         );
+
+        std::fs::write(&wal, b"wal").expect("write wal");
+        let with_wal = antigravity_database_watermark(&database).expect("wal watermark");
+        assert_ne!(with_wal, initial);
+
+        std::fs::write(&database, b"database-expanded").expect("update database");
+        let expanded = antigravity_database_watermark(&database).expect("expanded watermark");
+        assert_ne!(expanded, with_wal);
+    }
+
+    #[test]
+    fn antigravity_fresh_launch_ignores_preexisting_workspace_mapping() {
+        let (conversation_id, capture_identity) =
+            antigravity_watcher_conversation(None, Some("conversation-123"), || {
+                Some("conversation-123".to_string())
+            });
 
         assert_eq!(conversation_id, None);
         assert!(!capture_identity);
+    }
+
+    #[test]
+    fn antigravity_restored_identity_skips_conversation_discovery() {
+        let discovery_called = std::cell::Cell::new(false);
+
+        let (conversation_id, capture_identity) = antigravity_watcher_conversation(
+            Some("restored-conversation".to_string()),
+            None,
+            || {
+                discovery_called.set(true);
+                Some("different-conversation".to_string())
+            },
+        );
+
+        assert_eq!(conversation_id.as_deref(), Some("restored-conversation"));
+        assert!(!capture_identity);
+        assert!(!discovery_called.get());
     }
 
     #[test]

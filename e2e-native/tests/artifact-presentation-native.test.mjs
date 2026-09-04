@@ -38,7 +38,7 @@ async function spawnArtifactAgent(driver, sessionId, folder) {
     window.__TAURI_INTERNALS__.invoke("spawn_agent", {
       req: {
         sessionName: "Artifact-Writer",
-        agentClass: "Writer",
+        agentClass: "Coder",
         folder: workspace,
         resumeSession: id,
         isOff: true,
@@ -50,6 +50,8 @@ async function spawnArtifactAgent(driver, sessionId, folder) {
     );
   }, sessionId, folder);
   assert.equal(result.ok, true, `spawn_agent failed: ${result.error}`);
+  assert.ok(result.agent?.session_id, "spawn_agent did not return a Wardian session id");
+  return result.agent.session_id;
 }
 
 async function deleteArtifactAgent(driver, sessionId) {
@@ -93,7 +95,13 @@ async function waitForArtifactPersistence(harness, artifactId, timeoutMs = 20_00
   assert.fail(`artifact:${artifactId} was not persisted to ${statePath}`);
 }
 
-async function assertArtifactCanOpen(session, artifactId, phase, expectBackground = false) {
+async function assertArtifactCanOpen(
+  session,
+  artifactId,
+  phase,
+  expectBackground = false,
+  expectWorkingFile = true,
+) {
   const resourceKey = `artifact:${artifactId}`;
   const tab = await session.driver.wait(async () => {
     const snapshot = await workbenchSnapshot(session.driver);
@@ -124,18 +132,40 @@ async function assertArtifactCanOpen(session, artifactId, phase, expectBackgroun
     `${phase}: artifact details were not mounted`,
   );
   await session.driver.wait(until.elementIsVisible(details), 20_000, `${phase}: artifact details stayed hidden`);
-  assert.match(await details.getText(), /Native Artifact/);
   assert.match(await details.getText(), /Artifact-Writer/);
+  assert.match(await details.getAttribute("title"), /Native Artifact/);
   const breadcrumb = await session.driver.findElement(By.css('[aria-label="File location"]'));
-  assert.match(await breadcrumb.getText(), /artifact\.md/);
-  await session.driver.wait(
-    until.elementLocated(By.css('[data-testid="files-content-host-shell"]')),
+  if (expectWorkingFile) {
+    assert.match(await breadcrumb.getText(), /artifact\.md/);
+    await session.driver.wait(
+      until.elementLocated(By.css('[data-testid="files-content-host-shell"]')),
+      20_000,
+      `${phase}: artifact file content host did not mount`,
+    );
+    return;
+  }
+
+  // The artifact thread remains durable, but its editable working file is
+  // intentionally unavailable after the origin agent is permanently deleted.
+  // The Files surface must preserve provenance while failing closed instead of
+  // treating the opaque artifact ID as a filesystem path.
+  assert.equal(await breadcrumb.getText(), artifactId);
+  const unavailable = await session.driver.wait(
+    until.elementLocated(By.css('section.files-content-blocker[role="alert"]')),
     20_000,
-    `${phase}: artifact file content host did not mount`,
+    `${phase}: missing working file did not produce an alert`,
+  );
+  assert.match(await unavailable.getText(), /File unavailable|origin agent authorization/i);
+  assert.equal(
+    await session.driver.findElements(By.css('[data-testid="files-content-host-shell"]')).then(
+      (elements) => elements.length,
+    ),
+    0,
+    `${phase}: unavailable artifact mounted an editable file host`,
   );
 }
 
-test("artifact CLI restores a local file after its origin agent is deleted", { timeout: 300_000 }, async (t) => {
+test("artifact CLI retains provenance after its origin agent is deleted", { timeout: 300_000 }, async (t) => {
   const harness = await createNativeHarness();
   assert.ok(harness.appPath);
   try {
@@ -150,14 +180,14 @@ test("artifact CLI restores a local file after its origin agent is deleted", { t
   fs.mkdirSync(workspace, { recursive: true });
   const file = path.join(workspace, "artifact.md");
   fs.writeFileSync(file, "# Native artifact\n\nOpened through the artifact lifecycle.\n", "utf8");
-  const sessionId = `artifact-agent-${RUN_ID}`;
+  const providerSessionId = `artifact-provider-${RUN_ID}`;
 
   let session = await startNativeSession(harness);
   t.after(async () => { await session?.close(); });
   await waitForAppShell(session.driver, 20_000);
   await waitForWorkbenchReady(session.driver, 20_000);
-  await spawnArtifactAgent(session.driver, sessionId, workspace);
-  const presented = present(cli, harness, sessionId, file);
+  const agentSessionId = await spawnArtifactAgent(session.driver, providerSessionId, workspace);
+  const presented = present(cli, harness, agentSessionId, file);
   await assertArtifactCanOpen(session, presented.artifact_id, "initial presentation", true);
   const screenshotPath = path.join(
     harness.repoRoot,
@@ -170,11 +200,11 @@ test("artifact CLI restores a local file after its origin agent is deleted", { t
   fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
   fs.writeFileSync(screenshotPath, await session.driver.takeScreenshot(), "base64");
   await waitForArtifactPersistence(harness, presented.artifact_id);
-  await deleteArtifactAgent(session.driver, sessionId);
+  await deleteArtifactAgent(session.driver, agentSessionId);
 
   await session.close();
   session = await startNativeSession(harness);
   await waitForAppShell(session.driver, 20_000);
   await waitForWorkbenchReady(session.driver, 20_000);
-  await assertArtifactCanOpen(session, presented.artifact_id, "relaunch restore");
+  await assertArtifactCanOpen(session, presented.artifact_id, "relaunch restore", false, false);
 });

@@ -1718,6 +1718,28 @@ test("repository terminal debug consumers never pass runtime session identities"
   assert.match(demoSource, /snapshot\?\.\(exactPresentationId\)/);
 });
 
+test("README demo requires real provider replies and scene-scoped privacy masking", () => {
+  const demoSource = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "capture-readme-demo-real.mjs"),
+    "utf8",
+  );
+
+  assert.match(demoSource, /acceptClaudeWorkspaceTrust/);
+  assert.match(demoSource, /waitForArchivedAssistantText/);
+  assert.match(demoSource, /Yes, I trust this folder/);
+  assert.match(demoSource, /Allow external CLAUDE\.md file imports\?/);
+  assert.match(demoSource, /Yes, allow external imports/);
+  assert.match(demoSource, /bypass permissions on/);
+  assert.match(demoSource, /delete process\.env\.NO_COLOR/);
+  assert.match(demoSource, /process\.env\.TERM = "xterm-256color"/);
+  assert.match(demoSource, /assertManagedPermissionBypass/);
+  assert.match(demoSource, /bypassPermissions/);
+  assert.match(demoSource, /path\.join\(localData, "agy", "bin", "agy\.exe"\)/);
+  assert.doesNotMatch(demoSource, /Some provider terminals render through canvas/);
+  assert.match(demoSource, /providerAccountMaskRange/);
+  assert.doesNotMatch(demoSource, /between\(n,45,205\)/);
+});
+
 test("outside capture records native terminal ANSI size probe responses", () => {
   const script = fs.readFileSync(
     path.join(process.cwd(), "scripts", "capture-outside-provider-rendering.ps1"),

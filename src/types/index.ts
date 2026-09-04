@@ -103,7 +103,7 @@ export interface CodexProviderConfig {
     type: "codex";
     reasoning_effort?: string;
     sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
-    approval_policy?: "untrusted" | "on-request" | "never";
+    approval_policy?: "untrusted" | "on-request" | "approve-for-me" | "never";
     profile?: string;
     full_auto?: boolean;
     search?: boolean;
@@ -218,7 +218,7 @@ export interface AgentConfig {
 
     // Codex-specific fields
     codex_sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
-    codex_approval_policy?: "untrusted" | "on-request" | "never";
+    codex_approval_policy?: "untrusted" | "on-request" | "approve-for-me" | "never";
     codex_profile?: string;
     codex_full_auto?: boolean;
     codex_search?: boolean;

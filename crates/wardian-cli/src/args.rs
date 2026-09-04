@@ -633,8 +633,7 @@ pub enum WatchlistCommand {
 // wardian telemetry
 // ---------------------------------------------------------------------------
 
-/// Read the habitat telemetry store. Read-only: ingest belongs to the app,
-/// which owns the source cursors.
+/// Read the habitat telemetry store.
 #[derive(Debug, Args)]
 pub struct TelemetryArgs {
     #[command(subcommand)]
@@ -1424,6 +1423,20 @@ mod tests {
     fn parses_agent_target_shorthand() {
         let cli = Cli::try_parse_from(["wardian", "agent", "coder-a1"]).unwrap();
         assert!(matches!(cli.command, Command::Agent(_)));
+    }
+
+    #[test]
+    fn telemetry_maintenance_is_not_a_cli_command() {
+        assert!(Cli::try_parse_from([
+            "wardian",
+            "telemetry",
+            "maintain",
+            "--retain-days",
+            "90",
+            "--backup",
+            "<backup-path>",
+        ])
+        .is_err());
     }
 
     #[test]

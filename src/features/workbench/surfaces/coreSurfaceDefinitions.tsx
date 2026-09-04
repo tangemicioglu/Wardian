@@ -114,7 +114,7 @@ export interface DashboardSurfaceProps
   live_agents: readonly { session_id: string }[];
 }
 
-export function DashboardSurface({
+export const DashboardSurface = memo(function DashboardSurface({
   surface_id,
   // The Dashboard is a singleton surface, so its configuration is held by the
   // app and mirrored here. The state contract exists so that the day it becomes
@@ -136,15 +136,15 @@ export function DashboardSurface({
   })), [live_agents, telemetry]);
   return (
     <SurfaceFrame surface_id={surface_id} surface_type="dashboard" visibility={visibility}>
-      <DashboardView {...viewProps} live={live} />
+      <DashboardView {...viewProps} live={live} enabled={visibility === "visible"} />
     </SurfaceFrame>
   );
-}
+}, keepHiddenSurfaceSnapshot);
 
 export interface AnalyticsSurfaceProps
   extends Omit<AnalyticsViewProps, "initial">, ManagedSurfaceProps<AnalyticsSurfaceState> {}
 
-export function AnalyticsSurface({
+export const AnalyticsSurface = memo(function AnalyticsSurface({
   surface_id,
   state,
   visibility = "visible",
@@ -154,10 +154,10 @@ export function AnalyticsSurface({
     <SurfaceFrame surface_id={surface_id} surface_type="analytics" visibility={visibility}>
       {/* The surface state is the grid's opening question, which is how a
           Dashboard drill-through arrives already scoped to one agent. */}
-      <AnalyticsView {...viewProps} initial={state} />
+      <AnalyticsView {...viewProps} initial={state} enabled={visibility === "visible"} />
     </SurfaceFrame>
   );
-}
+}, keepHiddenSurfaceSnapshot);
 
 export interface InboxSurfaceProps
   extends InboxViewProps, ManagedSurfaceProps<EmptyCoreViewSurfaceState> {}

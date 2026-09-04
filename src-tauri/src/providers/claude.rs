@@ -11,6 +11,7 @@ pub(crate) enum ClaudeUserEventKind {
     RealQuery,
     ContextInjection,
     ToolResult,
+    ProviderInternal,
     LocalCommand,
     Ignored,
 }
@@ -40,7 +41,10 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
         if trimmed.is_empty() {
             return ClaudeUserEventKind::Ignored;
         }
-        if is_claude_local_command_content(trimmed) {
+        if is_claude_interruption_content(trimmed) {
+            return ClaudeUserEventKind::ProviderInternal;
+        }
+        if is_claude_non_query_content(trimmed) {
             return ClaudeUserEventKind::LocalCommand;
         }
         return ClaudeUserEventKind::RealQuery;
@@ -58,6 +62,15 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
             && item
                 .get("text")
                 .and_then(|v| v.as_str())
+                .is_some_and(|text| is_claude_interruption_content(text.trim()))
+    }) {
+        return ClaudeUserEventKind::ProviderInternal;
+    }
+    if items.iter().any(|item| {
+        item.get("type").and_then(|v| v.as_str()) == Some("text")
+            && item
+                .get("text")
+                .and_then(|v| v.as_str())
                 .is_some_and(|text| !text.trim().is_empty())
     }) {
         return ClaudeUserEventKind::RealQuery;
@@ -66,12 +79,13 @@ pub(crate) fn classify_claude_user_event(parsed: &serde_json::Value) -> ClaudeUs
     ClaudeUserEventKind::Ignored
 }
 
-/// Returns the provider-native causal reference for a Claude context record.
+/// Returns the provider-native causal reference for a Claude transcript record.
 ///
 /// Claude uses parent tool-use and transcript UUID fields for records that are
-/// injected into the provider conversation. These references are retained as
-/// provenance; the injected text itself is never inspected to classify it.
-pub(crate) fn claude_context_causal_ref(parsed: &serde_json::Value) -> Option<String> {
+/// injected into the provider conversation or linked to an earlier transcript
+/// event. These references are retained as normalized provenance. The injected
+/// text itself is never inspected to classify a record.
+pub(crate) fn claude_provider_causal_ref(parsed: &serde_json::Value) -> Option<String> {
     let message = parsed.get("message");
     first_nonempty_string(parsed, &["parent_tool_use_id", "parentToolUseId"])
         .or_else(|| {
@@ -109,6 +123,9 @@ pub(crate) fn claude_context_purpose(parsed: &serde_json::Value) -> &'static str
 }
 
 fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
+    // parentUuid is ordinary transcript lineage on normal Claude user
+    // records as well as context records. It is retained as normalized causal
+    // reference, but cannot identify context without an explicit marker.
     let message = parsed.get("message");
     [parsed, message.unwrap_or(&serde_json::Value::Null)]
         .into_iter()
@@ -118,7 +135,6 @@ fn has_claude_context_evidence(parsed: &serde_json::Value) -> bool {
                 .any(|key| value.get(*key).and_then(|flag| flag.as_bool()) == Some(true))
                 || first_nonempty_string(value, &["parent_tool_use_id", "parentToolUseId"])
                     .is_some()
-                || first_nonempty_string(value, &["parent_uuid", "parentUuid"]).is_some()
         })
 }
 
@@ -132,7 +148,12 @@ fn first_nonempty_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Opt
     })
 }
 
-fn is_claude_local_command_content(content: &str) -> bool {
+fn is_claude_interruption_content(content: &str) -> bool {
+    content.starts_with("[Request interrupted by user]")
+        || content.starts_with("[Request interrupted by user for tool use]")
+}
+
+fn is_claude_non_query_content(content: &str) -> bool {
     content.starts_with("<local-command-caveat>")
         || content.starts_with("<command-name>")
         || content.starts_with("<command-message>")
@@ -445,9 +466,9 @@ impl AgentProvider for ClaudeProvider {
                 ClaudeUserEventKind::ContextInjection | ClaudeUserEventKind::ToolResult => {
                     Some(AgentEvent::Generating)
                 }
-                ClaudeUserEventKind::LocalCommand | ClaudeUserEventKind::Ignored => {
-                    Some(AgentEvent::Unknown)
-                }
+                ClaudeUserEventKind::ProviderInternal
+                | ClaudeUserEventKind::LocalCommand
+                | ClaudeUserEventKind::Ignored => Some(AgentEvent::Unknown),
             },
             // Claude is actively streaming a response
             "assistant" => Some(Self::assistant_event(&parsed)),
@@ -664,6 +685,13 @@ SET dp0=%~dp0
     }
 
     #[test]
+    fn parse_output_user_with_transcript_parent_uuid_is_still_a_query() {
+        let p = make_provider();
+        let line = r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"hello"}}"#;
+        assert_eq!(p.parse_output(line).unwrap(), AgentEvent::UserQuery);
+    }
+
+    #[test]
     fn parse_output_user_tool_result_is_generating() {
         let p = make_provider();
         let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}"#;
@@ -689,6 +717,76 @@ SET dp0=%~dp0
         let p = make_provider();
         let line = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set model to Opus 4.6</local-command-stdout>"}}"#;
         assert_eq!(p.parse_output(line).unwrap(), AgentEvent::Unknown);
+    }
+
+    #[test]
+    fn parse_output_user_interruption_is_not_query() {
+        let p = make_provider();
+        let line = r#"{"type":"user","parentUuid":"assistant-1","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#;
+        assert_eq!(p.parse_output(line).unwrap(), AgentEvent::Unknown);
+    }
+
+    #[test]
+    fn latest_query_timestamp_ignores_claude_interruptions_after_a_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("conversation.jsonl");
+        let prompt = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:00:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": { "role": "user", "content": "hello" },
+        });
+        let short_interruption = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:01:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": {
+                "role": "user",
+                "content": "[Request interrupted by user]",
+            },
+        });
+        let long_interruption = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-08-31T12:02:00.000Z",
+            "parentUuid": "assistant-1",
+            "message": {
+                "role": "user",
+                "content": "[Request interrupted by user for tool use]",
+            },
+        });
+        std::fs::write(
+            &log,
+            [prompt, short_interruption, long_interruption]
+                .into_iter()
+                .map(|record| serde_json::to_string(&record).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::manager::telemetry::latest_query_timestamp_from_log_suffix(&log, "claude")
+                .as_deref(),
+            Some("2026-08-31T12:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn classify_claude_interruption_records_as_provider_internal() {
+        for content in [
+            "[Request interrupted by user]",
+            "[Request interrupted by user for tool use]",
+        ] {
+            let parsed = serde_json::json!({
+                "type": "user",
+                "parentUuid": "assistant-1",
+                "message": { "role": "user", "content": content },
+            });
+            assert_eq!(
+                classify_claude_user_event(&parsed),
+                ClaudeUserEventKind::ProviderInternal
+            );
+        }
     }
 
     #[test]

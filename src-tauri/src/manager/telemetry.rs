@@ -270,7 +270,7 @@ fn query_timestamp_from_log_record(provider: &str, value: &serde_json::Value) ->
     query_timestamp_from_value(timestamp)
 }
 
-fn latest_query_timestamp_from_log_suffix(
+pub(crate) fn latest_query_timestamp_from_log_suffix(
     path: &std::path::Path,
     provider: &str,
 ) -> Option<String> {
@@ -699,10 +699,11 @@ struct TelemetryPassResult {
     provider_statuses: Vec<TelemetryProviderStatus>,
 }
 
-struct TelemetryProviderStatus {
-    session_id: String,
-    generation: u64,
-    status: String,
+pub(crate) struct TelemetryProviderStatus {
+    pub(crate) session_id: String,
+    pub(crate) generation: u64,
+    pub(crate) status: String,
+    pub(crate) current_status: Arc<Mutex<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1946,6 +1947,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                 session_id: snap.session_id.clone(),
                 generation: snap.provider_generation,
                 status: snap.current_status.lock().unwrap().clone(),
+                current_status: snap.current_status.clone(),
             });
 
             results.push(AgentTelemetry {
@@ -1996,19 +1998,19 @@ async fn apply_provider_status_observations(
     observations: &[TelemetryProviderStatus],
 ) {
     for observation in observations {
-        let readiness = provider_readiness_from_status(&observation.status);
+        let readiness = super::publish_telemetry_status_observation(state, observation).await;
         let ready_evidence = (readiness == ProviderInputReadiness::Ready)
             .then_some(ProviderReadyEvidence::ProviderEvent);
-        state
+        let (_, became_ready) = state
             .interactions
-            .record_provider_input_state(
+            .record_provider_input_state_with_transition(
                 &observation.session_id,
                 observation.generation,
                 readiness,
                 ready_evidence,
             )
             .await;
-        if readiness == ProviderInputReadiness::Ready {
+        if became_ready {
             crate::control::drain_mailbox_for_idle_agent_from_status_observation(
                 None,
                 state,
@@ -2016,16 +2018,6 @@ async fn apply_provider_status_observations(
             )
             .await;
         }
-    }
-}
-
-fn provider_readiness_from_status(status: &str) -> ProviderInputReadiness {
-    match wardian_core::identity::normalize_status(status).as_str() {
-        "idle" => ProviderInputReadiness::Ready,
-        "processing" => ProviderInputReadiness::Busy,
-        "action_required" => ProviderInputReadiness::ActionRequired,
-        "off" | "error" => ProviderInputReadiness::Unavailable,
-        _ => ProviderInputReadiness::Unknown,
     }
 }
 

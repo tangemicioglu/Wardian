@@ -6,7 +6,7 @@ export interface ShellOption {
 }
 
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
-export type CodexApprovalPolicy = 'untrusted' | 'on-request' | 'never';
+export type CodexApprovalPolicy = 'untrusted' | 'on-request' | 'approve-for-me' | 'never';
 export type DefaultProviderSetting = 'auto' | 'claude' | 'codex' | 'gemini' | 'antigravity' | 'opencode' | 'pi';
 export type ConversationLoggingSetting = 'enabled' | 'disabled';
 export type AppThemeSetting = 'dark' | 'light' | 'system';
@@ -66,6 +66,7 @@ export interface ShellSettingsOverrides {
 export interface AppSettings {
   theme: AppThemeSetting;
   auto_patch_gemini: boolean;
+  memory_enabled: boolean;
   terminal_font_size: number;
   terminal_font_family: string | null;
   grid_card_display_mode: 'terminal' | 'chat';
@@ -80,6 +81,7 @@ export interface AppSettings {
 export interface AppSettingsOverrides {
   theme?: AppThemeSetting;
   auto_patch_gemini?: boolean;
+  memory_enabled?: boolean;
   terminal_font_size?: number;
   terminal_font_family?: string | null;
   grid_card_display_mode?: 'terminal' | 'chat';

@@ -127,11 +127,21 @@ pub async fn reconcile_headless_agents() -> std::result::Result<(), Box<dyn std:
 }
 
 async fn emit_metrics_tick(metrics_handle: tauri::AppHandle) {
+    let profile = crate::utils::runtime_profile::RuntimeProfileSpan::wall(
+        crate::utils::runtime_profile::RuntimeMetric::MetricsTick,
+    );
     let state = metrics_handle.state::<AppState>();
     let metrics = manager::get_all_metrics(&state).await;
+    let app_metrics_started = std::time::Instant::now();
     let app_metrics = manager::get_app_metrics(&state).await;
+    crate::utils::runtime_profile::record_wall_time(
+        crate::utils::runtime_profile::RuntimeMetric::AppMetrics,
+        1,
+        app_metrics_started.elapsed(),
+    );
     let _ = metrics_handle.emit("agent-metrics", &metrics);
     let _ = metrics_handle.emit("app-metrics", &app_metrics);
+    profile.finish(metrics.len() as u64);
 }
 
 fn start_metrics_supervisor(metrics_handle: tauri::AppHandle) {
@@ -172,6 +182,7 @@ pub fn run() {
     }
 
     crate::utils::fs::ensure_process_wardian_home_env();
+    crate::utils::runtime_profile::start_reporter();
 
     crate::utils::migration::migrate_home_layout();
     if let Err(error) = wardian_core::automation_migration::migrate_current_home() {
@@ -348,8 +359,9 @@ pub fn run() {
 
             start_metrics_supervisor(app.handle().clone());
             // Deliberately its own loop rather than work added to the metrics
-            // tick: that tick drives live status and readiness, and ingest reads
-            // whole log deltas while holding the state database's write lock.
+            // tick: that tick drives live status and readiness. This loop also
+            // owns the due-only telemetry retention opportunity after ingest,
+            // so no second database-maintenance timer contends with it.
             state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
 
             if let Some(runs_dir) = wardian_core::paths::automation_runs_dir() {
@@ -386,6 +398,7 @@ pub fn run() {
                                     let app_handle = app_handle.clone();
                                     async move {
                                         let state = app_handle.state::<AppState>();
+                                        let status = agent.current_status.clone();
                                         let mut agents_map = state.agents.lock().await;
                                         let mut order_map = state.agent_order.lock().await;
                                         if !order_map.contains(&session_id) {
@@ -394,6 +407,11 @@ pub fn run() {
                                         agents_map.insert(session_id.clone(), agent);
                                         drop(agents_map);
                                         drop(order_map);
+                                        manager::publish_agent_status(
+                                            &app_handle,
+                                            &session_id,
+                                            &status,
+                                        );
                                         crate::control::spawn_mailbox_drain_after_restore(
                                             &app_handle,
                                             &session_id,
@@ -562,6 +580,7 @@ pub fn run() {
                                         }
                                     };
                                     let state = app_handle.state::<AppState>();
+                                    let status = agent.current_status.clone();
                                     let mut agents_map = state.agents.lock().await;
                                     let mut order_map = state.agent_order.lock().await;
                                     if !order_map.contains(&config.session_id) {
@@ -570,6 +589,11 @@ pub fn run() {
                                     agents_map.insert(config.session_id.clone(), agent);
                                     drop(agents_map);
                                     drop(order_map);
+                                    manager::publish_agent_status(
+                                        &app_handle,
+                                        &config.session_id,
+                                        &status,
+                                    );
                                     crate::control::spawn_mailbox_drain_after_restore(
                                         &app_handle,
                                         &config.session_id,

@@ -13,7 +13,9 @@ use wardian_core::control::{
 pub struct InteractionState {
     mutation_lock: Mutex<()>,
     deleted_sessions: Mutex<HashSet<String>>,
-    records: Mutex<HashMap<String, InteractionRecord>>,
+    // Crate-visible for remote projection tests that need to model source-lock
+    // contention without adding another production synchronization path.
+    pub(crate) records: Mutex<HashMap<String, InteractionRecord>>,
     replies: Mutex<HashMap<String, StructuredReply>>,
     provider_generations: Mutex<HashMap<String, u64>>,
     provider_status_observations: Mutex<HashMap<String, u64>>,
@@ -544,9 +546,32 @@ impl InteractionState {
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
     ) -> ProviderInputState {
+        self.record_provider_input_state_with_transition(
+            session_id,
+            generation,
+            state,
+            ready_evidence,
+        )
+        .await
+        .0
+    }
+
+    /// Records provider readiness and reports whether this write established a
+    /// new ready generation. Callers can use the transition flag for one-shot
+    /// work without repeatedly sweeping an already-ready provider.
+    pub async fn record_provider_input_state_with_transition(
+        &self,
+        session_id: &str,
+        generation: u64,
+        state: ProviderInputReadiness,
+        ready_evidence: Option<ProviderReadyEvidence>,
+    ) -> (ProviderInputState, bool) {
         let _mutation = self.mutation_lock.lock().await;
         if self.deleted_sessions.lock().await.contains(session_id) {
-            return provider_input_state_record(session_id, generation, state, ready_evidence);
+            return (
+                provider_input_state_record(session_id, generation, state, ready_evidence),
+                false,
+            );
         }
         let _observations = self.provider_status_observations.lock().await;
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
@@ -559,9 +584,12 @@ impl InteractionState {
         generation: u64,
         state: ProviderInputReadiness,
         ready_evidence: Option<ProviderReadyEvidence>,
-    ) -> ProviderInputState {
+    ) -> (ProviderInputState, bool) {
         if self.deleted_sessions.lock().await.contains(session_id) {
-            return provider_input_state_record(session_id, generation, state, ready_evidence);
+            return (
+                provider_input_state_record(session_id, generation, state, ready_evidence),
+                false,
+            );
         }
         {
             let mut generations = self.provider_generations.lock().await;
@@ -576,9 +604,13 @@ impl InteractionState {
         let mut inputs = self.provider_inputs.lock().await;
         if let Some(existing) = inputs.get(session_id) {
             if keep_existing_provider_input_state(existing, generation, state, ready_evidence) {
-                return existing.clone();
+                return (existing.clone(), false);
             }
         }
+        let became_ready = state == ProviderInputReadiness::Ready
+            && inputs.get(session_id).is_none_or(|existing| {
+                existing.generation != generation || existing.state != ProviderInputReadiness::Ready
+            });
         let record = ProviderInputState {
             session_id: session_id.to_string(),
             generation,
@@ -588,7 +620,7 @@ impl InteractionState {
         };
         inputs.insert(session_id.to_string(), record.clone());
         let _ = wardian_core::db::upsert_provider_input_state(&record);
-        record
+        (record, became_ready)
     }
 
     pub async fn record_provider_input_status_observation(
@@ -617,6 +649,7 @@ impl InteractionState {
 
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
             .await
+            .0
     }
 
     pub async fn provider_input_state(&self, session_id: &str) -> Option<ProviderInputState> {
@@ -642,6 +675,7 @@ impl InteractionState {
         };
         self.record_provider_input_state_inner(session_id, generation, state, ready_evidence)
             .await
+            .0
     }
 
     pub async fn current_provider_input_generation(&self, session_id: &str) -> Option<u64> {
@@ -1386,6 +1420,43 @@ mod tests {
             Some(ProviderReadyEvidence::ProviderEvent)
         ));
         assert_eq!(repeated.observed_at, initial.observed_at);
+    }
+
+    #[tokio::test]
+    async fn readiness_transition_is_reported_once_per_generation() {
+        let state = InteractionState::default();
+        state
+            .record_provider_input_state("agent-1", 1, ProviderInputReadiness::Busy, None)
+            .await;
+
+        let (_, first_ready) = state
+            .record_provider_input_state_with_transition(
+                "agent-1",
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let (_, repeated_ready) = state
+            .record_provider_input_state_with_transition(
+                "agent-1",
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let (_, next_generation_ready) = state
+            .record_provider_input_state_with_transition(
+                "agent-1",
+                2,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+
+        assert!(first_ready);
+        assert!(!repeated_ready);
+        assert!(next_generation_ready);
     }
 
     #[tokio::test]

@@ -306,41 +306,74 @@ fn schedule_agent_status_observation(
         // committed, which prevents an old Arc from winning the database race
         // after the replacement installs its own status incarnation.
         let agents = state.agents.lock().await;
-        let belongs_to_current_agent = agents
-            .get(&status_session_id)
-            .is_some_and(|agent| std::sync::Arc::ptr_eq(&agent.current_status, &current_status));
-        if !belongs_to_current_agent {
+        let Some(agent) = agents.get(&status_session_id) else {
+            log_debug(&format!(
+                "[Wardian] Ignoring stale status '{}' for replaced session {}",
+                status, status_session_id
+            ));
+            return;
+        };
+        if !std::sync::Arc::ptr_eq(&agent.current_status, &current_status) {
             log_debug(&format!(
                 "[Wardian] Ignoring stale status '{}' for replaced session {}",
                 status, status_session_id
             ));
             return;
         }
-
-        // Phase 2: Persist while the reporting runtime still owns the active
-        // agent slot. `update_agent_status` is synchronous, so no await can
-        // let a replacement interleave between the identity check and write.
-        let _ = wardian_core::db::update_agent_status(&status_session_id, &status, None);
-        if let Some(agent) = agents.get(&status_session_id) {
-            if let Ok(mut last_status_at) = agent.last_status_at.lock() {
-                *last_status_at = Some(observed_at.clone());
+        {
+            // Keep the status value locked through the synchronous durable
+            // write and watch update. A newer transition cannot mutate this
+            // Arc until the older observation has finished its ordered side
+            // effects.
+            let Ok(current_status_value) = agent.current_status.lock() else {
+                return;
+            };
+            if *current_status_value != status {
+                log_debug(&format!(
+                    "[Wardian] Ignoring superseded status '{}' for session {}",
+                    status, status_session_id
+                ));
+                return;
             }
-            if let Ok(mut watch_state) = agent.watch_state.lock() {
-                watch_state.push_event(
-                    "status",
-                    serde_json::json!({
-                        "status": wardian_core::identity::normalize_status(&status),
-                        "observed_at": observed_at,
-                    }),
-                );
+
+            // Keep the remote roster useful after the current runtime identity
+            // has been verified, even when the following durable write or a
+            // later remote read encounters another busy agent-state path.
+            state.set_remote_agent_status(&status_session_id, &status, status_sequence);
+
+            // Phase 2: Persist while the reporting runtime still owns the
+            // active agent slot. `update_agent_status` is synchronous, so no
+            // await can let a replacement interleave between the identity
+            // check and write.
+            let _ = wardian_core::db::update_agent_status(&status_session_id, &status, None);
+            if let Some(agent) = agents.get(&status_session_id) {
+                if let Ok(mut last_status_at) = agent.last_status_at.lock() {
+                    *last_status_at = Some(observed_at.clone());
+                }
+                if let Ok(mut watch_state) = agent.watch_state.lock() {
+                    watch_state.push_event(
+                        "status",
+                        serde_json::json!({
+                            "status": wardian_core::identity::normalize_status(&status),
+                            "observed_at": observed_at,
+                        }),
+                    );
+                }
             }
         }
         drop(agents);
 
         // Provider-input readiness and UI events are asynchronous side
         // effects. Revalidate after each await so a late observation cannot
-        // publish a status after its runtime was replaced.
-        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+        // publish a status after its runtime was replaced or superseded.
+        if !status_observation_belongs_to_current_agent(
+            &state,
+            &status_session_id,
+            &current_status,
+            &status,
+        )
+        .await
+        {
             return;
         }
         record_provider_input_from_status_state(
@@ -350,7 +383,14 @@ fn schedule_agent_status_observation(
             status_sequence,
         )
         .await;
-        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+        if !status_observation_belongs_to_current_agent(
+            &state,
+            &status_session_id,
+            &current_status,
+            &status,
+        )
+        .await
+        {
             return;
         }
 
@@ -373,7 +413,14 @@ fn schedule_agent_status_observation(
             });
         }
 
-        if !status_arc_belongs_to_current_agent(&state, &status_session_id, &current_status).await {
+        if !status_observation_belongs_to_current_agent(
+            &state,
+            &status_session_id,
+            &current_status,
+            &status,
+        )
+        .await
+        {
             return;
         }
         let _ = status_app.emit(
@@ -387,15 +434,53 @@ fn schedule_agent_status_observation(
     });
 }
 
-async fn status_arc_belongs_to_current_agent(
+pub(crate) async fn publish_telemetry_status_observation(
+    state: &AppState,
+    observation: &telemetry::TelemetryProviderStatus,
+) -> ProviderInputReadiness {
+    let agents = state.agents.lock().await;
+    if let Some(agent) = agents.get(&observation.session_id) {
+        // Telemetry runs from a detached snapshot. Do not let an observation
+        // from a replaced runtime, or a status that was superseded after the
+        // snapshot, overwrite the fallback roster cache.
+        if std::sync::Arc::ptr_eq(&agent.current_status, &observation.current_status) {
+            if let Ok(current) = agent.current_status.lock() {
+                if *current == observation.status {
+                    let status_sequence =
+                        state.next_status_observation_sequence(&observation.session_id);
+                    state.set_remote_agent_status(
+                        &observation.session_id,
+                        &observation.status,
+                        status_sequence,
+                    );
+                }
+            }
+        }
+    }
+
+    match wardian_core::identity::normalize_status(&observation.status).as_str() {
+        "idle" => ProviderInputReadiness::Ready,
+        "processing" => ProviderInputReadiness::Busy,
+        "action_required" => ProviderInputReadiness::ActionRequired,
+        "off" | "error" => ProviderInputReadiness::Unavailable,
+        _ => ProviderInputReadiness::Unknown,
+    }
+}
+
+async fn status_observation_belongs_to_current_agent(
     state: &AppState,
     session_id: &str,
     current_status: &std::sync::Arc<std::sync::Mutex<String>>,
+    expected_status: &str,
 ) -> bool {
     let agents = state.agents.lock().await;
-    agents
-        .get(session_id)
-        .is_some_and(|agent| std::sync::Arc::ptr_eq(&agent.current_status, current_status))
+    agents.get(session_id).is_some_and(|agent| {
+        std::sync::Arc::ptr_eq(&agent.current_status, current_status)
+            && agent
+                .current_status
+                .lock()
+                .is_ok_and(|status| *status == expected_status)
+    })
 }
 
 async fn record_provider_input_from_status_state(
@@ -2138,8 +2223,91 @@ mod tests {
             .insert("agent-1".to_string(), new_agent);
 
         assert!(
-            !status_arc_belongs_to_current_agent(&state, "agent-1", &old_status).await,
+            !status_observation_belongs_to_current_agent(&state, "agent-1", &old_status, "Idle")
+                .await,
             "late status events from a cleared runtime must not update the replacement agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_status_value_is_not_current_after_a_newer_transition() {
+        let state = AppState::new();
+        let agent = test_active_agent("Idle");
+        let current_status = agent.current_status.clone();
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        *current_status.lock().expect("status") = "Processing".to_string();
+
+        assert!(
+            !status_observation_belongs_to_current_agent(
+                &state,
+                "agent-1",
+                &current_status,
+                "Idle",
+            )
+            .await
+        );
+        assert!(
+            status_observation_belongs_to_current_agent(
+                &state,
+                "agent-1",
+                &current_status,
+                "Processing",
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn telemetry_status_observation_updates_remote_cache_only_for_current_value() {
+        let state = AppState::new();
+        let agent = test_active_agent("Idle");
+        let current_status = agent.current_status.clone();
+        state
+            .agents
+            .lock()
+            .await
+            .insert("agent-1".to_string(), agent);
+
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                current_status: current_status.clone(),
+            },
+        )
+        .await;
+        *current_status.lock().expect("status") = "Processing".to_string();
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Processing".to_string(),
+                current_status: current_status.clone(),
+            },
+        )
+        .await;
+        publish_telemetry_status_observation(
+            &state,
+            &telemetry::TelemetryProviderStatus {
+                session_id: "agent-1".to_string(),
+                generation: 0,
+                status: "Idle".to_string(),
+                current_status,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            state.remote_agent_status("agent-1").as_deref(),
+            Some("Processing")
         );
     }
 

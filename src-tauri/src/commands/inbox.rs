@@ -65,7 +65,11 @@ pub async fn list_automation_inbox_terminal_runs_page(
 fn list_automation_inbox_terminal_runs_page_blocking(
     offset: usize,
 ) -> Result<(Vec<runs::AutomationInboxUpdate>, bool), String> {
+    let profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+        crate::utils::runtime_profile::RuntimeMetric::InboxTerminalScan,
+    );
     let mut updates = Vec::new();
+    let mut automation_names = std::collections::HashMap::new();
     let (runs, truncated) = automation_inbox_run_page(offset, |run| {
         matches!(
             run.get("status").and_then(serde_json::Value::as_str),
@@ -83,8 +87,16 @@ fn list_automation_inbox_terminal_runs_page_blocking(
         let automation_name = run
             .get("blueprint_path")
             .and_then(serde_json::Value::as_str)
-            .and_then(|path| wardian_core::automation::parse_file(std::path::Path::new(path)).ok())
-            .map(|blueprint| blueprint.name)
+            .map(|path| {
+                automation_names
+                    .entry(path.to_string())
+                    .or_insert_with(|| {
+                        wardian_core::automation::parse_file(std::path::Path::new(path))
+                            .map(|blueprint| blueprint.name)
+                            .unwrap_or_else(|_| automation_id.to_string())
+                    })
+                    .clone()
+            })
             .unwrap_or_else(|| automation_id.to_string());
         let Some(update) = runs::automation_inbox_update_with_name(
             &automation_name,
@@ -96,6 +108,7 @@ fn list_automation_inbox_terminal_runs_page_blocking(
             updates.push(update);
         }
     }
+    profile.finish(updates.len() as u64);
     Ok((updates, truncated))
 }
 
@@ -228,6 +241,9 @@ pub async fn list_automation_inbox_approvals_page(
 fn list_automation_inbox_approvals_page_blocking(
     offset: usize,
 ) -> Result<(Vec<AutomationInboxApprovalDto>, bool), String> {
+    let profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+        crate::utils::runtime_profile::RuntimeMetric::InboxApprovalScan,
+    );
     let (runs, truncated) = automation_inbox_run_page(offset, |run| {
         run.get("status").and_then(serde_json::Value::as_str) == Some("awaiting_approval")
     })?;
@@ -299,6 +315,7 @@ fn list_automation_inbox_approvals_page_blocking(
                 .map(str::to_string),
         });
     }
+    profile.finish(approvals.len() as u64);
     Ok((approvals, truncated))
 }
 
@@ -314,61 +331,16 @@ fn list_automation_inbox_approvals_blocking() -> Result<Vec<AutomationInboxAppro
 /// interleaved with them.
 fn automation_inbox_run_page<F>(
     offset: usize,
-    include: F,
-) -> Result<(Vec<serde_json::Value>, bool), String>
-where
-    F: FnMut(&serde_json::Value) -> bool,
-{
-    page_automation_inbox_runs(
-        offset,
-        |raw_offset| crate::commands::automation::automation_list_runs_blocking(Some(raw_offset)),
-        include,
-    )
-}
-
-fn page_automation_inbox_runs<L, F>(
-    offset: usize,
-    mut load_page: L,
     mut include: F,
 ) -> Result<(Vec<serde_json::Value>, bool), String>
 where
-    L: FnMut(usize) -> Result<crate::commands::automation::AutomationRunListResult, String>,
     F: FnMut(&serde_json::Value) -> bool,
 {
-    let target = offset
-        .saturating_add(MAX_INBOX_NOTIFICATIONS)
-        .saturating_add(1);
-    let mut eligible = Vec::with_capacity(target.min(MAX_INBOX_NOTIFICATIONS + 1));
-    let mut raw_offset = 0;
-
-    loop {
-        let page = load_page(raw_offset)?;
-        for run in page.runs {
-            if include(&run) {
-                eligible.push(run);
-                if eligible.len() >= target {
-                    break;
-                }
-            }
-        }
-        if eligible.len() >= target || !page.truncated {
-            break;
-        }
-        raw_offset = page
-            .next_offset
-            .unwrap_or_else(|| raw_offset.saturating_add(MAX_INBOX_NOTIFICATIONS));
-    }
-
-    let page_end = offset.saturating_add(MAX_INBOX_NOTIFICATIONS);
-    let truncated = eligible.len() > page_end;
-    Ok((
-        eligible
-            .into_iter()
-            .skip(offset)
-            .take(MAX_INBOX_NOTIFICATIONS)
-            .collect(),
-        truncated,
-    ))
+    let page =
+        crate::commands::automation::automation_list_runs_matching_blocking(offset, |run| {
+            include(run)
+        })?;
+    Ok((page.runs, page.truncated))
 }
 
 fn notification_payload(
@@ -409,6 +381,49 @@ mod tests {
         store::{append_event, write_checkpoint},
         Event, EventKind, RunState, RunStatus,
     };
+
+    fn page_automation_inbox_runs<L, F>(
+        offset: usize,
+        mut load_page: L,
+        mut include: F,
+    ) -> Result<(Vec<serde_json::Value>, bool), String>
+    where
+        L: FnMut(usize) -> Result<crate::commands::automation::AutomationRunListResult, String>,
+        F: FnMut(&serde_json::Value) -> bool,
+    {
+        let target = offset
+            .saturating_add(MAX_INBOX_NOTIFICATIONS)
+            .saturating_add(1);
+        let mut eligible = Vec::with_capacity(target.min(MAX_INBOX_NOTIFICATIONS + 1));
+        let mut raw_offset = 0;
+        loop {
+            let page = load_page(raw_offset)?;
+            for run in page.runs {
+                if include(&run) {
+                    eligible.push(run);
+                    if eligible.len() >= target {
+                        break;
+                    }
+                }
+            }
+            if eligible.len() >= target || !page.truncated {
+                break;
+            }
+            raw_offset = page
+                .next_offset
+                .unwrap_or_else(|| raw_offset.saturating_add(MAX_INBOX_NOTIFICATIONS));
+        }
+        let page_end = offset.saturating_add(MAX_INBOX_NOTIFICATIONS);
+        let truncated = eligible.len() > page_end;
+        Ok((
+            eligible
+                .into_iter()
+                .skip(offset)
+                .take(MAX_INBOX_NOTIFICATIONS)
+                .collect(),
+            truncated,
+        ))
+    }
 
     struct EnvGuard {
         _lock: std::sync::MutexGuard<'static, ()>,

@@ -456,6 +456,12 @@ pub fn read_run_invocation(run_root: &Path) -> Result<Option<AutomationRunInvoca
         .map_err(|error| format!("failed to parse automation invocation: {error}"))
 }
 
+/// Restore the memory authority captured when an automation invocation started.
+/// Missing authority keeps legacy and memory-disabled runs fail-closed.
+fn memory_principal_for_resume(run_root: &Path) -> Result<Option<String>, String> {
+    Ok(read_run_invocation(run_root)?.and_then(|invocation| invocation.memory_principal))
+}
+
 pub async fn agent_catalog_from_state(
     state: &AppState,
     bindings: &HashMap<String, String>,
@@ -866,6 +872,7 @@ pub async fn drive_resume_with_catalog(
                 return Err(message);
             }
         };
+    let memory_principal = memory_principal_for_resume(&run_root)?;
     let assignments = wardian_core::automation::assignment::normalize_assignments(
         None,
         &bindings,
@@ -895,6 +902,10 @@ pub async fn drive_resume_with_catalog(
         )
     }
     .with_owner_id(owner_id);
+    let exec = match memory_principal {
+        Some(agent_id) => exec.with_memory_principal(agent_id),
+        None => exec,
+    };
     Engine::resume(&blueprint, &run_root, &exec)
         .await
         .map(|_| ())
@@ -1240,6 +1251,48 @@ edges: []
         assert_eq!(invocation.bindings, bindings);
         assert_eq!(invocation.assignments, assignments);
         assert_eq!(invocation.memory_principal.as_deref(), Some("agent-1"));
+    }
+
+    #[test]
+    fn resume_restores_persisted_memory_authority_and_keeps_legacy_runs_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let enabled_root = dir.path().join("enabled");
+        let disabled_root = dir.path().join("disabled");
+        let bindings = HashMap::new();
+        let assignments = AutomationAssignments::new();
+
+        write_run_invocation_with_authority(
+            &enabled_root,
+            "mock",
+            std::path::Path::new("/workspace"),
+            &bindings,
+            &assignments,
+            None,
+            Some("agent-a".to_string()),
+        )
+        .unwrap();
+        write_run_invocation_with_authority(
+            &disabled_root,
+            "mock",
+            std::path::Path::new("/workspace"),
+            &bindings,
+            &assignments,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            memory_principal_for_resume(&enabled_root)
+                .unwrap()
+                .as_deref(),
+            Some("agent-a")
+        );
+        assert_eq!(memory_principal_for_resume(&disabled_root).unwrap(), None);
+        assert_eq!(
+            memory_principal_for_resume(&dir.path().join("legacy")).unwrap(),
+            None
+        );
     }
 
     #[test]

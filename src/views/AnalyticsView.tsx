@@ -34,6 +34,8 @@ export interface AnalyticsViewProps {
   };
   /** Focus an agent from its row. */
   onOpenAgent?: (sessionId: string) => void;
+  /** Pauses telemetry reads while a retained workbench tab is hidden. */
+  enabled?: boolean;
 }
 
 /**
@@ -45,7 +47,11 @@ export interface AnalyticsViewProps {
  * lists: the question is almost always about some agent over some period, so
  * both belong on screen at once with the measure as the thing you change.
  */
-export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ initial, onOpenAgent }) => {
+export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
+  initial,
+  onOpenAgent,
+  enabled = true,
+}) => {
   // Seeded from the surface state so opening Analytics from a Dashboard row
   // lands on that agent's history rather than on a default the reader has to
   // navigate away from.
@@ -65,7 +71,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ initial, onOpenAge
     horizon,
     dimension,
     measure,
-  });
+  }, enabled);
 
   const handleRefresh = async () => {
     setRefreshing(true);

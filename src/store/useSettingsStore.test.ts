@@ -18,6 +18,7 @@ function resetAppPreferences() {
   useSettingsStore.setState({
     theme: 'system',
     autoPatchGemini: false,
+    memoryEnabled: false,
     terminalFontSize: 14,
     terminalFontFamily: '',
     gridCardDisplayMode: 'terminal',
@@ -204,6 +205,17 @@ describe('Codex runtime defaults', () => {
     );
   });
 
+  it('preserves the Codex automatic-review approval policy', () => {
+    expect(normalizeCodexRuntimePolicy({
+      ...DEFAULT_CODEX_RUNTIME_POLICY,
+      approval_policy: 'approve-for-me',
+    })).toMatchObject({
+      sandbox_mode: 'workspace-write',
+      approval_policy: 'approve-for-me',
+      full_auto: false,
+    });
+  });
+
   it('saves Codex workspace trust only when explicitly enabled', async () => {
     mockedInvoke.mockReset();
     mockedInvoke.mockResolvedValueOnce({
@@ -324,7 +336,7 @@ describe('app settings persistence', () => {
       pdf: 'external',
     });
     expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
-      expect.objectContaining({ version: 5 }),
+      expect.objectContaining({ version: 6 }),
     );
   });
 
@@ -339,7 +351,7 @@ describe('app settings persistence', () => {
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
     expect(JSON.parse(localStorage.getItem('wardian-settings') ?? '{}')).toEqual(
       expect.objectContaining({
-        version: 5,
+        version: 6,
         state: expect.objectContaining({ titlebarTelemetryVisible: false }),
       }),
     );
@@ -349,6 +361,7 @@ describe('app settings persistence', () => {
     mockedInvoke.mockResolvedValueOnce({
       theme: 'light',
       auto_patch_gemini: true,
+      memory_enabled: true,
       terminal_font_size: 12,
       terminal_font_family: null,
       grid_card_display_mode: 'chat',
@@ -361,6 +374,7 @@ describe('app settings persistence', () => {
 
     useSettingsStore.getState().setTheme('light');
     useSettingsStore.getState().setAutoPatchGemini(true);
+    useSettingsStore.getState().setMemoryEnabled(true);
     useSettingsStore.getState().setTerminalFontSize(12);
     useSettingsStore.getState().setTerminalFontFamily('');
     useSettingsStore.getState().setGridCardDisplayMode('chat');
@@ -378,6 +392,7 @@ describe('app settings persistence', () => {
         overrides: expect.objectContaining({
           theme: 'light',
           auto_patch_gemini: true,
+          memory_enabled: true,
           terminal_font_size: 12,
           grid_card_display_mode: 'chat',
           watchlist_new_agent_position: 'bottom',
@@ -396,6 +411,7 @@ describe('app settings persistence', () => {
       }),
     );
     expect(useSettingsStore.getState().theme).toBe('light');
+    expect(useSettingsStore.getState().memoryEnabled).toBe(true);
     expect(useSettingsStore.getState().terminalFontSize).toBe(12);
     expect(useSettingsStore.getState().gridCardDisplayMode).toBe('chat');
     expect(useSettingsStore.getState().watchlistNewAgentPosition).toBe('bottom');

@@ -152,7 +152,8 @@ async fn launch(
         &provider,
     )
     .await;
-    let memory_principal = context.agent_id.clone();
+    let memory_enabled = crate::utils::memory_feature_enabled();
+    let memory_principal = memory_enabled.then(|| context.agent_id.clone());
     let Some(claim) = claim_session_close_run(&run_root, &run_id)? else {
         return Ok(());
     };
@@ -165,7 +166,7 @@ async fn launch(
         &invoker.bindings,
         &assignments,
         Value::Object(input),
-        Some(memory_principal.clone()),
+        memory_principal.clone(),
     )?;
     drop(claim);
     let blueprint_for_inbox = blueprint.clone();
@@ -182,7 +183,7 @@ async fn launch(
             invoker.bindings,
             assignments,
             catalog,
-            Some(memory_principal),
+            memory_principal,
         )
         .await;
         if let Err(error) = result {

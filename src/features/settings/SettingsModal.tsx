@@ -237,6 +237,13 @@ const rowDefinitions: SettingsRowDefinition[] = [
     keywords: ["agent", "conversation", "logging", "archive", "transcript"],
   },
   {
+    id: "agent-memory",
+    category: "Agent Runtime",
+    label: "Agent memory",
+    detail: "Allows startup recall and durable retention for new provider processes. Off by default while memory matures.",
+    keywords: ["agent", "memory", "recall", "retention", "startup", "durable"],
+  },
+  {
     id: "codex-sandbox",
     category: "Agent Runtime",
     subgroup: "Codex",
@@ -249,8 +256,8 @@ const rowDefinitions: SettingsRowDefinition[] = [
     category: "Agent Runtime",
     subgroup: "Codex",
     label: "Approval",
-    detail: "Default approval policy for Codex launches.",
-    keywords: ["codex", "approval", "runtime", "permissions"],
+    detail: "Default approval policy for Codex launches, including automatic review.",
+    keywords: ["codex", "approval", "runtime", "permissions", "approve for me", "automatic review"],
   },
   {
     id: "codex-full-auto",
@@ -407,6 +414,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
   const [terminalMessage, setTerminalMessage] = useState("");
   const [runtimeStatus, setRuntimeStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [runtimeMessage, setRuntimeMessage] = useState("");
+  const [memoryStatus, setMemoryStatus] = useState<"idle" | "saving" | "error">("idle");
+  const [memoryError, setMemoryError] = useState("");
   const [patchStatus, setPatchStatus] = useState<"idle" | "running" | "saved" | "error">("idle");
   const [advancedStatus, setAdvancedStatus] = useState<"idle" | "copied" | "error">("idle");
   const [terminalFontSizeDraft, setTerminalFontSizeDraft] = useState("14");
@@ -418,6 +427,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setTheme,
     autoPatchGemini,
     setAutoPatchGemini,
+    memoryEnabled,
+    setMemoryEnabled,
     terminalFontSize,
     setTerminalFontSize,
     terminalFontFamily,
@@ -451,6 +462,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setCustomArgs,
     setAgentSessionPersistence,
     setConversationLogging,
+    loadAppSettings,
     setDefaultProvider,
     setCodexSandboxMode,
     setCodexApprovalPolicy,
@@ -622,6 +634,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
 
   const handleConversationLoggingChange = (value: ConversationLoggingSetting) => {
     setConversationLogging(value);
+  };
+
+  const handleMemoryEnabledChange = async (enabled: boolean) => {
+    const previousValue = useSettingsStore.getState().memoryEnabled;
+    setMemoryStatus("saving");
+    setMemoryError("");
+    setMemoryEnabled(enabled);
+    try {
+      await useSettingsStore.getState().saveAppSettings();
+      setMemoryStatus("idle");
+    } catch (error) {
+      setMemoryEnabled(previousValue);
+      await loadAppSettings();
+      setMemoryStatus("error");
+      setMemoryError(`Unable to save agent memory setting: ${String(error)}`);
+    }
   };
 
   const handleSaveRuntime = async () => {
@@ -1083,6 +1111,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
             </select>
           </SettingRow>
         );
+      case "agent-memory":
+        return (
+          <SettingRow key={row.id} label={row.label} detail={row.detail}>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <select
+                aria-label="Agent memory"
+                value={memoryEnabled ? "enabled" : "disabled"}
+                onChange={(event) => void handleMemoryEnabledChange(event.target.value === "enabled")}
+                disabled={memoryStatus === "saving"}
+                className={optionClass}
+              >
+                <option value="disabled">Disabled</option>
+                <option value="enabled">Enabled</option>
+              </select>
+              {memoryError && (
+                <span role="status" className="text-xs text-wardian-error">
+                  {memoryError}
+                </span>
+              )}
+            </div>
+          </SettingRow>
+        );
       case "codex-sandbox":
         return (
           <SettingRow key={row.id} label={row.label} detail={row.detail}>
@@ -1107,7 +1157,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               onChange={(event) => setCodexApprovalPolicy(event.target.value as typeof codex_runtime_policy.approval_policy)}
               className={optionClass}
             >
-              <option value="on-request">On request</option>
+              <option value="on-request">Ask for approval</option>
+              <option value="approve-for-me">Approve for me</option>
               <option value="untrusted">Untrusted</option>
               <option value="never">Never</option>
             </select>

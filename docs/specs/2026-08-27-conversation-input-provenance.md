@@ -13,10 +13,11 @@ not by the provider display role. The archive recognizes four origins:
 - `provider_internal`: provider bookkeeping or internal message content.
 
 The classification is preserved in normalized provider-event metadata and in
-`conversation.jsonl` records as `input_origin`, `input_purpose`,
-`request_root_id`, and `causal_ref`. `request_root_id` identifies the stable
-human or Wardian request that owns an injection. `causal_ref` points to the
-provider event or request that caused it.
+`conversation.jsonl` records as `input_origin`, `input_purpose`, and, when the
+provider supplies one, `causal_ref`. Context records may additionally carry
+`request_root_id`. `request_root_id` identifies the stable human or Wardian
+request that owns an injection. `causal_ref` points to the provider event or
+request that caused the record.
 
 Only `human_input` and `agent_input` message records start a request-indexed
 turn. Context and provider-internal records remain in the lossless archive and
@@ -26,10 +27,12 @@ without a recoverable root is indexed as `context_injection` with
 
 ## Provider boundary
 
-Provider adapters own the evidence used for classification. Claude native
-metadata such as `isMeta`, `parent_tool_use_id`, and `parentUuid` identifies
-context records without inspecting their text. Claude `Skill` tool-use IDs
-provide the causal link for multiple skill injections in one request.
+Provider adapters own the evidence used for classification. Claude explicit
+metadata such as `isMeta`/`isContext` and `parent_tool_use_id` identifies
+context records without inspecting their text. `parentUuid` is retained as
+transcript lineage and normalized `causal_ref`, but is not sufficient by itself
+to classify a record as context. Claude `Skill` tool-use IDs provide the causal
+link for multiple skill injections in one request.
 
 Providers that do not expose an equivalent context event retain their normal
 user-role input classification and do not fabricate a context boundary. Their

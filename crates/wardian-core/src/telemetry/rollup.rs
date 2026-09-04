@@ -75,7 +75,9 @@ fn recompute_one(conn: &Connection, bucket_start: &str, session_id: &str) -> rus
                         + COUNT(reasoning_tokens) > 0 THEN 1 ELSE 0 END,
                 SUM(cost_usd)
          FROM telemetry_turns
-         WHERE session_id = ?2 AND ended_at >= ?1 AND ended_at < ?3
+         WHERE session_id = ?2
+           AND julianday(ended_at) >= julianday(?1)
+           AND julianday(ended_at) < julianday(?3)
          GROUP BY session_id, provider, COALESCE(model, '')",
         params![bucket_start, session_id, bucket_end],
     )?;
@@ -152,7 +154,9 @@ fn active_ms_in_bucket(
     let mut stmt = conn.prepare(
         "SELECT started_at, ended_at, method
          FROM telemetry_activity
-         WHERE session_id = ?1 AND ended_at > ?2 AND started_at < ?3",
+         WHERE session_id = ?1
+           AND julianday(ended_at) > julianday(?2)
+           AND julianday(started_at) < julianday(?3)",
     )?;
     let rows = stmt.query_map(params![session_id, bucket_start, bucket_end], |row| {
         Ok((
@@ -166,11 +170,11 @@ fn active_ms_in_bucket(
     let mut clustered = 0;
     for row in rows {
         let (started_at, ended_at, method) = row?;
-        let clipped_end = min_str(&ended_at, bucket_end);
+        let clipped_end = min_timestamp(&ended_at, bucket_end);
         let clipped = IntervalFact {
             session_id: session_id.to_string(),
             provider: String::new(),
-            started_at: max_str(&started_at, bucket_start),
+            started_at: max_timestamp(&started_at, bucket_start),
             // Duration is measured over the credited span, so the last real
             // event is irrelevant here.
             last_event_at: clipped_end.clone(),
@@ -199,7 +203,9 @@ fn edits_in_bucket(
                 COALESCE(SUM(lines_added), 0),
                 COALESCE(SUM(lines_removed), 0)
          FROM telemetry_edits
-         WHERE session_id = ?1 AND occurred_at >= ?2 AND occurred_at < ?3",
+         WHERE session_id = ?1
+           AND julianday(occurred_at) >= julianday(?2)
+           AND julianday(occurred_at) < julianday(?3)",
         params![session_id, bucket_start, bucket_end],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
@@ -213,7 +219,9 @@ fn primary_provider(
 ) -> rusqlite::Result<String> {
     conn.query_row(
         "SELECT provider FROM telemetry_activity
-         WHERE session_id = ?1 AND ended_at > ?2 AND started_at < ?3
+         WHERE session_id = ?1
+           AND julianday(ended_at) > julianday(?2)
+           AND julianday(started_at) < julianday(?3)
          LIMIT 1",
         params![session_id, bucket_start, bucket_end],
         |row| row.get(0),
@@ -221,7 +229,9 @@ fn primary_provider(
     .or_else(|_| {
         conn.query_row(
             "SELECT provider FROM telemetry_edits
-             WHERE session_id = ?1 AND occurred_at >= ?2 AND occurred_at < ?3
+             WHERE session_id = ?1
+               AND julianday(occurred_at) >= julianday(?2)
+               AND julianday(occurred_at) < julianday(?3)
              LIMIT 1",
             params![session_id, bucket_start, bucket_end],
             |row| row.get(0),
@@ -248,19 +258,31 @@ fn primary_model(
     .or_else(|_| Ok::<String, rusqlite::Error>(String::new()))
 }
 
-fn max_str(left: &str, right: &str) -> String {
-    if left >= right {
-        left.to_string()
-    } else {
-        right.to_string()
+fn max_timestamp(left: &str, right: &str) -> String {
+    match (
+        crate::telemetry::activity::parse_timestamp(left),
+        crate::telemetry::activity::parse_timestamp(right),
+    ) {
+        (Some(left), Some(right)) if left >= right => {
+            crate::telemetry::activity::format_timestamp(left)
+        }
+        (Some(_), Some(right)) => crate::telemetry::activity::format_timestamp(right),
+        _ if left >= right => left.to_string(),
+        _ => right.to_string(),
     }
 }
 
-fn min_str(left: &str, right: &str) -> String {
-    if left <= right {
-        left.to_string()
-    } else {
-        right.to_string()
+fn min_timestamp(left: &str, right: &str) -> String {
+    match (
+        crate::telemetry::activity::parse_timestamp(left),
+        crate::telemetry::activity::parse_timestamp(right),
+    ) {
+        (Some(left), Some(right)) if left <= right => {
+            crate::telemetry::activity::format_timestamp(left)
+        }
+        (Some(_), Some(right)) => crate::telemetry::activity::format_timestamp(right),
+        _ if left <= right => left.to_string(),
+        _ => right.to_string(),
     }
 }
 

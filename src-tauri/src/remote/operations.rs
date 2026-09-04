@@ -28,21 +28,28 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     // `set_agent_status` persists observations while it owns the global agent
     // map. Waiting here made the remote shell inherit provider/SQLite stalls.
     // A remote read must never make the phone wait for that write to finish.
-    let (agent_snapshot_handles, order) = {
-        let Ok(agents) = state.agents.try_lock() else {
-            return remote_agent_roster_fallback(state);
-        };
+    let Ok(agents) = state.agents.try_lock() else {
+        return remote_agent_roster_fallback(state);
+    };
+    let order = {
         let Ok(order) = state.agent_order.try_lock() else {
             return remote_agent_roster_fallback(state);
         };
-        (
-            agents
-                .values()
-                .map(|agent| (agent.config.clone(), agent.current_status.clone()))
-                .collect::<Vec<_>>(),
-            order.clone(),
-        )
+        order.clone()
     };
+    // Keep the map guard until the status/config snapshots and roster cache
+    // are committed. A pause/resume replacement cannot retire these Arcs
+    // between the read and a fallback-cache write.
+    let agent_snapshot_handles = agents
+        .iter()
+        .map(|(session_id, agent)| {
+            (
+                session_id.clone(),
+                agent.config.clone(),
+                agent.current_status.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
 
     // During asynchronous startup the live map can be empty for a short
     // period even though the atomic persisted snapshot already has the full
@@ -50,22 +57,79 @@ pub async fn remote_agent_roster(state: &AppState) -> Vec<RemoteAgentSummary> {
     if agent_snapshot_handles.is_empty() {
         if let Some(persisted) = persisted_remote_agent_roster() {
             if !persisted.is_empty() {
-                return persisted;
+                return apply_cached_agent_statuses(state, persisted);
             }
         }
     }
 
-    let Some(summaries) = agent_snapshot_handles
+    let previous_by_id = state
+        .remote_agent_roster_snapshot()
+        .unwrap_or_default()
         .into_iter()
-        .map(|(config_lock, status_lock)| {
-            let config = config_lock.try_lock().ok()?.clone();
-            let status = status_lock.try_lock().ok()?.clone();
-            Some(remote_agent_summary(config, status))
+        .map(|summary| (summary.session_id.clone(), summary))
+        .collect::<HashMap<_, _>>();
+    let persisted_by_id = persisted_remote_agent_roster()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|summary| (summary.session_id.clone(), summary))
+        .collect::<HashMap<_, _>>();
+    let Some(summaries) = agent_snapshot_handles
+        .iter()
+        .map(|(session_id, config_lock, status_lock)| {
+            let config = config_lock.try_lock().ok().map(|config| config.clone());
+            let live_status = status_lock.try_lock().ok();
+            let live_status_value = live_status.as_deref().cloned();
+            if let Some(status) = live_status_value.as_deref() {
+                // A successful live snapshot is newer evidence than the
+                // fallback snapshot. Publish it so a later global-lock miss
+                // cannot overlay an older cached status onto this roster.
+                // Keep the status guard held through sequence allocation so a
+                // transition cannot receive a lower sequence and then lose
+                // its cache update to this older snapshot.
+                let sequence = state.next_status_observation_sequence(session_id);
+                state.set_remote_agent_status(session_id, status, sequence);
+            }
+            drop(live_status);
+            let cached_status = || state.remote_agent_status(session_id);
+            match config {
+                Some(config) => Some(remote_agent_summary(
+                    config,
+                    live_status_value
+                        .or_else(cached_status)
+                        .or_else(|| {
+                            previous_by_id
+                                .get(session_id)
+                                .map(|summary| summary.status.clone())
+                        })
+                        .unwrap_or_else(|| "Restoring".to_string()),
+                )),
+                None => {
+                    let mut summary = previous_by_id
+                        .get(session_id)
+                        .cloned()
+                        .or_else(|| persisted_by_id.get(session_id).cloned())?;
+                    if let Some(status) = live_status_value.or_else(cached_status) {
+                        summary.status = status;
+                    }
+                    Some(summary)
+                }
+            }
         })
         .collect::<Option<Vec<_>>>()
     else {
         return remote_agent_roster_fallback(state);
     };
+
+    if agent_snapshot_handles
+        .iter()
+        .any(|(session_id, _, status)| {
+            !agents
+                .get(session_id)
+                .is_some_and(|agent| std::sync::Arc::ptr_eq(&agent.current_status, status))
+        })
+    {
+        return remote_agent_roster_fallback(state);
+    }
 
     let ordered = order_remote_agent_summaries(summaries, &order);
     state.set_remote_agent_roster_snapshot(ordered.clone());
@@ -111,10 +175,27 @@ fn order_remote_agent_summaries(
 }
 
 fn remote_agent_roster_fallback(state: &AppState) -> Vec<RemoteAgentSummary> {
-    state
+    let snapshot = state
         .remote_agent_roster_snapshot()
         .or_else(persisted_remote_agent_roster)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    apply_cached_agent_statuses(state, snapshot)
+}
+
+fn apply_cached_agent_statuses(
+    state: &AppState,
+    snapshot: Vec<RemoteAgentSummary>,
+) -> Vec<RemoteAgentSummary> {
+    let statuses = state.remote_agent_statuses();
+    snapshot
+        .into_iter()
+        .map(|mut summary| {
+            if let Some(status) = statuses.get(&summary.session_id) {
+                summary.status = status.clone();
+            }
+            summary
+        })
+        .collect()
 }
 
 fn persisted_remote_agent_roster() -> Option<Vec<RemoteAgentSummary>> {
@@ -439,37 +520,79 @@ fn project_remote_failure(raw_failure: Option<String>, summary: &str) -> Option<
     raw_failure.map(|_| summary.to_string())
 }
 
-/// Builds the same Inbox projection as the desktop queue store.
+/// Builds the fast, durable portion of the Inbox projection. Live automation
+/// run reconciliation is refreshed separately so a filesystem-heavy run
+/// history cannot make the remote compatibility endpoint time out.
 pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
+    let mut items = remote_durable_queue_items(state).await;
+    if let Some(runtime_items) = state.remote_inbox_runtime_items() {
+        items.extend(runtime_items);
+    }
+    sort_remote_queue_items(&mut items);
+    items
+}
+
+/// Returns the durable Inbox immediately and schedules one background
+/// reconciliation of automation approvals/completions. The next request sees
+/// the cached runtime projection without waiting for directory scans.
+pub async fn remote_queue_items_for_app(
+    app: &AppHandle,
+    state: &AppState,
+) -> Vec<serde_json::Value> {
+    let items = remote_queue_items(state).await;
+    if let Some(refresh_generation) = state.try_start_remote_inbox_runtime_refresh() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let state = app.state::<AppState>();
+            let runtime_items = remote_runtime_inbox_items(state.inner()).await;
+            state
+                .inner()
+                .set_remote_inbox_runtime_items(refresh_generation, runtime_items);
+        });
+    }
+    items
+}
+
+/// Builds the action lookup from an authoritative notification projection.
+/// Read requests use a bounded timeout so the remote shell stays responsive;
+/// mutations must wait for the durable interaction source instead of turning
+/// lock contention into a false `inbox_item_not_found` or no-op bulk action.
+async fn remote_queue_items_for_mutation(state: &AppState) -> Vec<serde_json::Value> {
+    let mut items = remote_durable_queue_items_authoritative(state).await;
+    if let Some(runtime_items) = state.remote_inbox_runtime_items() {
+        items.extend(runtime_items);
+    } else {
+        items.extend(remote_runtime_inbox_items(state).await);
+    }
+    sort_remote_queue_items(&mut items);
+    items
+}
+
+async fn remote_durable_queue_items(state: &AppState) -> Vec<serde_json::Value> {
     let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
     let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
     let read_notification_ids = queue_metadata.read_notification_ids;
-    let persisted_automation_runs = queue_metadata.automation_runs;
-    let source_kinds = [
-        InboxSource::Notifications,
-        InboxSource::AutomationApprovals,
-        InboxSource::AutomationTerminals,
-        InboxSource::LegacyQueue,
-    ];
     let context = InboxProjectionContext {
         cutoff,
         read_notification_ids: &read_notification_ids,
-        persisted_automation_runs: &persisted_automation_runs,
+        persisted_automation_runs: &queue_metadata.automation_runs,
         types: &[],
         sources: &[],
         unread: false,
     };
     let mut items = Vec::new();
-    for source in source_kinds.into_iter().take(3) {
-        let Ok(page) =
-            remote_inbox_source_page(state, source, 0, MAX_INBOX_SOURCE_ITEMS, &context).await
-        else {
-            // The compatibility endpoint has no cursor or error field.
-            // Preserve readable sources when an automation directory changes
-            // during a refresh instead of returning an empty Inbox. Callers
-            // that need older records use the bounded Inbox control path.
-            continue;
-        };
+    if let Ok(Ok(page)) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        remote_inbox_source_page(
+            state,
+            InboxSource::Notifications,
+            0,
+            MAX_INBOX_SOURCE_ITEMS,
+            &context,
+        ),
+    )
+    .await
+    {
         items.extend(page.items);
     }
     items.extend(persisted_queue_items().into_iter().filter(|item| {
@@ -477,13 +600,89 @@ pub async fn remote_queue_items(state: &AppState) -> Vec<serde_json::Value> {
             && is_legacy_queue_item(item)
             && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
     }));
+    items
+}
+
+async fn remote_durable_queue_items_authoritative(state: &AppState) -> Vec<serde_json::Value> {
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &queue_metadata.read_notification_ids,
+        persisted_automation_runs: &queue_metadata.automation_runs,
+        types: &[],
+        sources: &[],
+        unread: false,
+    };
+    let mut items = Vec::new();
+    if let Ok(page) = remote_inbox_source_page(
+        state,
+        InboxSource::Notifications,
+        0,
+        MAX_INBOX_SOURCE_ITEMS,
+        &context,
+    )
+    .await
+    {
+        items.extend(page.items);
+    }
+    items.extend(persisted_queue_items().into_iter().filter(|item| {
+        item_timestamp(item) > cutoff
+            && is_legacy_queue_item(item)
+            && item.get("dismissed").and_then(serde_json::Value::as_bool) != Some(true)
+    }));
+    items
+}
+
+async fn remote_runtime_inbox_items(state: &AppState) -> Vec<serde_json::Value> {
+    let cutoff = chrono::Utc::now().timestamp_millis() - QUEUE_MAX_AGE_MS;
+    let queue_metadata = wardian_core::queue::load_recent_items(MAX_INBOX_SOURCE_ITEMS, 0, cutoff);
+    let context = InboxProjectionContext {
+        cutoff,
+        read_notification_ids: &queue_metadata.read_notification_ids,
+        persisted_automation_runs: &queue_metadata.automation_runs,
+        types: &[],
+        sources: &[],
+        unread: false,
+    };
+    let mut items = Vec::new();
+    for source in [
+        InboxSource::AutomationApprovals,
+        InboxSource::AutomationTerminals,
+    ] {
+        if let Ok(page) =
+            remote_inbox_source_page(state, source, 0, MAX_INBOX_SOURCE_ITEMS, &context).await
+        {
+            items.extend(page.items);
+        }
+    }
+    items
+}
+
+fn sort_remote_queue_items(items: &mut Vec<serde_json::Value>) {
     items.sort_by(|left, right| {
         item_timestamp(left)
             .cmp(&item_timestamp(right))
             .then_with(|| item_id(left).cmp(item_id(right)))
             .reverse()
     });
-    items
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_automation = std::collections::HashSet::new();
+    items.retain(|item| {
+        let id = item_id(item);
+        if !id.is_empty() && !seen_ids.insert(id.to_string()) {
+            return false;
+        }
+        if matches!(
+            item.get("type").and_then(serde_json::Value::as_str),
+            Some("automation_completed" | "workflow_completed")
+        ) {
+            if let Some(identity) = automation_identity(item) {
+                return seen_automation.insert(identity);
+            }
+        }
+        true
+    });
 }
 
 /// Builds one bounded page of the Inbox projection while preserving the
@@ -1069,7 +1268,7 @@ pub async fn apply_remote_inbox_action(
     request: RemoteInboxActionRequest,
 ) -> Result<(), String> {
     let _queue_guard = state.queue_io_lock.lock().await;
-    let projected_items = remote_queue_items(state).await;
+    let projected_items = remote_queue_items_for_mutation(state).await;
     match request.action.as_str() {
         "mark_read" => {
             let item_id = request
@@ -1270,6 +1469,7 @@ pub async fn apply_remote_inbox_action(
         }
         _ => return Err("unsupported_inbox_action".to_string()),
     }
+    state.invalidate_remote_inbox_runtime();
     let _ = app.emit("inbox-updated", ());
     Ok(())
 }
@@ -1823,6 +2023,95 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_keeps_live_status_when_config_is_busy() {
+        let state = Arc::new(AppState::new());
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Processing");
+        let config = agent.config.clone();
+        let status = agent.current_status.clone();
+        insert_agent(&state, agent).await;
+        let _ = remote_agent_roster(&state).await;
+        *status.lock().expect("status") = "Idle".to_string();
+        let config_guard = config.lock().expect("config");
+
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("busy config read should not wait for the config lock");
+
+        drop(config_guard);
+        assert_eq!(roster[0].status, "Idle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_uses_cached_status_when_global_state_is_busy() {
+        let state = Arc::new(AppState::new());
+        let agent = test_agent("agent-1", "CoderOne", "Coder", "Restoring");
+        let status = agent.current_status.clone();
+        insert_agent(&state, agent).await;
+        let initial_roster = remote_agent_roster(&state).await;
+        *status.lock().expect("status") = "Idle".to_string();
+        let refreshed_roster = remote_agent_roster(&state).await;
+
+        let agents_guard = state.agents.lock().await;
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("cached roster read should not wait for the global agent lock");
+        drop(agents_guard);
+
+        assert_eq!(initial_roster[0].status, "Restoring");
+        assert_eq!(refreshed_roster[0].status, "Idle");
+        assert_eq!(roster[0].status, "Idle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_agent_roster_keeps_other_agents_live_when_one_status_is_busy() {
+        let state = Arc::new(AppState::new());
+        let busy = test_agent("agent-1", "Busy", "Coder", "Processing");
+        let busy_status = busy.current_status.clone();
+        let live = test_agent("agent-2", "Live", "Coder", "Idle");
+        let live_status = live.current_status.clone();
+        insert_agent(&state, busy).await;
+        insert_agent(&state, live).await;
+        let initial_roster = remote_agent_roster(&state).await;
+        let busy_guard = busy_status.lock().expect("busy status");
+        *live_status.lock().expect("live status") = "Action Needed".to_string();
+
+        let roster = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote_agent_roster(&state),
+        )
+        .await
+        .expect("partial roster read should not wait for one status lock");
+
+        drop(busy_guard);
+        assert_eq!(
+            roster
+                .iter()
+                .find(|agent| agent.session_id == "agent-1")
+                .expect("busy agent")
+                .status,
+            initial_roster
+                .iter()
+                .find(|agent| agent.session_id == "agent-1")
+                .expect("initial busy agent")
+                .status
+        );
+        assert_eq!(
+            roster
+                .iter()
+                .find(|agent| agent.session_id == "agent-2")
+                .expect("live agent")
+                .status,
+            "Action Needed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_agent_roster_uses_persisted_config_without_waiting_for_live_state() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp home");
@@ -1865,7 +2154,7 @@ mod tests {
 
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].session_id, "agent-1");
-        assert_eq!(roster[0].status, "Restoring");
+        assert_eq!(roster[0].status, "Processing");
     }
 
     #[tokio::test]
@@ -1968,6 +2257,69 @@ mod tests {
         unsafe { std::env::remove_var("WARDIAN_HOME") };
 
         assert_eq!(items[0]["id"], "workflow-completion:release:run-1");
+    }
+
+    #[tokio::test]
+    async fn remote_queue_items_merges_cached_runtime_projection() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        crate::utils::queue::save_items(&[serde_json::json!({
+            "id": "desktop-item",
+            "type": "agent_completed",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        })])
+        .expect("desktop item");
+        let state = AppState::new();
+        state.set_remote_inbox_runtime_items(
+            0,
+            vec![serde_json::json!({
+                "id": "automation-item",
+                "type": "automation_completed",
+                "timestamp": chrono::Utc::now().timestamp_millis() + 1,
+            })],
+        );
+
+        let items = remote_queue_items(&state).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["id"].as_str().expect("item id"))
+                .collect::<Vec<_>>(),
+            vec!["automation-item", "desktop-item"]
+        );
+    }
+
+    #[test]
+    fn remote_runtime_refresh_is_single_flight_and_interval_bounded() {
+        let state = AppState::new();
+        let generation = state
+            .try_start_remote_inbox_runtime_refresh()
+            .expect("first refresh should start");
+        assert!(state.try_start_remote_inbox_runtime_refresh().is_none());
+        state.set_remote_inbox_runtime_items(generation, Vec::new());
+        assert!(state.try_start_remote_inbox_runtime_refresh().is_none());
+    }
+
+    #[test]
+    fn remote_runtime_refresh_invalidation_rejects_stale_results() {
+        let state = AppState::new();
+        let generation = state
+            .try_start_remote_inbox_runtime_refresh()
+            .expect("refresh should start");
+        state
+            .set_remote_inbox_runtime_items(generation, vec![serde_json::json!({ "id": "stale" })]);
+        assert!(state.remote_inbox_runtime_items().is_some());
+
+        state.invalidate_remote_inbox_runtime();
+        assert!(state.remote_inbox_runtime_items().is_none());
+        state.set_remote_inbox_runtime_items(
+            generation,
+            vec![serde_json::json!({ "id": "rejected" })],
+        );
+        assert!(state.remote_inbox_runtime_items().is_none());
     }
 
     #[test]
@@ -2267,6 +2619,102 @@ mod tests {
             item["approval_choices"],
             serde_json::json!(["Approve", "Reject"])
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_mutation_lookup_waits_for_authoritative_notifications() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp = tempfile::tempdir().expect("temp home");
+        unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
+        wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
+            .expect("initialize state db");
+        let state = Arc::new(AppState::new());
+        let first = state
+            .interactions
+            .create_notification_durable(
+                "agent-1".to_string(),
+                wardian_core::control::InboxNotificationPayload {
+                    kind: InboxNotificationKind::Update,
+                    title: "First update".to_string(),
+                    body: "The first update is ready.".to_string(),
+                    proposed_action: None,
+                    risk: None,
+                    choices: Vec::new(),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("create first notification");
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocker_state = Arc::clone(&state);
+        let blocker_entered = Arc::clone(&entered);
+        let blocker_release = Arc::clone(&release);
+        let blocker = tokio::spawn(async move {
+            let _records = blocker_state.interactions.records.lock().await;
+            blocker_entered.notify_one();
+            blocker_release.notified().await;
+        });
+        entered.notified().await;
+
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            remote_queue_items_for_mutation(&state),
+        )
+        .await
+        .is_err());
+        release.notify_one();
+        blocker.await.expect("release first records lock");
+        let items = remote_queue_items_for_mutation(&state).await;
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", first.id) }));
+
+        let second = state
+            .interactions
+            .create_notification_durable(
+                "agent-1".to_string(),
+                wardian_core::control::InboxNotificationPayload {
+                    kind: InboxNotificationKind::Update,
+                    title: "Second update".to_string(),
+                    body: "The second update is ready.".to_string(),
+                    proposed_action: None,
+                    risk: None,
+                    choices: Vec::new(),
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("create second notification");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocker_state = Arc::clone(&state);
+        let blocker_entered = Arc::clone(&entered);
+        let blocker_release = Arc::clone(&release);
+        let blocker = tokio::spawn(async move {
+            let _records = blocker_state.interactions.records.lock().await;
+            blocker_entered.notify_one();
+            blocker_release.notified().await;
+        });
+        entered.notified().await;
+
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            remote_queue_items_for_mutation(&state),
+        )
+        .await
+        .is_err());
+        release.notify_one();
+        blocker.await.expect("release second records lock");
+        let items = remote_queue_items_for_mutation(&state).await;
+        unsafe { std::env::remove_var("WARDIAN_HOME") };
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", first.id) }));
+        assert!(items
+            .iter()
+            .any(|item| { item["id"] == format!("notification:{}", second.id) }));
     }
 
     #[tokio::test]

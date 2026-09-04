@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openSurface, surfacePanel } from "../fixtures/workbench";
+import { openAutomationEditor, openSurface, surfacePanel } from "../fixtures/workbench";
 import { makeWorkbenchDocument, makeWorkbenchSurface } from "../fixtures/workbenchIpcMock";
 import fs from "node:fs";
 
@@ -254,7 +254,7 @@ test("unified Automations view edits, launches, observes, and returns to edit", 
   await expect(titlebar.getByRole("button", { name: "Blueprints" })).toHaveCount(0);
   await expect(titlebar.getByRole("button", { name: "Runs" })).toHaveCount(0);
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.evaluate(async () => {
     const { useSettingsStore } = await import("/src/store/useSettingsStore.ts");
     useSettingsStore.setState({ default_provider: "codex" });
@@ -295,7 +295,7 @@ test("automation Observe exposes approval controls and records the choice", asyn
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
   await page.getByTestId("automations-view").getByRole("button", { name: /^Run$/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -357,7 +357,7 @@ test("automation builder renders persisted loop automation nodes on a visible ca
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
 
   await expect(page.getByTestId("automations-edit-mode")).toBeVisible();
@@ -397,7 +397,7 @@ test("automation run dialog scrolls parameter-heavy forms within the viewport", 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
 
-  await openSurface(page, "automations");
+  await openAutomationEditor(page);
   await page.getByTestId("blueprint-selector").getByRole("combobox").selectOption("/x/wf.md");
   await page.getByTestId("automations-view").getByRole("button", { name: /^Run$/ }).click();
   const dialog = page.getByTestId("run-launch-dialog");

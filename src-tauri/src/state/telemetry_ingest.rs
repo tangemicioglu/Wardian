@@ -15,7 +15,9 @@ use crate::state::AppState;
 use crate::utils::fs::get_wardian_home;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tauri::Manager;
+use wardian_core::telemetry::identity::canonical_path;
 use wardian_core::telemetry::ingest::{ingest_source, IngestError};
 use wardian_core::telemetry::sources::opencode::sessions_in_directory;
 use wardian_core::telemetry::sources::{is_supported, uses_archive, SourceContext, SourceError};
@@ -33,6 +35,13 @@ const INGEST_INTERVAL_ACTIVE: std::time::Duration = std::time::Duration::from_se
 /// It is not zero because an agent can write through a headless run this state
 /// does not observe.
 const INGEST_INTERVAL_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long the background loop may reuse an unchanged source topology.
+///
+/// Live session and workspace changes invalidate it immediately. The bounded
+/// refresh exists for provider sessions created outside Wardian, which have no
+/// in-memory lifecycle event to announce their arrival.
+const DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 /// A single ingest pass is considered slow after this long.
 ///
@@ -95,6 +104,60 @@ impl DiscoveredSource {
     }
 }
 
+type DiscoveryIdentity = Vec<(String, String, Option<String>, Option<String>)>;
+
+/// Source paths change much less often than source contents. Retain the path
+/// topology between background passes so the one-minute delta reader does not
+/// recursively rediscover every historical transcript first.
+#[derive(Default)]
+struct BackgroundDiscoveryCache {
+    identity: DiscoveryIdentity,
+    sources: Vec<DiscoveredSource>,
+    discovered_at: Option<Instant>,
+}
+
+impl BackgroundDiscoveryCache {
+    fn refresh(&mut self, agents: &[AgentDescriptor], now: Instant) {
+        let identity = discovery_identity(agents);
+        if self.should_rediscover(&identity, now) {
+            let discovery_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                crate::utils::runtime_profile::RuntimeMetric::TelemetryIngestDiscover,
+            );
+            self.sources = discover_sources(agents);
+            discovery_profile.finish(self.sources.len() as u64);
+            self.identity = identity;
+            self.discovered_at = Some(now);
+        } else {
+            refresh_source_order(&mut self.sources);
+        }
+    }
+
+    fn should_rediscover(&self, identity: &DiscoveryIdentity, now: Instant) -> bool {
+        self.identity != *identity
+            || self.discovered_at.is_none_or(|last| {
+                now.checked_duration_since(last).unwrap_or_default() >= DISCOVERY_REFRESH_INTERVAL
+            })
+    }
+}
+
+fn discovery_identity(agents: &[AgentDescriptor]) -> DiscoveryIdentity {
+    let mut identity: DiscoveryIdentity = agents
+        .iter()
+        .filter(|agent| is_supported(&agent.provider))
+        .map(|agent| {
+            (
+                agent.session_id.clone(),
+                agent.provider.clone(),
+                agent.provider_session_id.clone(),
+                agent.workspace.clone(),
+            )
+        })
+        .collect();
+    identity.sort();
+    identity.dedup();
+    identity
+}
+
 /// Where an agent's past sessions are looked up.
 ///
 /// Behind a trait because the real implementation answers from this machine's
@@ -145,8 +208,12 @@ pub struct MachineCatalog {
     /// affordable when one agent meant one lookup and is not now that it means
     /// one lookup per session the agent has ever run.
     shared_codex: HashMap<String, PathBuf>,
+    shared_codex_root: Option<PathBuf>,
+    shared_codex_paths: HashSet<PathBuf>,
     /// Session id to transcript path for the shared claude home.
     shared_claude: HashMap<String, PathBuf>,
+    shared_claude_root: Option<PathBuf>,
+    shared_claude_paths: HashSet<PathBuf>,
 }
 
 impl Default for MachineCatalog {
@@ -158,17 +225,35 @@ impl Default for MachineCatalog {
 impl MachineCatalog {
     pub fn new() -> Self {
         let home = dirs::home_dir();
-        let shared_codex = home
+        let shared_codex_root = home
             .as_ref()
-            .map(|home| index_transcripts(&home.join(".codex").join("sessions")))
+            .map(|home| home.join(".codex").join("sessions"));
+        let shared_codex = shared_codex_root
+            .as_deref()
+            .map(index_transcripts)
             .unwrap_or_default();
-        let shared_claude = home
+        let shared_codex_paths = shared_codex
+            .values()
+            .map(|path| canonical_path(path))
+            .collect();
+        let shared_claude_root = home
             .as_ref()
-            .map(|home| index_transcripts(&home.join(".claude").join("projects")))
+            .map(|home| home.join(".claude").join("projects"));
+        let shared_claude = shared_claude_root
+            .as_deref()
+            .map(index_transcripts)
             .unwrap_or_default();
+        let shared_claude_paths = shared_claude
+            .values()
+            .map(|path| canonical_path(path))
+            .collect();
         Self {
             shared_codex,
+            shared_codex_root,
+            shared_codex_paths,
             shared_claude,
+            shared_claude_root,
+            shared_claude_paths,
         }
     }
 
@@ -179,8 +264,12 @@ impl MachineCatalog {
         agent: &AgentDescriptor,
         projected: &[&str],
         shared: &HashMap<String, PathBuf>,
+        shared_root: Option<&Path>,
+        shared_paths: &HashSet<PathBuf>,
     ) -> Vec<PathBuf> {
         let mut paths = Vec::new();
+        let known = known_session_ids(agent);
+        let mut projected_is_shared = false;
 
         // Wardian can project a per-agent provider home. Everything under it
         // belongs to this agent by construction, so no attribution guesswork is
@@ -190,14 +279,36 @@ impl MachineCatalog {
             for segment in projected {
                 root = root.join(segment);
             }
-            paths.extend(index_transcripts(&root).into_values());
+            if shared_root
+                .is_some_and(|shared_root| projected_root_matches_shared(&root, shared_root))
+            {
+                // The common projected-home layout is a junction to the
+                // machine-wide provider home. Rewalking that same tree for
+                // every agent made discovery scale as agents x all rollouts.
+                // The shared catalog already walked it once.
+                projected_is_shared = true;
+                paths.extend(known.iter().filter_map(|id| shared.get(id).cloned()));
+            } else {
+                paths.extend(index_transcripts(&root).into_values().filter(|path| {
+                    // A projected provider home is normally private, but it can
+                    // contain a nested junction into the shared provider home.
+                    // Retain private files and only this agent's shared files.
+                    let physical = canonical_path(path);
+                    if !shared_paths.contains(&physical) {
+                        return true;
+                    }
+                    transcript_session_id(path).is_none_or(|id| known.contains(&id))
+                }));
+            }
         }
 
         // Agents without a projected home write into the shared one, where a
         // file is only attributable through a session id we recorded.
-        for id in known_session_ids(agent) {
-            if let Some(path) = shared.get(&id) {
-                paths.push(path.clone());
+        if !projected_is_shared {
+            for id in known {
+                if let Some(path) = shared.get(&id) {
+                    paths.push(path.clone());
+                }
             }
         }
 
@@ -207,11 +318,23 @@ impl MachineCatalog {
 
 impl SessionCatalog for MachineCatalog {
     fn codex_rollouts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
-        self.resolve(agent, &[".codex", "sessions"], &self.shared_codex)
+        self.resolve(
+            agent,
+            &[".codex", "sessions"],
+            &self.shared_codex,
+            self.shared_codex_root.as_deref(),
+            &self.shared_codex_paths,
+        )
     }
 
     fn claude_transcripts(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
-        self.resolve(agent, &[".claude", "projects"], &self.shared_claude)
+        self.resolve(
+            agent,
+            &[".claude", "projects"],
+            &self.shared_claude,
+            self.shared_claude_root.as_deref(),
+            &self.shared_claude_paths,
+        )
     }
 
     fn pi_sessions(&self, agent: &AgentDescriptor) -> Vec<PathBuf> {
@@ -277,6 +400,10 @@ impl SessionCatalog for MachineCatalog {
     fn opencode_database(&self) -> Option<PathBuf> {
         opencode_database_path()
     }
+}
+
+fn projected_root_matches_shared(projected: &Path, shared: &Path) -> bool {
+    canonical_path(projected) == canonical_path(shared)
 }
 
 /// Every provider session this agent is known to have run.
@@ -446,6 +573,7 @@ pub fn discover_sources_with(
         };
 
         for (path, provider_session_ids) in resolved {
+            let path = canonical_path(&path);
             let key = (
                 agent.session_id.clone(),
                 agent.provider.clone(),
@@ -465,12 +593,7 @@ pub fn discover_sources_with(
         }
     }
 
-    sources.sort_by(|left, right| {
-        right
-            .modified_ms
-            .cmp(&left.modified_ms)
-            .then_with(|| left.path.cmp(&right.path))
-    });
+    sort_sources(&mut sources);
     sources
 }
 
@@ -527,6 +650,22 @@ fn modified_epoch_ms(path: &Path) -> u64 {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|delta| delta.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn refresh_source_order(sources: &mut [DiscoveredSource]) {
+    for source in sources.iter_mut() {
+        source.modified_ms = modified_epoch_ms(&source.path);
+    }
+    sort_sources(sources);
+}
+
+fn sort_sources(sources: &mut [DiscoveredSource]) {
+    sources.sort_by(|left, right| {
+        right
+            .modified_ms
+            .cmp(&left.modified_ms)
+            .then_with(|| left.path.cmp(&right.path))
+    });
 }
 
 /// What one pass over every source accomplished.
@@ -670,8 +809,17 @@ pub async fn agent_descriptors(state: &AppState) -> Vec<AgentDescriptor> {
 pub async fn run_ingest_cycle(state: &AppState) -> IngestPassReport {
     let agents = agent_descriptors(state).await;
     tokio::task::spawn_blocking(move || {
+        let discovery_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+            crate::utils::runtime_profile::RuntimeMetric::TelemetryIngestDiscover,
+        );
         let sources = discover_sources(&agents);
-        run_ingest_pass(&sources)
+        discovery_profile.finish(sources.len() as u64);
+        let pass_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+            crate::utils::runtime_profile::RuntimeMetric::TelemetryIngestPass,
+        );
+        let report = run_ingest_pass(&sources);
+        pass_profile.finish(report.sources as u64);
+        report
     })
     .await
     .unwrap_or_default()
@@ -688,14 +836,27 @@ const INGEST_INTERVAL_BACKFILL: std::time::Duration = std::time::Duration::from_
 /// An unfinished backfill outranks both steady-state cadences: waiting a full
 /// interval between chunks would turn a bounded pass into a history that takes
 /// days to become true.
-fn next_interval(any_agent_live: bool, deferred: usize) -> std::time::Duration {
+fn next_interval(
+    any_agent_known: bool,
+    any_agent_live: bool,
+    deferred: usize,
+) -> std::time::Duration {
     if deferred > 0 {
         INGEST_INTERVAL_BACKFILL
-    } else if any_agent_live {
+    } else if any_agent_live || !any_agent_known {
+        // Startup can reach this loop before restoration installs its agents.
+        // Treating that transient empty roster as settled-idle delayed the first
+        // real ingest for five minutes.
         INGEST_INTERVAL_ACTIVE
     } else {
         INGEST_INTERVAL_IDLE
     }
+}
+
+/// Retention runs only after an ingest pass and only when its in-memory deadline
+/// has elapsed. Checking the deadline is the only added work on ordinary passes.
+fn telemetry_maintenance_is_due(now: Instant, next_attempt: Instant) -> bool {
+    now >= next_attempt
 }
 
 /// Start the background ingest loop.
@@ -705,14 +866,24 @@ fn next_interval(any_agent_live: bool, deferred: usize) -> std::time::Duration {
 /// Dashboard.
 pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        let mut discovery_cache = BackgroundDiscoveryCache::default();
+        let mut next_maintenance_attempt =
+            Instant::now() + crate::state::telemetry_maintenance::initial_delay();
         loop {
             let state = app_handle.state::<AppState>();
             let descriptors = agent_descriptors(&state).await;
+            let any_agent_known = !descriptors.is_empty();
             let any_agent_live = descriptors.iter().any(|agent| !agent.is_off);
+            let mut pass_cache = std::mem::take(&mut discovery_cache);
 
             let pass = tokio::task::spawn_blocking(move || {
-                let sources = discover_sources(&descriptors);
-                run_ingest_pass(&sources)
+                pass_cache.refresh(&descriptors, Instant::now());
+                let pass_profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+                    crate::utils::runtime_profile::RuntimeMetric::TelemetryIngestPass,
+                );
+                let report = run_ingest_pass(&pass_cache.sources);
+                pass_profile.finish(report.sources as u64);
+                (report, pass_cache)
             });
 
             // Keep the ingest loop single-flight. Dropping a JoinHandle after
@@ -722,7 +893,8 @@ pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
             let pass_started = std::time::Instant::now();
             let mut deferred = 0;
             match pass.await {
-                Ok(report) => {
+                Ok((report, returned_cache)) => {
+                    discovery_cache = returned_cache;
                     for failure in &report.failures {
                         crate::utils::logging::log_debug(&format!(
                             "[Wardian] Telemetry ingest source failed: {failure}"
@@ -750,7 +922,13 @@ pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
                 ));
             }
 
-            tokio::time::sleep(next_interval(any_agent_live, deferred)).await;
+            let now = Instant::now();
+            if telemetry_maintenance_is_due(now, next_maintenance_attempt) {
+                let delay = crate::state::telemetry_maintenance::run_if_due_after_ingest().await;
+                next_maintenance_attempt = Instant::now() + delay;
+            }
+
+            tokio::time::sleep(next_interval(any_agent_known, any_agent_live, deferred)).await;
         }
     });
 }
@@ -1089,17 +1267,73 @@ mod tests {
 
     #[test]
     fn idle_and_active_cadences_differ() {
-        assert_eq!(next_interval(true, 0), INGEST_INTERVAL_ACTIVE);
-        assert_eq!(next_interval(false, 0), INGEST_INTERVAL_IDLE);
-        assert!(next_interval(false, 0) > next_interval(true, 0));
+        assert_eq!(next_interval(true, true, 0), INGEST_INTERVAL_ACTIVE);
+        assert_eq!(next_interval(true, false, 0), INGEST_INTERVAL_IDLE);
+        assert!(next_interval(true, false, 0) > next_interval(true, true, 0));
+        assert_eq!(next_interval(false, false, 0), INGEST_INTERVAL_ACTIVE);
     }
 
     #[test]
     fn an_unfinished_backfill_outranks_both_steady_cadences() {
         // Waiting a full interval between bounded chunks would turn a large
         // history into one that takes days to become true.
-        assert_eq!(next_interval(false, 12), INGEST_INTERVAL_BACKFILL);
-        assert!(next_interval(false, 12) < next_interval(true, 0));
+        assert_eq!(next_interval(true, false, 12), INGEST_INTERVAL_BACKFILL);
+        assert!(next_interval(true, false, 12) < next_interval(true, true, 0));
+    }
+
+    #[test]
+    fn retention_only_runs_after_its_in_memory_deadline() {
+        let now = Instant::now();
+        let elapsed_deadline = now.checked_sub(Duration::from_secs(1)).unwrap();
+
+        assert!(telemetry_maintenance_is_due(now, elapsed_deadline));
+        assert!(!telemetry_maintenance_is_due(
+            now,
+            now + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn background_discovery_identity_tracks_topology_not_liveness() {
+        let first = agent("a1", "codex", Some("session-one"));
+        let mut off = first.clone();
+        off.is_off = true;
+
+        assert_eq!(discovery_identity(&[first]), discovery_identity(&[off]));
+
+        let changed = agent("a1", "codex", Some("session-two"));
+        assert_ne!(
+            discovery_identity(&[changed]),
+            discovery_identity(&[agent("a1", "codex", Some("session-one"))])
+        );
+    }
+
+    #[test]
+    fn background_discovery_is_reused_then_boundedly_refreshed() {
+        let now = Instant::now();
+        let agents = vec![agent("a1", "codex", Some("session-one"))];
+        let identity = discovery_identity(&agents);
+        let cache = BackgroundDiscoveryCache {
+            identity: identity.clone(),
+            sources: Vec::new(),
+            discovered_at: Some(now),
+        };
+
+        assert!(!cache.should_rediscover(&identity, now + INGEST_INTERVAL_ACTIVE));
+        assert!(cache.should_rediscover(&identity, now + DISCOVERY_REFRESH_INTERVAL));
+
+        let changed = discovery_identity(&[agent("a1", "codex", Some("session-two"))]);
+        assert!(cache.should_rediscover(&changed, now));
+    }
+
+    #[test]
+    fn identical_physical_provider_roots_are_recognized_as_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+
+        assert!(projected_root_matches_shared(dir.path(), dir.path()));
+        assert!(!projected_root_matches_shared(dir.path(), &other));
     }
 
     #[test]

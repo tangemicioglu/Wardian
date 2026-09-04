@@ -4,7 +4,15 @@ Wardian agents can save durable preferences, decisions, corrections, lessons,
 and current project state. Memory is available when the agent starts a new
 provider process, even when the provider changes.
 
-Direct memory is enabled by default. It does not consume a second model call.
+Direct memory is disabled by default while the feature matures. Enable **Agent
+memory** under **Settings > Agent Runtime** to opt in. It does not consume a
+second model call.
+
+When disabled, new provider processes receive no startup recall, direct-retention
+instructions, or managed memory capability. Existing records remain stored and
+available for inspection, and changing the setting applies to newly launched or
+restarted provider processes.
+
 The optional Memory Consolidation automation is disabled until you configure and
 run it or bind it to a session-close invoker.
 

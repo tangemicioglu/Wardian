@@ -98,7 +98,8 @@ describe("RemoteAutomationsView", () => {
     expect(screen.getByText("Running now")).toBeVisible();
     expect(screen.getByText("Up next")).toBeVisible();
     expect(screen.getByText("Recent outcomes")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Refresh automation monitor" })).toHaveClass("h-11", "w-11");
+    expect(screen.queryByText(/^Updated /)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh automation monitor" })).toBeNull();
     expect(screen.getByRole("button", { name: "Overview" })).toHaveClass("min-h-11");
 
     await userEvent.click(screen.getByRole("button", { name: /Release validation/ }));
@@ -113,10 +114,26 @@ describe("RemoteAutomationsView", () => {
     render(<RemoteAutomationsView />);
 
     expect(await screen.findByText("Daily project brief")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Refresh automation monitor" }));
+    fireEvent(window, new Event("pageshow"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Showing saved results");
     expect(screen.getByText("Daily project brief")).toBeVisible();
+  });
+
+  it("distinguishes failed, paused, and pending schedules without alerting on upcoming work", async () => {
+    const statusSnapshot = snapshot();
+    statusSnapshot.schedules = [
+      { ...snapshot().schedules[0], id: "schedule-failed", automation_name: "Failed schedule", last_run_status: "failed", last_run_error: "Run failed" },
+      { ...snapshot().schedules[0], id: "schedule-paused", automation_name: "Paused schedule", is_paused: true },
+    ];
+    vi.mocked(remoteClient.loadAutomationMonitor).mockResolvedValue(statusSnapshot);
+    render(<RemoteAutomationsView />);
+
+    expect((await screen.findAllByText("Failed schedule")).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("remote-schedule-card-schedule-failed-attention")).toHaveAttribute("data-status-tone", "attention");
+    expect(screen.getByTestId("remote-schedule-card-schedule-failed-pending")).toHaveTextContent("Pending");
+    expect(screen.getByTestId("remote-schedule-card-schedule-paused-paused")).toHaveAttribute("data-status-tone", "paused");
+    expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
   });
 
   it("merges a bounded history page by run identity", async () => {
@@ -223,7 +240,7 @@ describe("RemoteAutomationsView", () => {
       .mockResolvedValueOnce(second);
     render(<RemoteAutomationsView />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Attention" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Attention$/ }));
     await userEvent.click(screen.getByRole("button", { name: "Load more active runs" }));
 
     expect(await screen.findByText("Nightly security sweep")).toBeVisible();

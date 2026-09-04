@@ -47,6 +47,7 @@ describe("SettingsModal", () => {
     useSettingsStore.setState({
       theme: "dark",
       autoPatchGemini: false,
+      memoryEnabled: false,
       terminalFontSize: 14,
       terminalFontFamily: "",
       gridCardDisplayMode: "terminal",
@@ -229,6 +230,37 @@ describe("SettingsModal", () => {
 
     expect(screen.getByLabelText("Codex autonomous mode")).toHaveValue("false");
     expect(screen.getByRole("option", { name: "On: bypass approvals and sandbox" })).toBeInTheDocument();
+  });
+
+  it("offers Codex automatic review in the global approval selection", () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+
+    expect(screen.getByLabelText("Codex approval")).toHaveValue("on-request");
+    expect(screen.getByRole("option", { name: "Approve for me" })).toBeInTheDocument();
+    expect(
+      Array.from(screen.getByLabelText("Codex approval").querySelectorAll("option")).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["on-request", "approve-for-me", "untrusted", "never"]);
+
+    fireEvent.change(screen.getByLabelText("Codex approval"), {
+      target: { value: "approve-for-me" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Agent Runtime" }));
+
+    return waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_shell_settings", {
+        settings: expect.objectContaining({
+          overrides: expect.objectContaining({
+            codex_runtime_policy: expect.objectContaining({
+              approval_policy: "approve-for-me",
+            }),
+          }),
+        }),
+      });
+    });
   });
 
   it("saves Codex launch workspace trust as an explicit off-by-default setting", async () => {
@@ -457,6 +489,55 @@ describe("SettingsModal", () => {
       });
     });
     expect(useSettingsStore.getState().titlebarTelemetryVisible).toBe(false);
+  });
+
+  it("keeps agent memory disabled until explicitly enabled", async () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+
+    const select = screen.getByLabelText("Agent memory");
+    expect(select).toHaveValue("disabled");
+
+    fireEvent.change(select, { target: { value: "enabled" } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_app_settings", {
+        settings: expect.objectContaining({
+          schema_version: 2,
+          overrides: expect.objectContaining({
+            memory_enabled: true,
+          }),
+        }),
+      });
+    });
+    expect(useSettingsStore.getState().memoryEnabled).toBe(true);
+  });
+
+  it("rolls agent memory back and reports a persistence failure", async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === "save_app_settings") {
+        throw new Error("settings write failed");
+      }
+      if (command === "load_app_settings") {
+        return null;
+      }
+      return null;
+    });
+
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+    const select = screen.getByLabelText("Agent memory");
+    fireEvent.change(select, { target: { value: "enabled" } });
+
+    expect(select).toBeDisabled();
+    await waitFor(() => {
+      expect(select).toHaveValue("disabled");
+      expect(useSettingsStore.getState().memoryEnabled).toBe(false);
+      expect(screen.getByRole("status")).toHaveTextContent("Unable to save agent memory setting: Error: settings write failed");
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("load_app_settings");
   });
 
   it("loads and saves the workbench new tab button preference", async () => {

@@ -651,6 +651,8 @@ impl StepExecutor for LiveStepExecutor {
         Self: 'async_trait,
     {
         Box::pin(async move {
+            // The principal is issued at the trusted provider/invocation launch boundary.
+            // Keep that decision stable for the lifetime of this running invocation.
             let principal = self.memory_principal.as_deref().ok_or_else(|| {
                 StepError::new(
                     "memory_commit requires an authenticated invocation memory principal",
@@ -768,6 +770,12 @@ mod tests {
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
+            std::fs::create_dir_all(home.path().join("settings")).expect("settings directory");
+            std::fs::write(
+                home.path().join("settings/app.json"),
+                r#"{"schema_version":2,"overrides":{"memory_enabled":true}}"#,
+            )
+            .expect("enable memory for automation tests");
             Self {
                 _lock: lock,
                 _home: home,
@@ -843,6 +851,37 @@ mod tests {
             .list_events(&wardian_core::memory::MemoryActor::Operator, "agent-b")
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_commit_keeps_launch_authority_after_setting_changes() {
+        let home = TestWardianHome::new();
+        let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
+        std::fs::write(
+            home._home.path().join("settings/app.json"),
+            r#"{"schema_version":2,"overrides":{}}"#,
+        )
+        .expect("disable memory after invocation launch");
+
+        let output = exec
+            .memory_commit(MemoryCommitRequest {
+                node: "commit".into(),
+                agent_id: "agent-a".into(),
+                workspace: None,
+                conversation_id: None,
+                source_sequence: None,
+                archive_available: None,
+                idempotency_key: None,
+                payload: serde_json::json!({
+                    "agent_id": "agent-a",
+                    "idempotency_key": "run:boundary:launch-authority",
+                    "operations": []
+                }),
+            })
+            .await
+            .expect("a launch-authorized invocation remains coherent");
+
+        assert_eq!(output.0["idempotency_key"], "run:boundary:launch-authority");
     }
 
     #[tokio::test]

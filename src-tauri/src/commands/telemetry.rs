@@ -536,6 +536,9 @@ pub fn telemetry_fleet(
     window_minutes: Option<i64>,
     measure: Option<String>,
 ) -> Result<TelemetryFleetDto, String> {
+    let _profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+        crate::utils::runtime_profile::RuntimeMetric::TelemetryFleetQuery,
+    );
     let window_minutes = window_minutes
         .unwrap_or(60)
         .clamp(MIN_FLEET_WINDOW_MINUTES, MAX_FLEET_WINDOW_MINUTES);
@@ -1069,6 +1072,9 @@ pub fn telemetry_matrix(
     measure: String,
     limit: Option<usize>,
 ) -> Result<TelemetryMatrixDto, String> {
+    let _profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+        crate::utils::runtime_profile::RuntimeMetric::TelemetryMatrixQuery,
+    );
     let horizon =
         Horizon::parse(&horizon).ok_or_else(|| format!("unknown telemetry horizon: {horizon}"))?;
     let dimension = Dimension::parse(&dimension)
@@ -1607,7 +1613,10 @@ mod tests {
         add_turn(&conn, "antigravity", "uuid-1", "t1", DURING);
         add_turn(&conn, "codex", "uuid-2", "t2", DURING);
         conn.execute(
-            "UPDATE telemetry_turns SET input_tokens = 40 WHERE provider = 'codex'",
+            "UPDATE telemetry_turn_facts
+             SET input_tokens = 40
+             WHERE provider_ref = (SELECT string_id FROM telemetry_strings
+                                   WHERE kind = 'provider' AND value = 'codex')",
             [],
         )
         .unwrap();
