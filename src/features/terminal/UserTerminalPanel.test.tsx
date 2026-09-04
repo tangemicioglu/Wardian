@@ -168,12 +168,12 @@ describe("UserTerminalPanel", () => {
     );
 
     await waitFor(() => {
-      expect(registerLinkProviderMock).toHaveBeenCalledTimes(1);
+      expect(registerLinkProviderMock).toHaveBeenCalledTimes(2);
     });
 
     const provider = (registerLinkProviderMock.mock.calls as unknown as Array<[{
       provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void;
-    }]>)[0][0];
+    }]>)[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => {
       provider.provideLinks(1, resolve);
     });
@@ -204,10 +204,10 @@ describe("UserTerminalPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(registerLinkProviderMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(registerLinkProviderMock).toHaveBeenCalledTimes(2));
     const provider = (registerLinkProviderMock.mock.calls as unknown as Array<[{
       provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void;
-    }]>)[0][0];
+    }]>)[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
     links?.[0].activate(new MouseEvent("click"), links[0].text);
 
@@ -233,10 +233,10 @@ describe("UserTerminalPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(registerLinkProviderMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(registerLinkProviderMock).toHaveBeenCalledTimes(2));
     const provider = (registerLinkProviderMock.mock.calls as unknown as Array<[{
       provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void;
-    }]>)[0][0];
+    }]>)[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
     links?.[0].activate(new MouseEvent("click"), links[0].text);
 

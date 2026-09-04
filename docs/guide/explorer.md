@@ -125,7 +125,9 @@ the backend still performs the final root/capability check before opening the
 target.
 
 Agent terminals and the bottom user terminal also make recognized file paths and
-URLs clickable, including links that wrap across terminal rows. File paths use
+URLs clickable, including links that wrap across terminal rows. Ordinary HTTP(S)
+URLs use Wardian's synchronous terminal link handling; a separate provider
+adds validated file paths and provider-TUI hard-wrapped URLs. File paths use
 the same type-sensitive family preference as Explorer **Open**; URLs open as
 URLs.
 Wardian validates terminal file links before showing them, so slash-looking

@@ -2,7 +2,7 @@
 
 Wardian terminals should behave like familiar embedded PTYs: URLs and file paths printed in terminal output become clickable links in both agent terminals and the bottom user terminal.
 
-The implementation should use xterm's link provider API so hover, underline, pointer cursor, and click activation are owned by the terminal renderer. Link detection lives in a shared frontend terminal module. Agent terminals and the user terminal install the same provider when their xterm instance is created.
+The implementation should use xterm's link provider API so hover, underline, pointer cursor, and click activation are owned by the terminal renderer. Wardian's shared URL provider handles HTTP(S) text synchronously, while a separate provider validates file paths asynchronously before exposing them. The shared URL provider also handles soft and hard-wrapped TUI output. Agent terminals and the user terminal install the same link handling when their xterm instance is created.
 
 URLs open as URLs through the existing Tauri opener plugin. This includes plain
 URLs detected from terminal text and OSC 8 hyperlinks emitted by provider TUIs.

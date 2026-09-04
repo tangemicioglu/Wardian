@@ -2586,10 +2586,10 @@ describe("AgentTerminal scrollback", () => {
     );
 
     await waitFor(() => {
-      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(2);
     });
 
-    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[0][0];
+    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => {
       provider.provideLinks(1, resolve);
     });
@@ -2619,9 +2619,9 @@ describe("AgentTerminal scrollback", () => {
     );
 
     await waitFor(() => {
-      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(2);
     });
-    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[0][0];
+    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
     links?.[0].activate(new MouseEvent("click"), links[0].text);
 
@@ -2646,9 +2646,9 @@ describe("AgentTerminal scrollback", () => {
     );
 
     await waitFor(() => {
-      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(1);
+      expect(getLatestTerminalInstance().registerLinkProvider).toHaveBeenCalledTimes(2);
     });
-    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[0][0];
+    const provider = getLatestTerminalInstance().registerLinkProvider.mock.calls[1][0];
     const links = await new Promise<any[] | undefined>((resolve) => provider.provideLinks(1, resolve));
     links?.[0].activate(new MouseEvent("click"), links[0].text);
 
