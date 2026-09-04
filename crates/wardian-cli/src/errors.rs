@@ -31,7 +31,7 @@ pub struct ErrorBody<'a> {
 #[derive(Debug)]
 pub struct CliError {
     pub exit_code: ExitCode,
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
     pub hint: Option<String>,
     pub details: Option<Box<serde_json::Value>>,
@@ -41,7 +41,7 @@ impl CliError {
     pub fn not_in_session() -> Self {
         Self {
             exit_code: ExitCode::NotInSession,
-            code: "not_in_session",
+            code: "not_in_session".into(),
             message: "WARDIAN_SESSION_ID environment variable is not set".to_string(),
             hint: Some(
                 "Pass a name or uuid to look up a specific agent from outside a Wardian-managed agent process: `wardian agent <name>`."
@@ -61,7 +61,7 @@ impl CliError {
     pub fn not_found_entity(entity: &'static str, requested: &str) -> Self {
         Self {
             exit_code: ExitCode::NotFound,
-            code: "not_found",
+            code: "not_found".into(),
             message: format!("{entity} was not found: {requested}"),
             hint: Some(match entity {
                 "Team" => "Run `wardian team list` to inspect known teams.".to_string(),
@@ -77,7 +77,7 @@ impl CliError {
     pub fn library_not_found(entry_ref: &str) -> Self {
         Self {
             exit_code: ExitCode::NotFound,
-            code: "not_found",
+            code: "not_found".into(),
             message: format!("Library entry was not found: {entry_ref}"),
             hint: Some("Run `wardian library list --flat` to inspect known entries.".to_string()),
             details: Some(Box::new(serde_json::json!({ "entry_ref": entry_ref }))),
@@ -87,7 +87,7 @@ impl CliError {
     pub fn db_unavailable(message: impl Into<String>) -> Self {
         Self {
             exit_code: ExitCode::DbUnavailable,
-            code: "db_unavailable",
+            code: "db_unavailable".into(),
             message: message.into(),
             hint: Some(
                 "Open Wardian once or set WARDIAN_HOME to a directory containing state.db."
@@ -100,7 +100,7 @@ impl CliError {
     pub fn invalid_field(field: &str) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "invalid_field",
+            code: "invalid_field".into(),
             message: format!("Unknown field: {field}"),
             hint: Some("Use one of: name, uuid, description, class, provider, workspace, status, status_source, pid, started_at, last_status_at, visibility.".to_string()),
             details: Some(Box::new(serde_json::json!({ "field": field }))),
@@ -110,7 +110,7 @@ impl CliError {
     pub fn invalid_ref(message: impl Into<String>) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "invalid_ref",
+            code: "invalid_ref".into(),
             message: message.into(),
             hint: Some(
                 "Use a section-qualified ref such as skills/review/planner or classes/Reviewer."
@@ -123,7 +123,7 @@ impl CliError {
     pub fn unknown_section(section: &str) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "unknown_section",
+            code: "unknown_section".into(),
             message: format!("Unknown library section: {section}"),
             hint: Some("Use one of: skills, prompts, classes, automations, mcps.".to_string()),
             details: Some(Box::new(serde_json::json!({ "section": section }))),
@@ -133,7 +133,7 @@ impl CliError {
     pub fn already_exists(entry_ref: &str) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "already_exists",
+            code: "already_exists".into(),
             message: format!("Library entry already exists: {entry_ref}"),
             hint: Some("Use `wardian library write` to update an existing entry.".to_string()),
             details: Some(Box::new(serde_json::json!({ "entry_ref": entry_ref }))),
@@ -143,7 +143,7 @@ impl CliError {
     pub fn not_supported(message: impl Into<String>) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "not_supported",
+            code: "not_supported".into(),
             message: message.into(),
             hint: None,
             details: None,
@@ -153,7 +153,7 @@ impl CliError {
     pub fn invalid_target(target: &str) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "invalid_target",
+            code: "invalid_target".into(),
             message: format!("Invalid library deployment target: {target}"),
             hint: Some("Use user:global, class:<ClassName>, or agent:<agent-id>.".to_string()),
             details: Some(Box::new(serde_json::json!({ "target": target }))),
@@ -163,7 +163,7 @@ impl CliError {
     pub fn app_not_running() -> Self {
         Self {
             exit_code: ExitCode::AppNotRunning,
-            code: "app_not_running",
+            code: "app_not_running".into(),
             message: "Wardian is not running. Start the app to use this command.".to_string(),
             hint: Some("Launch Wardian, then retry.".to_string()),
             details: None,
@@ -173,7 +173,7 @@ impl CliError {
     pub fn control_endpoint_timeout(message: impl Into<String>) -> Self {
         Self {
             exit_code: ExitCode::ControlEndpointTimeout,
-            code: "control_endpoint_timeout",
+            code: "control_endpoint_timeout".into(),
             message: message.into(),
             hint: Some(
                 "Wardian is running but the control endpoint timed out; the app may be overloaded. Retry shortly or reduce active agent load."
@@ -186,17 +186,21 @@ impl CliError {
     pub fn generic(message: impl Into<String>) -> Self {
         Self {
             exit_code: ExitCode::Generic,
-            code: "generic",
+            code: "generic".into(),
             message: message.into(),
             hint: None,
             details: None,
         }
     }
 
-    pub fn backend(exit_code: ExitCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub fn backend(
+        exit_code: ExitCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             exit_code,
-            code,
+            code: code.into(),
             message: message.into(),
             hint: None,
             details: None,
@@ -205,13 +209,13 @@ impl CliError {
 
     pub fn backend_with_details(
         exit_code: ExitCode,
-        code: &'static str,
+        code: impl Into<String>,
         message: impl Into<String>,
         details: serde_json::Value,
     ) -> Self {
         Self {
             exit_code,
-            code,
+            code: code.into(),
             message: message.into(),
             hint: None,
             details: Some(Box::new(details)),
@@ -222,7 +226,7 @@ impl CliError {
         serde_json::to_string(&ErrorEnvelope {
             schema: 1,
             error: ErrorBody {
-                code: self.code,
+                code: &self.code,
                 message: self.message.clone(),
                 hint: self.hint.clone(),
                 details: self.details.clone(),

@@ -7,7 +7,7 @@ Wardian exposes Inbox as a read/write agent surface.
 Read the newest shared events with:
 
 ```bash
-wardian inbox list
+wardian inbox list --unread --limit 20
 wardian inbox list --unread --type action_needed,approval_request \
   --source provider_runtime,interaction_store
 wardian inbox list --limit 100 --offset 100
@@ -16,7 +16,7 @@ wardian inbox list --limit 100 --offset 100
 PowerShell:
 
 ```powershell
-wardian inbox list
+wardian inbox list --unread --limit 20
 wardian inbox list --unread --type action_needed,approval_request `
   --source provider_runtime,interaction_store
 wardian inbox list --limit 100 --offset 100
@@ -31,12 +31,18 @@ projection: common values are `provider_runtime`, `interaction_store`, and
 resolve an event.
 
 The CLI asks the running Wardian app for its assembled projection when the app
-uses the same `WARDIAN_HOME`. Without the app, it reads persisted queue items,
+uses the same `WARDIAN_HOME`. Top-level `status_source` is `live` for that
+response or `persisted` for disk fallback; it differs from item evidence sources
+selected by `--source`. Only an unavailable endpoint permits fallback. Live
+rejections, protocol errors, and timeouts remain errors.
+
+Without the app, the CLI reads persisted queue items,
 durable `notify` records, and workflow-run checkpoints for awaiting approvals
-and terminal outcomes where available. Each source is read through a bounded
-200-item page; `truncated: true` and `next_offset` identify older source data.
+and terminal outcomes where available. The returned page is bounded by
+`--limit`; follow `next_offset` when `truncated` indicates more data.
 Legacy queue items older than seven days are excluded, matching desktop Inbox
-hydration. `--limit` cannot exceed 200.
+hydration. `--limit` must be between 1 and 200; invalid limits or offsets return
+`invalid_limit` or `invalid_offset` rather than silently changing the request.
 
 ## Write
 
@@ -67,3 +73,8 @@ the user's next decision. Prefer `notify approval` only for irreversible,
 external, security-sensitive, or materially costly actions. Keep routine
 progress in the transcript. Writes require a managed agent session and the
 running app for the same `WARDIAN_HOME`.
+
+`notify approval --wait` returns the decision or expiry; expiry does not
+authorize the action. User Inbox approval and provider permission prompts are
+different contracts. Answer the latter only through the explicit approval
+action described in [messaging](messaging.md).

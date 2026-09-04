@@ -4,10 +4,14 @@ Wardian distinguishes reusable Library entries from durable artifact versions.
 Use the Library to author and deploy agent assets; use artifacts to present
 work produced by a managed agent for review.
 
+Library authoring and deployment work from disk without the app. Reading or
+listing classes, including an unqualified list, can initialize default class
+files. Prefer a section-qualified list and use `read` for content alone;
+`show --content` includes metadata as JSON.
+
 ## Manage Reusable Library Entries
 
 ```bash
-wardian library list --flat
 wardian library list skills --flat
 wardian library show prompts/review.md --content
 wardian library read classes/Reviewer
@@ -32,6 +36,9 @@ after the current scan still identifies that deployment as orphaned.
 
 Library automation commands only author blueprint files. Use `wardian automation`
 commands for automation-specific behavior.
+
+`library delete` removes the entry; `restore-default` overwrites a class
+instruction. Neither has `agent delete`'s exact-name confirmation contract.
 
 ## Present Durable Artifacts
 

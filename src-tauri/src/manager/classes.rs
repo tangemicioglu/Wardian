@@ -230,6 +230,7 @@ pub fn get_agent_class_default_instruction(_app: &AppHandle, class_name: &str) -
 mod tests {
     use super::{seed_bundled_automation_sample, seed_bundled_common_skill};
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn bundled_common_skill_is_copied_to_library_and_deployed_to_common() {
@@ -305,92 +306,71 @@ mod tests {
 
     #[test]
     fn bundled_wardian_cli_skill_routes_to_packaged_references() {
-        const ROOT: &str =
-            include_str!("../../resources/library/skills/wardian-skills/wardian-cli/SKILL.md");
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/library/skills");
+        let temp = tempfile::tempdir().expect("temp dir");
+        seed_bundled_common_skill(&source_root, temp.path(), "wardian-skills/wardian-cli")
+            .expect("seed actual bundled skill");
 
-        for (link, reference) in [
-            (
-                "references/agents.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/agents.md"
-                ),
-            ),
-            (
-                "references/orchestration.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/orchestration.md"
-                ),
-            ),
-            (
-                "references/topology.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/topology.md"
-                ),
-            ),
-            (
-                "references/messaging.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/messaging.md"
-                ),
-            ),
-            (
-                "references/assets.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/assets.md"
-                ),
-            ),
-            (
-                "references/automations.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/automations.md"
-                ),
-            ),
-            (
-                "references/automation-samples.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/automation-samples.md"
-                ),
-            ),
-            (
-                "references/coordination-groups.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/coordination-groups.md"
-                ),
-            ),
-            (
-                "references/runtime-debugging.md",
-                include_str!(
-                    "../../resources/library/skills/wardian-skills/wardian-cli/references/runtime-debugging.md"
-                ),
-            ),
+        for deployed in [
+            temp.path()
+                .join("library/skills/wardian-skills/wardian-cli"),
+            temp.path().join("common/.agents/skills/wardian-cli"),
         ] {
-            assert!(ROOT.contains(link), "root skill must route to {link}");
-            assert!(
-                !reference.trim().is_empty(),
-                "routed reference must contain instructions: {link}"
-            );
+            let mut pending = vec![deployed.join("SKILL.md")];
+            let mut reached = std::collections::HashSet::new();
+            while let Some(path) = pending.pop() {
+                if !reached.insert(path.clone()) {
+                    continue;
+                }
+                let content = fs::read_to_string(&path).expect("reachable packaged document");
+                assert!(
+                    !content.trim().is_empty(),
+                    "empty document: {}",
+                    path.display()
+                );
+                // Follow the package's relative Markdown links transitively, so
+                // conditional guidance need not be duplicated in the entrypoint.
+                for link in content.split("](").skip(1) {
+                    let target = link.split(')').next().expect("link target");
+                    let target = target.split('#').next().expect("link path");
+                    if target.ends_with(".md") && !target.contains("://") {
+                        pending.push(path.parent().expect("document parent").join(target));
+                    }
+                }
+            }
+            for entry in fs::read_dir(deployed.join("references")).expect("packaged references") {
+                let path = entry.expect("reference entry").path();
+                if path.extension().is_some_and(|extension| extension == "md") {
+                    assert!(
+                        reached.contains(&path),
+                        "unreachable reference: {}",
+                        path.display()
+                    );
+                }
+            }
         }
+    }
 
-        for command in [
-            "`wardian agent`",
-            "`wardian agent wait`",
-            "`wardian agent watch`",
-            "`wardian graph`",
-            "`wardian send`",
-            "`wardian ask`",
-            "`wardian reply`",
-            "`wardian conversation`",
-            "`wardian library`",
-            "`wardian artifact`",
-            "`wardian automation`",
-            "`wardian team`",
-            "`wardian watchlist`",
-        ] {
-            assert!(
-                ROOT.contains(command),
-                "root skill must route top-level CLI command: {command}"
-            );
-        }
+    // These are content-contract guards, not a claim to understand arbitrary
+    // prose. Check related concepts in one paragraph without freezing line wraps,
+    // command catalogues, or which document contains conditional instructions.
+    fn assert_guidance_paragraph(documents: &[&str], concepts: &[&str], contract: &str) {
+        assert!(
+            documents.iter().any(|document| {
+                document
+                    .replace("\r\n", "\n")
+                    .split("\n\n")
+                    .any(|paragraph| {
+                        let normalized = paragraph
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_lowercase();
+                        concepts.iter().all(|concept| normalized.contains(*concept))
+                    })
+            }),
+            "packaged guidance must retain {contract}"
+        );
     }
 
     #[test]
@@ -401,31 +381,29 @@ mod tests {
             "../../resources/library/skills/wardian-skills/wardian-cli/references/messaging.md"
         );
 
-        for required_root_instruction in [
-            "Keep broadcasts and class sends neighbor-scoped",
-            "`ask` accepts one named peer or UUID, never a broadcast",
-            "Use `send --as-command` only for one explicit agent or UUID",
+        for (concepts, contract) in [
+            (
+                &["broadcasts", "local", "authorized"][..],
+                "bounded broadcast authority",
+            ),
+            (
+                &["command mode", "exactly one", "rejects", "class:"][..],
+                "single-target provider commands",
+            ),
+            (
+                &["--targets", "explicit", "--until reply"][..],
+                "explicit structured fan-out",
+            ),
+            (
+                &["approval action", "only", "outstanding provider approval"][..],
+                "provider approval boundary",
+            ),
+            (
+                &["timeout", "do not", "replay"][..],
+                "no automatic replay after timeout",
+            ),
         ] {
-            assert!(
-                ROOT.contains(required_root_instruction),
-                "root skill must retain messaging safety instruction: {required_root_instruction}"
-            );
-        }
-
-        for required_messaging_instruction in [
-            "Use `wardian send` for one-way inter-agent communication",
-            "`all` and class targets resolve among neighbors",
-            "`--queue-policy queue-if-busy` is the default",
-            "Use an approval action only to answer an outstanding provider approval",
-            "Use `ask` when the task needs a named peer's accountable result",
-            "wardian ask reviewer-a1 --file review-request.md --timeout 10m",
-            "wardian reply ask_0123456789abcdef --status blocked --file findings.md",
-            "broadcasts, class selectors, and `--thread` are unsupported",
-        ] {
-            assert!(
-                MESSAGING.contains(required_messaging_instruction),
-                "messaging reference must retain safety instruction: {required_messaging_instruction}"
-            );
+            assert_guidance_paragraph(&[ROOT, MESSAGING], concepts, contract);
         }
     }
 
@@ -434,17 +412,53 @@ mod tests {
         const ROOT: &str =
             include_str!("../../resources/library/skills/wardian-skills/wardian-cli/SKILL.md");
 
-        for required_instruction in [
-            "Proactively suggest a Wardian automation",
-            "schedule a recurring\ntask, automate a repeatable sequence, or coordinate durable multi-step work",
-            "ask whether the user wants to design one",
-            "Do not create, edit, schedule, or run an automation merely because the request\nmatches",
-            "wait for the user to choose\nautomation authoring",
+        const AUTOMATIONS: &str = include_str!(
+            "../../resources/library/skills/wardian-skills/wardian-cli/references/automations.md"
+        );
+        for (concepts, contract) in [
+            (
+                &["suggest", "automation", "recurring"][..],
+                "automation discovery",
+            ),
+            (
+                &[
+                    "do not",
+                    "create",
+                    "edit",
+                    "schedule",
+                    "run",
+                    "user opts in",
+                ][..],
+                "opt-in before automation mutation",
+            ),
+            (&["one-off", "direct"][..], "direct one-off work"),
         ] {
-            assert!(
-                ROOT.contains(required_instruction),
-                "root skill must preserve automation discovery instruction: {required_instruction}"
-            );
+            assert_guidance_paragraph(&[ROOT, AUTOMATIONS], concepts, contract);
+        }
+    }
+
+    #[test]
+    fn bundled_wardian_cli_skill_preserves_provider_model_constraints() {
+        const ROOT: &str =
+            include_str!("../../resources/library/skills/wardian-skills/wardian-cli/SKILL.md");
+        const AGENTS: &str = include_str!(
+            "../../resources/library/skills/wardian-skills/wardian-cli/references/agents.md"
+        );
+        for (concepts, contract) in [
+            (
+                &["routine", "model", "effort", "provider default"][..],
+                "provider defaults for routine tasks",
+            ),
+            (
+                &["complex", "catalogue", "lists", "do not guess"][..],
+                "catalogue-backed model and effort overrides",
+            ),
+            (
+                &["restart_required", "running provider"][..],
+                "restart before relying on changed selection",
+            ),
+        ] {
+            assert_guidance_paragraph(&[ROOT, AGENTS], concepts, contract);
         }
     }
 

@@ -21,8 +21,16 @@ pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
             let conn = open_db()?;
 
             let totals = summary(&conn, &window.from, &window.to).map_err(db_error)?;
-            let rows = breakdown(&conn, dimension, &window.from, &window.to, BREAKDOWN_LIMIT)
-                .map_err(db_error)?;
+            let mut rows = breakdown(
+                &conn,
+                dimension,
+                &window.from,
+                &window.to,
+                BREAKDOWN_LIMIT + 1,
+            )
+            .map_err(db_error)?;
+            let truncated = rows.len() > BREAKDOWN_LIMIT;
+            rows.truncate(BREAKDOWN_LIMIT);
             let limits = latest_limits(&conn).map_err(db_error)?;
 
             render_json(serde_json::json!({
@@ -41,6 +49,8 @@ pub fn handle_telemetry(args: TelemetryArgs) -> Result<String, CliError> {
                 },
                 "dimension": dimension.as_str(),
                 "rows": rows.iter().map(row_json).collect::<Vec<_>>(),
+                "row_limit": BREAKDOWN_LIMIT,
+                "truncated": truncated,
                 "limits": limits,
             }))
         }
@@ -128,7 +138,7 @@ fn db_error(error: rusqlite::Error) -> CliError {
 }
 
 fn render_json(body: serde_json::Value) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&body)
+    serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }

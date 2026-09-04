@@ -859,6 +859,8 @@ fn send_delivery_request(request: ControlRequest) -> io::Result<NativeDeliveryIn
     serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
 }
 
+/// Wait for a matching status within one elapsed-time budget, including IPC and
+/// polling sleeps. A zero budget expires without reading the endpoint.
 pub fn wait_agent_until(target: &str, until: &str, timeout: Duration) -> io::Result<AgentIdentity> {
     wait_agent_until_after_snapshot(target, until, timeout, None)
 }
@@ -909,29 +911,38 @@ fn agent_watch_with_output_echo_guard(
     serde_json::from_value(value).map_err(|e| io::Error::other(e.to_string()))
 }
 
+/// Wait for a newer matching observation, charging the initial cursor snapshot
+/// and subsequent watch against the same elapsed-time budget.
 pub fn wait_agent_until_next(
     target: &str,
     until: &str,
     timeout: Duration,
 ) -> io::Result<AgentWatchResponse> {
-    let initial = agent_watch(
-        target,
-        None,
-        None,
-        vec!["status".to_string()],
-        Some(4096),
-        false,
-        Duration::from_secs(5),
-    )?;
-    agent_watch(
-        target,
-        Some(&initial.cursor),
-        Some(&format!("status:{until}")),
-        vec!["status".to_string()],
-        Some(4096),
-        false,
-        timeout,
-    )
+    wait_agent_until_next_with(target, until, timeout, |since, condition, budget| {
+        let runtime = build_runtime()?;
+        let remaining = budget.remaining().ok_or_else(wait_transport_timeout)?;
+        let requested = if since.is_none() {
+            remaining.min(Duration::from_secs(5))
+        } else {
+            remaining
+        };
+        let value = wait_transport(
+            &runtime,
+            budget,
+            watch_timeout_for(requested),
+            send_request(ControlRequest::AgentWatch {
+                target: target.to_string(),
+                since: since.map(str::to_string),
+                until: condition.map(str::to_string),
+                include: vec!["status".to_string()],
+                tail_bytes: Some(4096),
+                follow: false,
+                timeout_ms: Some(requested.as_millis().try_into().unwrap_or(u64::MAX)),
+                output_echo_guard: None,
+            }),
+        )?;
+        serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))
+    })
 }
 
 pub fn send_message_and_watch(
@@ -1884,6 +1895,98 @@ fn remaining_watch_timeout(
     Ok(timeout - elapsed)
 }
 
+/// One elapsed-time budget for an explicit agent wait, including transport and
+/// the initial cursor read for `--next`. Delivery observation has separate rules.
+struct WaitBudget {
+    started_at: Instant,
+    timeout: Duration,
+}
+
+impl WaitBudget {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            started_at: Instant::now(),
+            timeout,
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.timeout
+            .checked_sub(self.started_at.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+    }
+}
+
+fn wait_transport_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "Wardian control endpoint timed out",
+    )
+}
+
+/// Limit the actual IPC future, not just the interval between requests. Runtime
+/// construction and previous reads have already consumed part of the budget.
+fn wait_transport<T>(
+    runtime: &tokio::runtime::Runtime,
+    budget: &WaitBudget,
+    operation_limit: Duration,
+    future: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    let remaining = budget.remaining().ok_or_else(wait_transport_timeout)?;
+    let result = runtime
+        .block_on(async { tokio::time::timeout(remaining.min(operation_limit), future).await })
+        .map_err(|_| wait_transport_timeout())?;
+    if result.is_ok() && budget.remaining().is_none() {
+        return Err(wait_transport_timeout());
+    }
+    result
+}
+
+fn wait_agent_until_next_with<F>(
+    target: &str,
+    until: &str,
+    timeout: Duration,
+    mut watch: F,
+) -> io::Result<AgentWatchResponse>
+where
+    F: FnMut(Option<&str>, Option<&str>, &WaitBudget) -> io::Result<AgentWatchResponse>,
+{
+    let budget = WaitBudget::new(timeout);
+    let timeout_error = |status: &str| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            WatchTimeoutError::new(target, &format!("status:{until}"), status),
+        )
+    };
+    budget.remaining().ok_or_else(|| timeout_error("unknown"))?;
+    let initial = watch(None, None, &budget).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            timeout_error("unknown")
+        } else {
+            error
+        }
+    })?;
+    budget
+        .remaining()
+        .ok_or_else(|| timeout_error(&initial.agent.status))?;
+    let result = watch(
+        Some(&initial.cursor),
+        Some(&format!("status:{until}")),
+        &budget,
+    )
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            timeout_error(&initial.agent.status)
+        } else {
+            error
+        }
+    })?;
+    budget
+        .remaining()
+        .ok_or_else(|| timeout_error(&result.agent.status))?;
+    Ok(result)
+}
+
 fn wait_agent_until_after_snapshot(
     target: &str,
     until: &str,
@@ -1909,16 +2012,35 @@ fn wait_agent_until_after_snapshot_with<F, S>(
     mut sleep: S,
 ) -> io::Result<AgentIdentity>
 where
-    F: FnMut(&str) -> io::Result<AgentIdentity>,
+    F: FnMut(&str, &WaitBudget) -> io::Result<AgentIdentity>,
     S: FnMut(Duration),
 {
-    let started_at = Instant::now();
+    let budget = WaitBudget::new(timeout);
     let initial_status = initial_snapshot.as_ref().map(|agent| agent.status.as_str());
     let mut observed_away_from_initial = initial_status.is_none_or(|status| status != until);
+    let mut last_status = initial_status.unwrap_or("unknown").to_string();
+    let timeout_error = |status: &str| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            WaitTimeoutError::new(target, until, status),
+        )
+    };
 
     loop {
-        let agent = snapshot(target)?;
+        budget
+            .remaining()
+            .ok_or_else(|| timeout_error(&last_status))?;
+        let agent = snapshot(target, &budget).map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut && budget.remaining().is_none() {
+                timeout_error(&last_status)
+            } else {
+                error
+            }
+        })?;
         let status = agent.status.as_str();
+        last_status = status.to_string();
+        // A slow snapshot is not a timely observation, even when it matches.
+        budget.remaining().ok_or_else(|| timeout_error(status))?;
 
         if initial_status == Some(until) && status != until {
             observed_away_from_initial = true;
@@ -1939,14 +2061,8 @@ where
             )));
         }
 
-        if started_at.elapsed() >= timeout {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                WaitTimeoutError::new(target, until, status),
-            ));
-        }
-
-        sleep(Duration::from_millis(250));
+        let remaining = budget.remaining().ok_or_else(|| timeout_error(status))?;
+        sleep(Duration::from_millis(250).min(remaining));
     }
 }
 
@@ -1956,7 +2072,7 @@ fn status_marker_changed(initial: &AgentIdentity, current: &AgentIdentity) -> bo
         && initial.last_status_at != current.last_status_at
 }
 
-fn wait_target_snapshot(target: &str) -> io::Result<AgentIdentity> {
+fn wait_target_snapshot(target: &str, budget: &WaitBudget) -> io::Result<AgentIdentity> {
     if target == "all" || target.starts_with("class:") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1964,7 +2080,17 @@ fn wait_target_snapshot(target: &str) -> io::Result<AgentIdentity> {
         ));
     }
 
-    list_agents()?
+    let runtime = build_runtime()?;
+    let value = wait_transport(
+        &runtime,
+        budget,
+        CONTROL_TIMEOUT,
+        send_request(ControlRequest::AgentList),
+    )?;
+    let response: AgentListResponse =
+        serde_json::from_value(value).map_err(|error| io::Error::other(error.to_string()))?;
+    response
+        .agents
         .into_iter()
         .find(|agent| agent.uuid == target || agent.name == target)
         .ok_or_else(|| {
@@ -2359,7 +2485,8 @@ mod tests {
 
     #[test]
     fn wait_target_rejects_multi_target_selectors() {
-        let error = wait_target_snapshot("all").unwrap_err();
+        let error =
+            wait_target_snapshot("all", &WaitBudget::new(Duration::from_secs(1))).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
@@ -2390,7 +2517,7 @@ mod tests {
             "idle",
             Duration::from_secs(1),
             Some(initial),
-            |_| Ok(completed.clone()),
+            |_, _| Ok(completed.clone()),
             |_| {},
         )
         .unwrap();
@@ -2408,7 +2535,7 @@ mod tests {
             "idle",
             Duration::from_secs(1),
             None,
-            |_| {
+            |_, _| {
                 Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     WaitTargetNotFoundError::new("ghost"),
@@ -2422,6 +2549,254 @@ mod tests {
             .get_ref()
             .and_then(|inner| inner.downcast_ref::<WaitTargetNotFoundError>())
             .is_some());
+    }
+
+    #[test]
+    fn wait_rejects_a_matching_snapshot_received_after_the_budget() {
+        let error = wait_agent_until_after_snapshot_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(30),
+            None,
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(60));
+                Ok(agent("idle", None))
+            },
+            |_| panic!("a late matching snapshot must time out without polling"),
+        )
+        .unwrap_err();
+        let timeout = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<WaitTimeoutError>()
+            .unwrap();
+        assert_eq!(timeout.last_status, "idle");
+    }
+
+    #[test]
+    fn wait_caps_poll_sleep_and_does_not_start_another_expired_read() {
+        let mut reads = 0;
+        let mut sleeps = 0;
+        let error = wait_agent_until_after_snapshot_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(100),
+            None,
+            |_, _| {
+                reads += 1;
+                Ok(agent("processing", None))
+            },
+            |duration| {
+                sleeps += 1;
+                assert!(duration <= Duration::from_millis(100));
+                std::thread::sleep(duration);
+            },
+        )
+        .unwrap_err();
+        assert_eq!(reads, 1);
+        assert_eq!(sleeps, 1);
+        assert!(error.get_ref().unwrap().is::<WaitTimeoutError>());
+    }
+
+    #[test]
+    fn wait_preserves_immediate_matches_and_terminal_status_failures() {
+        for status in ["idle", "error", "off"] {
+            let result = wait_agent_until_after_snapshot_with(
+                "reviewer-a1",
+                "idle",
+                Duration::from_secs(30),
+                None,
+                |_, _| Ok(agent(status, None)),
+                |_| panic!("matching or terminal snapshots must not poll"),
+            );
+            if status == "idle" {
+                assert_eq!(result.unwrap().status, "idle");
+            } else {
+                assert!(result.unwrap_err().to_string().contains("terminal status"));
+            }
+        }
+    }
+
+    #[test]
+    fn wait_zero_budget_does_not_contact_the_endpoint() {
+        let error = wait_agent_until_after_snapshot_with(
+            "reviewer-a1",
+            "idle",
+            Duration::ZERO,
+            None,
+            |_, _| panic!("zero budget must not start a read"),
+            |_| panic!("zero budget must not sleep"),
+        )
+        .unwrap_err();
+        assert!(error.get_ref().unwrap().is::<WaitTimeoutError>());
+        let error = wait_agent_until_next_with("reviewer-a1", "idle", Duration::ZERO, |_, _, _| {
+            panic!("zero budget must not obtain an initial cursor")
+        })
+        .unwrap_err();
+        assert!(error.get_ref().unwrap().is::<WatchTimeoutError>());
+    }
+
+    #[test]
+    fn wait_transport_uses_remaining_budget_instead_of_operation_timeout() {
+        let runtime = build_runtime().unwrap();
+        let budget = WaitBudget::new(Duration::from_millis(10));
+        let error = wait_transport(&runtime, &budget, CONTROL_TIMEOUT, async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn wait_preserves_early_endpoint_timeout_but_types_budget_expiration() {
+        let runtime = build_runtime().unwrap();
+        let early = wait_agent_until_after_snapshot_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_secs(30),
+            None,
+            |_, _| Err(wait_transport_timeout()),
+            |_| panic!("failed reads must not poll"),
+        )
+        .unwrap_err();
+        assert_eq!(early.kind(), io::ErrorKind::TimedOut);
+        assert!(!early.get_ref().unwrap().is::<WaitTimeoutError>());
+
+        let expired = wait_agent_until_after_snapshot_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(10),
+            None,
+            |_, budget| {
+                wait_transport(
+                    &runtime,
+                    budget,
+                    CONTROL_TIMEOUT,
+                    std::future::pending::<io::Result<AgentIdentity>>(),
+                )
+            },
+            |_| panic!("exhausted transport budget must not poll"),
+        )
+        .unwrap_err();
+        assert!(expired.get_ref().unwrap().is::<WaitTimeoutError>());
+    }
+
+    fn wait_snapshot(cursor: &str) -> AgentWatchResponse {
+        AgentWatchResponse {
+            schema: 1,
+            agent: wardian_core::control::WatchAgentSnapshot {
+                uuid: "uuid-1".into(),
+                name: "reviewer-a1".into(),
+                provider: "codex".into(),
+                status: "idle".into(),
+                last_status_at: None,
+            },
+            cursor: cursor.into(),
+            events: Vec::new(),
+            output: wardian_core::control::WatchOutput {
+                cursor: cursor.into(),
+                text: String::new(),
+                truncated: false,
+                omitted_bytes: 0,
+            },
+            transcript: None,
+            raw_output: None,
+            delivery: wardian_core::control::WatchDeliverySnapshot {
+                delivery: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn wait_next_initial_snapshot_consumes_the_same_budget() {
+        let mut calls = 0;
+        let error = wait_agent_until_next_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(30),
+            |since, condition, _| {
+                calls += 1;
+                assert!(since.is_none());
+                assert!(condition.is_none());
+                std::thread::sleep(Duration::from_millis(60));
+                Ok(wait_snapshot("initial"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.get_ref().unwrap().is::<WatchTimeoutError>());
+    }
+
+    #[test]
+    fn wait_next_preserves_cursor_and_reduces_followup_budget() {
+        let timeout = Duration::from_secs(30);
+        let mut calls = 0;
+        let result = wait_agent_until_next_with(
+            "reviewer-a1",
+            "idle",
+            timeout,
+            |since, condition, budget| {
+                calls += 1;
+                if calls == 1 {
+                    assert!(since.is_none());
+                    assert!(condition.is_none());
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok(wait_snapshot("initial"))
+                } else {
+                    assert_eq!(since, Some("initial"));
+                    assert_eq!(condition, Some("status:idle"));
+                    assert!(budget.remaining().unwrap() <= timeout - Duration::from_millis(20));
+                    Ok(wait_snapshot("next"))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(result.cursor, "next");
+    }
+
+    #[test]
+    fn wait_next_rejects_a_late_matching_followup() {
+        let mut calls = 0;
+        let error = wait_agent_until_next_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(100),
+            |since, _, _| {
+                calls += 1;
+                if since.is_some() {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                Ok(wait_snapshot("cursor"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.get_ref().unwrap().is::<WatchTimeoutError>());
+    }
+
+    #[test]
+    fn wait_next_initial_transport_is_cancelled_at_the_shared_deadline() {
+        let runtime = build_runtime().unwrap();
+        let mut calls = 0;
+        let error = wait_agent_until_next_with(
+            "reviewer-a1",
+            "idle",
+            Duration::from_millis(10),
+            |_, _, budget| {
+                calls += 1;
+                wait_transport(
+                    &runtime,
+                    budget,
+                    watch_timeout_for(Duration::from_secs(5)),
+                    std::future::pending::<io::Result<AgentWatchResponse>>(),
+                )
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.get_ref().unwrap().is::<WatchTimeoutError>());
     }
 
     #[test]

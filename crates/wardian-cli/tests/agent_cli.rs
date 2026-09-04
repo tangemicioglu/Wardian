@@ -142,11 +142,15 @@ fn self_lookup_returns_agent_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("{\n"));
-    assert!(stdout.contains(r#"  "schema": 1"#));
-    assert!(stdout.contains(r#""name": "coder-a1""#));
-    assert!(stdout.contains(r#""description": "Owns frontend release follow-up""#));
-    assert!(stdout.contains(r#""workspace": "D:/Development/Wardian""#));
+    assert_eq!(stdout.lines().count(), 1);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["schema"], 1);
+    assert_eq!(value["agent"]["name"], "coder-a1");
+    assert_eq!(
+        value["agent"]["description"],
+        "Owns frontend release follow-up"
+    );
+    assert_eq!(value["agent"]["workspace"], "D:/Development/Wardian");
     assert!(!stdout.contains(r#""status_source""#));
     assert!(!stdout.contains(r#""project""#));
 }
@@ -205,7 +209,7 @@ fn list_scope_all_returns_agents() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(r#""agents": ["#));
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["agents"].is_array());
     assert!(stdout.contains("coder-a1"));
     assert!(stdout.contains("architect-a1"));
     assert!(stdout.contains("fork-coder"));
@@ -223,8 +227,9 @@ fn status_source_is_available_when_requested() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(r#""name": "coder-a1""#));
-    assert!(stdout.contains(r#""status_source": "persisted""#));
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["agent"]["name"], "coder-a1");
+    assert_eq!(value["agent"]["status_source"], "persisted");
 }
 
 #[test]
@@ -290,7 +295,10 @@ fn list_workspace_filter_matches_exact_workspace() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("fork-coder"));
-    assert!(stdout.contains(r#""workspace": "D:/Forks/Wardian""#));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["agents"][0]["workspace"],
+        "D:/Forks/Wardian"
+    );
     assert!(!stdout.contains("coder-a1"));
 }
 
@@ -305,8 +313,9 @@ fn fields_projection_omits_unrequested_fields() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(r#""name": "coder-a1""#));
-    assert!(stdout.contains(r#""status": "processing""#));
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["agent"]["name"], "coder-a1");
+    assert_eq!(value["agent"]["status"], "processing");
     assert!(!stdout.contains(r#""uuid""#));
 }
 
@@ -372,7 +381,7 @@ fn malformed_args_emit_json_error_and_exit_one() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains(r#""schema":1"#));
-    assert!(stderr.contains(r#""code":"generic""#));
+    assert!(stderr.contains(r#""code":"invalid_arguments""#));
 }
 
 #[test]
@@ -390,6 +399,122 @@ fn watch_follow_without_app_parses_before_app_lookup() {
 }
 
 #[test]
+fn explicit_workspace_overrides_managed_neighbors() {
+    let home = seed_home();
+    let output = Command::new(bin())
+        .args(["agent", "list", "--workspace", "D:/Forks/Wardian"])
+        .env("WARDIAN_HOME", home.path())
+        .env("WARDIAN_SESSION_ID", "uuid-1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(value["agents"][0]["name"], "fork-coder");
+}
+
+#[test]
+fn operator_workspace_scope_uses_current_directory_without_fleet_fallback() {
+    let home = seed_home();
+    let workspace = TempDir::new().unwrap();
+    let normalized = workspace.path().to_string_lossy().replace('\\', "/");
+    let conn = rusqlite::Connection::open(home.path().join("state.db")).unwrap();
+    conn.execute(
+        "UPDATE agents SET workspace = ?1 WHERE session_id = 'uuid-1'",
+        [&normalized],
+    )
+    .unwrap();
+    for scope in ["auto", "workspace"] {
+        let output = Command::new(bin())
+            .args(["agent", "list", "--scope", scope])
+            .current_dir(workspace.path())
+            .env("WARDIAN_HOME", home.path())
+            .env_remove("WARDIAN_SESSION_ID")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(value["agents"][0]["name"], "coder-a1");
+    }
+}
+
+#[test]
+fn stale_managed_session_is_not_treated_as_a_global_roster() {
+    let home = seed_home();
+    for scope in ["auto", "workspace"] {
+        let output = Command::new(bin())
+            .args(["agent", "list", "--scope", scope])
+            .env("WARDIAN_HOME", home.path())
+            .env("WARDIAN_SESSION_ID", "gone")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+fn assert_workspace_alias_matches(actual: &std::path::Path, alias: &std::path::Path) {
+    let home = seed_home();
+    let conn = rusqlite::Connection::open(home.path().join("state.db")).unwrap();
+    conn.execute(
+        "UPDATE agents SET workspace = ?1 WHERE session_id = 'uuid-1'",
+        [actual.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    for args in [
+        vec!["agent", "list"],
+        vec!["agent", "list", "--scope", "workspace"],
+        vec!["agent", "list", "--workspace", alias.to_str().unwrap()],
+    ] {
+        let output = Command::new(bin())
+            .args(&args)
+            .current_dir(alias)
+            .env("WARDIAN_HOME", home.path())
+            .env_remove("WARDIAN_SESSION_ID")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["agents"].as_array().unwrap().len(), 1, "{args:?}");
+        assert_eq!(value["agents"][0]["name"], "coder-a1");
+    }
+}
+
+#[test]
+fn workspace_scope_resolves_directory_links_without_widening_scope() {
+    let root = TempDir::new().unwrap();
+    let actual = root.path().join("Workspace");
+    let alias = root.path().join("Alias");
+    std::fs::create_dir(&actual).unwrap();
+    wardian_core::library::links::create_directory_link(&actual, &alias).unwrap();
+    assert_workspace_alias_matches(&actual, &alias);
+}
+
+#[cfg(windows)]
+#[test]
+fn workspace_scope_resolves_windows_directory_casing() {
+    let root = TempDir::new().unwrap();
+    let actual = root.path().join("MixedCaseWorkspace");
+    std::fs::create_dir(&actual).unwrap();
+    let alias = root.path().join("mixedcaseworkspace");
+    assert_workspace_alias_matches(&actual, &alias);
+}
+
+#[test]
 fn list_accepts_output_fields_after_subcommand() {
     let home = seed_home();
     let output = Command::new(bin())
@@ -404,7 +529,10 @@ fn list_accepts_output_fields_after_subcommand() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(r#""name": "coder-a1""#));
-    assert!(stdout.contains(r#""status": "processing""#));
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let agents = value["agents"].as_array().unwrap();
+    assert!(agents
+        .iter()
+        .any(|agent| agent["name"] == "coder-a1" && agent["status"] == "processing"));
     assert!(!stdout.contains(r#""uuid""#));
 }

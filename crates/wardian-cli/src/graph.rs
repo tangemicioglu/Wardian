@@ -467,7 +467,7 @@ fn render_show_pretty(
 }
 
 fn render_json(body: serde_json::Value) -> Result<String, CliError> {
-    serde_json::to_string_pretty(&body)
+    serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }

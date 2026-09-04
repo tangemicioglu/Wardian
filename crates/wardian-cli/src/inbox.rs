@@ -7,18 +7,20 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    fs, io,
 };
 use wardian_core::control::{
-    InboxNotificationDecision, InboxNotificationPayload, InteractionBodyRef, InteractionKind,
-    InteractionRecord, InteractionStatus,
+    InboxListResponse, InboxNotificationDecision, InboxNotificationPayload, InteractionBodyRef,
+    InteractionKind, InteractionRecord, InteractionStatus,
 };
 use wardian_core::engine::{EventKind, RunStatus};
+use wardian_core::identity::StatusSource;
 
 const MAX_INBOX_SOURCE_ITEMS: usize = wardian_core::control::MAX_INBOX_PAGE_LIMIT;
 const QUEUE_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 struct InboxProjection {
+    status_source: StatusSource,
     items: Vec<Value>,
     truncated: bool,
     next_offset: Option<usize>,
@@ -103,21 +105,43 @@ pub fn handle_inbox(args: InboxArgs) -> Result<String, CliError> {
             }
             let types = normalize_filter(types, "--type")?;
             let sources = normalize_filter(sources, "--source")?;
-            let projection = live::inbox_list_page(
-                offset,
-                types.iter().cloned().collect(),
-                sources.iter().cloned().collect(),
-                unread,
-                limit,
-            )
-            .map(|page| InboxProjection {
-                items: page.items,
-                truncated: page.truncated,
-                next_offset: page.next_offset,
-            })
-            .or_else(|_| load_persisted_items(offset, &types, &sources, unread, limit))?;
+            let projection = resolve_inbox_read(
+                live::inbox_list_page(
+                    offset,
+                    types.iter().cloned().collect(),
+                    sources.iter().cloned().collect(),
+                    unread,
+                    limit,
+                ),
+                || load_persisted_items(offset, &types, &sources, unread, limit),
+            )?;
             render_list(&projection)
         }
+    }
+}
+
+/// Only an absent or refused endpoint permits an offline read. An answering
+/// endpoint's rejection, protocol failure, or timeout must remain an error.
+fn resolve_inbox_read(
+    live_read: io::Result<InboxListResponse>,
+    persisted_read: impl FnOnce() -> Result<InboxProjection, CliError>,
+) -> Result<InboxProjection, CliError> {
+    match live_read {
+        Ok(page) => Ok(InboxProjection {
+            status_source: StatusSource::Live,
+            items: page.items,
+            truncated: page.truncated,
+            next_offset: page.next_offset,
+        }),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            persisted_read()
+        }
+        Err(error) => Err(crate::control_error(error)),
     }
 }
 
@@ -140,11 +164,12 @@ fn normalize_filter(values: Vec<String>, flag: &str) -> Result<HashSet<String>, 
 fn render_list(projection: &InboxProjection) -> Result<String, CliError> {
     let response = json!({
         "schema": 1,
+        "status_source": projection.status_source,
         "items": projection.items,
         "truncated": projection.truncated,
         "next_offset": projection.next_offset,
     });
-    serde_json::to_string_pretty(&response)
+    serde_json::to_string(&response)
         .map(|json| format!("{json}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -297,6 +322,7 @@ fn load_persisted_items(
         source_page_limit,
     )?;
     Ok(InboxProjection {
+        status_source: StatusSource::Persisted,
         items,
         truncated,
         next_offset,
@@ -807,6 +833,8 @@ fn sort_items(mut items: Vec<Value>) -> Vec<Value> {
 mod tests {
     use super::*;
 
+    include!("tests/inbox_read_contract_tests.rs");
+
     #[test]
     fn failed_workflows_match_the_workflow_failed_filter_alias() {
         let item = json!({
@@ -826,6 +854,7 @@ mod tests {
             json!({"id": "old", "type": "agent_completed", "timestamp": 1, "read": true, "evidence_source": "provider_runtime"}),
         ];
         let output = render_list(&InboxProjection {
+            status_source: StatusSource::Persisted,
             items,
             truncated: true,
             next_offset: Some(1),

@@ -32,7 +32,7 @@ fn working_directory() -> Option<String> {
 /// Serializes a response under the CLI's standard envelope.
 fn json_envelope<T: serde::Serialize>(key: &str, value: &T) -> Result<String, CliError> {
     let envelope = serde_json::json!({ "schema": 1, key: value });
-    serde_json::to_string_pretty(&envelope)
+    serde_json::to_string(&envelope)
         .map(|text| format!("{text}\n"))
         .map_err(|error| CliError::generic(error.to_string()))
 }
@@ -48,7 +48,9 @@ pub fn split_target_invocation(tokens: &[String]) -> Result<(String, Vec<String>
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
         .ok_or_else(|| {
-            CliError::generic("browser needs a session, e.g. `wardian browser browser:1 reload`")
+            CliError::generic(
+                "browser needs a session, e.g. `wardian browser browser:1 navigate reload`",
+            )
         })?;
     let rest: Vec<String> = iter.cloned().collect();
     if rest.is_empty() {
@@ -143,11 +145,36 @@ pub fn handle_browser(args: BrowserArgs) -> Result<String, CliError> {
         }
         BrowserCommand::Target(tokens) => {
             let (target, rest) = split_target_invocation(&tokens)?;
-            let parsed = BrowserTargetArgs::try_parse_from(rest)
-                .map_err(|error| CliError::generic(error.to_string()))?;
+            let parsed = match BrowserTargetArgs::try_parse_from(rest) {
+                Ok(parsed) => parsed,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        clap::error::ErrorKind::DisplayHelp
+                            | clap::error::ErrorKind::DisplayVersion
+                    ) =>
+                {
+                    return Ok(error.to_string())
+                }
+                Err(error) => return Err(crate::parse_error(error)),
+            };
             handle_target(&target, parsed.command, json || parsed.json)
         }
     }
+}
+
+/// Resolve nested help before the CLI's compatibility migrations run.
+pub fn target_help(args: &BrowserArgs) -> Option<String> {
+    let BrowserCommand::Target(tokens) = &args.command else {
+        return None;
+    };
+    let (_, rest) = split_target_invocation(tokens).ok()?;
+    let error = BrowserTargetArgs::try_parse_from(rest).err()?;
+    matches!(
+        error.kind(),
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+    )
+    .then(|| error.to_string())
 }
 
 /// Runs one verb against an already-resolved session.
@@ -549,7 +576,9 @@ mod tests {
     #[test]
     fn a_missing_target_says_what_the_call_should_look_like() {
         let error = split_target_invocation(&[]).expect_err("no target");
-        assert!(error.message.contains("wardian browser browser:1 reload"));
+        assert!(error
+            .message
+            .contains("wardian browser browser:1 navigate reload"));
     }
 
     #[test]
