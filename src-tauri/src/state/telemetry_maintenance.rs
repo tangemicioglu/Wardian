@@ -1,9 +1,9 @@
-//! Application-owned telemetry retention scheduling.
+//! Application-owned telemetry retention policy and execution.
 //!
 //! The core maintenance function owns the recovery protocol. This module owns
-//! the product policy and scheduling boundary that makes invoking it safe:
-//! run once a day under the application's database serialization, even while
-//! providers are live, and keep a small rotating set of verified backups.
+//! the product policy and the due-only operation invoked by telemetry ingest:
+//! run under the application's database serialization, even while providers
+//! are live, and keep a small rotating set of verified backups.
 
 use crate::utils::fs::get_wardian_home;
 use chrono::Utc;
@@ -23,6 +23,12 @@ const AUTOMATIC_BACKUP_COUNT: usize = 2;
 const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const SUCCESS_DELAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Give startup and the first ingest pass time to settle before considering
+/// retention. This is an in-memory deadline and creates no scheduling writes.
+pub(crate) fn initial_delay() -> std::time::Duration {
+    INITIAL_DELAY
+}
 
 fn telemetry_backup_directory(home: &Path) -> PathBuf {
     home.join("backups").join("telemetry")
@@ -264,7 +270,7 @@ fn maintain_if_due_at(
     Ok(Some(report))
 }
 
-fn run_telemetry_maintenance_if_due() -> Result<Option<MaintenanceReport>, String> {
+fn perform_telemetry_maintenance_if_due() -> Result<Option<MaintenanceReport>, String> {
     let Some(home) = get_wardian_home() else {
         return Ok(None);
     };
@@ -272,48 +278,44 @@ fn run_telemetry_maintenance_if_due() -> Result<Option<MaintenanceReport>, Strin
         .map_err(|error| error.to_string())
 }
 
-/// Start the once-daily application-owned retention loop.
+/// Run the due-only retention opportunity owned by the telemetry ingest loop.
 ///
 /// The core database mutex holds this complete backup, retention, and checkpoint
 /// pass apart from provider ingest. The core telemetry lease separately excludes
 /// a concurrent schema migration. Provider processes may remain live because
 /// they do not bypass either database boundary. Periodic VACUUM is deliberately
 /// not part of this path because SQLite reuses released pages after retention.
-pub fn start_telemetry_maintenance() {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(INITIAL_DELAY).await;
-        loop {
-            let result = tokio::task::spawn_blocking(run_telemetry_maintenance_if_due).await;
-            let retry = match result {
-                Ok(Ok(Some(report))) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[Wardian] Telemetry retention removed {} turns, {} edits, {} activity intervals, and {} old limit observations before {}",
-                        report.turns_deleted,
-                        report.edits_deleted,
-                        report.activity_deleted,
-                        report.limits_deleted,
-                        report.cutoff
-                    ));
-                    false
-                }
-                Ok(Ok(None)) => false,
-                Ok(Err(error)) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[Wardian] Telemetry retention pass failed; retrying: {error}"
-                    ));
-                    true
-                }
-                Err(error) => {
-                    crate::utils::logging::log_debug(&format!(
-                        "[Wardian] Telemetry retention task failed; retrying: {error}"
-                    ));
-                    true
-                }
-            };
-
-            tokio::time::sleep(if retry { RETRY_DELAY } else { SUCCESS_DELAY }).await;
+///
+/// The returned delay lets ingest retain one in-memory deadline. No database
+/// query, backup, or write is performed again until that deadline expires.
+pub(crate) async fn run_if_due_after_ingest() -> std::time::Duration {
+    let result = tokio::task::spawn_blocking(perform_telemetry_maintenance_if_due).await;
+    match result {
+        Ok(Ok(Some(report))) => {
+            crate::utils::logging::log_debug(&format!(
+                "[Wardian] Telemetry retention removed {} turns, {} edits, {} activity intervals, and {} old limit observations before {}",
+                report.turns_deleted,
+                report.edits_deleted,
+                report.activity_deleted,
+                report.limits_deleted,
+                report.cutoff
+            ));
+            SUCCESS_DELAY
         }
-    });
+        Ok(Ok(None)) => SUCCESS_DELAY,
+        Ok(Err(error)) => {
+            crate::utils::logging::log_debug(&format!(
+                "[Wardian] Telemetry retention pass failed; retrying: {error}"
+            ));
+            RETRY_DELAY
+        }
+        Err(error) => {
+            crate::utils::logging::log_debug(&format!(
+                "[Wardian] Telemetry retention task failed; retrying: {error}"
+            ));
+            RETRY_DELAY
+        }
+    }
 }
 
 #[cfg(test)]

@@ -40,10 +40,11 @@ The software call is the normal core API:
 wardian_core::telemetry::maintain(&connection, retain_days, backup_path, vacuum)?;
 ```
 
-The caller owns policy selection and schedules this function through the
-application database serialization boundary; the function owns backup
-verification, durable recovery markers, deletion, checkpointing, and optional
-compaction. The former provider-runtime quiescence rule is superseded by
+The caller owns policy selection and invokes this function from the existing
+ingest coordinator after a source pass, through the application database
+serialization boundary. The function owns backup verification, durable recovery
+markers, deletion, checkpointing, and optional compaction. The former
+provider-runtime quiescence rule is superseded by
 [`2026-08-31-live-fleet-telemetry-maintenance.md`](./2026-08-31-live-fleet-telemetry-maintenance.md).
 
 The function creates and integrity-checks the backup before mutating the

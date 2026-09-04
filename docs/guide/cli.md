@@ -35,11 +35,12 @@ wardian telemetry summary --horizon week --dimension provider
 ```
 
 Telemetry retention is an application-owned operation, not a CLI command.
-Wardian applies a documented 90-day detail policy once per day while
-providers continue running. The app serializes the complete backup, retention,
-and checkpoint pass with telemetry ingest, so the CLI never needs
-to stop agents or invoke maintenance by hand. Codex, Claude, and Pi callback
-facts are coalesced at five-minute interface grain as they arrive; timestamp-cursor
+Wardian's existing ingest coordinator considers the documented 90-day detail
+policy after a source pass, no more than once per day, while providers continue
+running. Ordinary passes add only an in-memory deadline comparison; backup,
+retention, and checkpoint work happens only when that deadline and the age-based
+due check both pass. Codex, Claude, and Pi callback facts are coalesced at
+five-minute interface grain as they arrive; timestamp-cursor
 sources retain event identities for safe overlap rereads. Wardian creates and
 verifies a backup under `<wardian-home>/backups/telemetry`, keeps the two newest
 automatic backups, recomputes affected hourly rollups, removes expired detail

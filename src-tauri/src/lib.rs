@@ -359,12 +359,10 @@ pub fn run() {
 
             start_metrics_supervisor(app.handle().clone());
             // Deliberately its own loop rather than work added to the metrics
-            // tick: that tick drives live status and readiness, and ingest reads
-            // whole log deltas while holding the state database's write lock.
+            // tick: that tick drives live status and readiness. This loop also
+            // owns the due-only telemetry retention opportunity after ingest,
+            // so no second database-maintenance timer contends with it.
             state::telemetry_ingest::start_telemetry_ingest(app.handle().clone());
-            // Keep aged raw telemetry bounded automatically. The retention pass
-            // serializes with live ingest through the app-owned database lock.
-            state::telemetry_maintenance::start_telemetry_maintenance();
 
             if let Some(runs_dir) = wardian_core::paths::automation_runs_dir() {
                 let interrupted = crate::automation::runs::fail_interrupted_runs(&runs_dir);

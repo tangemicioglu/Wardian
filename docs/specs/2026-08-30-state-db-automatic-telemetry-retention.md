@@ -73,8 +73,11 @@ timestamp-cursor providers, hourly rollups, activity intervals, latest gauges,
 and source cursors. Raw callback rows are no longer required for the main
 providers.
 
-Maintenance runs once per day from the desktop application. The original
-provider-runtime quiescence condition was superseded by
+The existing telemetry ingest coordinator owns the maintenance opportunity. It
+uses an in-memory deadline and, after an ingest pass, calls the age-based due
+check no more than once per day. This adds no scheduler task, persistent
+heartbeat, or database write to ordinary ingest. The original provider-runtime
+quiescence condition was superseded by
 [`2026-08-31-live-fleet-telemetry-maintenance.md`](./2026-08-31-live-fleet-telemetry-maintenance.md):
 the application now serializes maintenance with live ingest rather than waiting
 for provider processes to disappear. A due check avoids creating a full backup
@@ -111,5 +114,5 @@ prefix.
 
 The first upgraded run may require temporary space for the verified backup. If
 the backup or maintenance fails, no cleanup is claimed and the
-application retries after 15 minutes; the source database is not partially
-purged before backup verification.
+the ingest coordinator makes the next retry opportunity after 15 minutes; the
+source database is not partially purged before backup verification.
