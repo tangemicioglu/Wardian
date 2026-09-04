@@ -127,11 +127,21 @@ pub async fn reconcile_headless_agents() -> std::result::Result<(), Box<dyn std:
 }
 
 async fn emit_metrics_tick(metrics_handle: tauri::AppHandle) {
+    let profile = crate::utils::runtime_profile::RuntimeProfileSpan::wall(
+        crate::utils::runtime_profile::RuntimeMetric::MetricsTick,
+    );
     let state = metrics_handle.state::<AppState>();
     let metrics = manager::get_all_metrics(&state).await;
+    let app_metrics_started = std::time::Instant::now();
     let app_metrics = manager::get_app_metrics(&state).await;
+    crate::utils::runtime_profile::record_wall_time(
+        crate::utils::runtime_profile::RuntimeMetric::AppMetrics,
+        1,
+        app_metrics_started.elapsed(),
+    );
     let _ = metrics_handle.emit("agent-metrics", &metrics);
     let _ = metrics_handle.emit("app-metrics", &app_metrics);
+    profile.finish(metrics.len() as u64);
 }
 
 fn start_metrics_supervisor(metrics_handle: tauri::AppHandle) {
@@ -172,6 +182,7 @@ pub fn run() {
     }
 
     crate::utils::fs::ensure_process_wardian_home_env();
+    crate::utils::runtime_profile::start_reporter();
 
     crate::utils::migration::migrate_home_layout();
     if let Err(error) = wardian_core::automation_migration::migrate_current_home() {

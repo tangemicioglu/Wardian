@@ -38,6 +38,8 @@ export interface DashboardViewProps {
   live?: readonly DashboardLiveAgent[];
   onOpenAgent?: (sessionId: string) => void;
   onOpenAnalytics?: (sessionId?: string) => void;
+  /** Pauses telemetry reads while a retained workbench tab is hidden. */
+  enabled?: boolean;
 }
 
 /**
@@ -68,12 +70,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   live,
   onOpenAgent,
   onOpenAnalytics,
+  enabled = true,
 }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [picking, setPicking] = useState(false);
 
   const measure = trendMeasureFor(prefs.sort.column_id);
-  const { fleet, loading, error, refresh } = useFleet(prefs.window_minutes, measure);
+  const { fleet, loading, error, refresh } = useFleet(prefs.window_minutes, measure, enabled);
 
   const columns = useMemo(
     () =>

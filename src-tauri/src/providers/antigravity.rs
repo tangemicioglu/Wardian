@@ -266,28 +266,54 @@ impl AntigravityProvider {
     pub fn conversation_messages_from_database(
         path: &Path,
     ) -> Result<Vec<AntigravityConversationMessage>, String> {
+        Self::conversation_messages_from_database_since(path, None)
+    }
+
+    /// Reads projected conversation messages at or after `minimum_step_index`.
+    ///
+    /// The inclusive boundary lets the live watcher re-read a small overlap so
+    /// provider-authored updates to the latest planner step are still emitted,
+    /// without decoding every historical payload on every poll.
+    pub fn conversation_messages_from_database_since(
+        path: &Path,
+        minimum_step_index: Option<u64>,
+    ) -> Result<Vec<AntigravityConversationMessage>, String> {
+        let profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+            crate::utils::runtime_profile::RuntimeMetric::AntigravityMessageScan,
+        );
         let connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|error| format!("failed to open Antigravity conversation database: {error}"))?;
+        let sql = if minimum_step_index.is_some() {
+            "SELECT idx, step_type, step_payload FROM steps WHERE idx >= ?1 ORDER BY idx"
+        } else {
+            "SELECT idx, step_type, step_payload FROM steps ORDER BY idx"
+        };
         let mut statement = connection
-            .prepare("SELECT idx, step_type, step_payload FROM steps ORDER BY idx")
+            .prepare(sql)
             .map_err(|error| format!("failed to read Antigravity conversation steps: {error}"))?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
-            .map_err(|error| format!("failed to query Antigravity conversation steps: {error}"))?;
+        let minimum_step_index = minimum_step_index.map(|index| index.min(i64::MAX as u64) as i64);
+        let mut rows = match minimum_step_index {
+            Some(index) => statement.query([index]),
+            None => statement.query([]),
+        }
+        .map_err(|error| format!("failed to query Antigravity conversation steps: {error}"))?;
 
         let mut messages = Vec::new();
-        for row in rows {
-            let (step_index, step_type, payload) = row.map_err(|error| {
-                format!("failed to decode Antigravity conversation step: {error}")
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| format!("failed to decode Antigravity conversation step: {error}"))?
+        {
+            let step_index = row.get::<_, i64>(0).map_err(|error| {
+                format!("failed to decode Antigravity conversation step index: {error}")
+            })?;
+            let step_type = row.get::<_, i64>(1).map_err(|error| {
+                format!("failed to decode Antigravity conversation step type: {error}")
+            })?;
+            let payload = row.get::<_, Vec<u8>>(2).map_err(|error| {
+                format!("failed to decode Antigravity conversation step payload: {error}")
             })?;
             let (role, text) = match step_type {
                 // USER_MESSAGE: payload.user_message.text
@@ -317,6 +343,7 @@ impl AntigravityProvider {
             });
         }
 
+        profile.finish(messages.len() as u64);
         Ok(messages)
     }
 
@@ -392,6 +419,9 @@ impl AntigravityProvider {
     /// conversation. The step index is the provider-owned receipt cursor used
     /// by the live watcher to acknowledge a submitted turn.
     pub fn latest_user_message_step_index(path: &Path) -> Result<Option<u64>, String> {
+        let profile = crate::utils::runtime_profile::RuntimeProfileSpan::start(
+            crate::utils::runtime_profile::RuntimeMetric::AntigravityLatestStep,
+        );
         let connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -400,11 +430,13 @@ impl AntigravityProvider {
         let mut statement = connection
             .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1")
             .map_err(|error| format!("failed to read Antigravity user-message steps: {error}"))?;
-        statement
+        let latest = statement
             .query_row([], |row| row.get::<_, i64>(0))
             .optional()
             .map(|step_index| step_index.map(|index| index.max(0) as u64))
-            .map_err(|error| format!("failed to query Antigravity user-message steps: {error}"))
+            .map_err(|error| format!("failed to query Antigravity user-message steps: {error}"));
+        profile.finish(u64::from(latest.as_ref().is_ok_and(Option::is_some)));
+        latest
     }
 
     pub fn summarize_conversation(
@@ -1293,6 +1325,40 @@ SET dp0=%~dp0
                 last_query_timestamp: None,
                 status: Some("Processing..."),
             }
+        );
+    }
+
+    #[test]
+    fn incremental_message_projection_reads_only_the_requested_overlap() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = temp.path().join("conversation.db");
+        let connection = Connection::open(&database).expect("open database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER, step_type INTEGER, step_payload BLOB);",
+            )
+            .expect("create steps");
+        for (index, text) in [(2_i64, "old"), (20_i64, "overlap"), (21_i64, "new")] {
+            let payload = protobuf_message_field(19, protobuf_string_field(2, text));
+            connection
+                .execute(
+                    "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, 14, ?2)",
+                    rusqlite::params![index, payload],
+                )
+                .expect("insert user message");
+        }
+        drop(connection);
+
+        let messages =
+            AntigravityProvider::conversation_messages_from_database_since(&database, Some(20))
+                .expect("read incremental messages");
+
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| (message.step_index, message.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(20, "overlap"), (21, "new")]
         );
     }
 

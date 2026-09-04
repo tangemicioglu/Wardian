@@ -144,6 +144,10 @@ pub async fn register_terminal_presentation(
     request: TerminalPresentationRegistration,
     state: State<'_, AppState>,
 ) -> Result<TerminalPresentationRegistrationResult, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalRegister,
+        1,
+    );
     register_terminal_presentation_with_broker(&state.terminal_sessions, request)
         .await
         .map_err(command_error)
@@ -154,6 +158,10 @@ pub async fn update_terminal_presentation(
     request: TerminalPresentationUpdateRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalPresentationUpdateResult, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalUpdate,
+        1,
+    );
     state
         .terminal_sessions
         .update_presentation(request, TerminalClientIdentity::trusted_desktop())
@@ -181,6 +189,10 @@ pub async fn report_terminal_presentation_viewport(
     request: TerminalPresentationViewportRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalPresentationState, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalViewport,
+        1,
+    );
     report_terminal_presentation_viewport_with_broker(&state.terminal_sessions, request)
         .await
         .map_err(command_error)
@@ -235,6 +247,10 @@ pub async fn request_terminal_snapshot(
     request: TerminalSnapshotRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalSnapshot, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalSnapshot,
+        1,
+    );
     state
         .terminal_sessions
         .snapshot(&request.session_id)
@@ -260,6 +276,10 @@ pub async fn read_terminal_events(
     request: TerminalEventReadRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalEventBatch, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalReadEvents,
+        1,
+    );
     state
         .terminal_sessions
         .read_events(request)
@@ -272,6 +292,10 @@ pub async fn ack_terminal_events(
     request: TerminalEventAckRequest,
     state: State<'_, AppState>,
 ) -> Result<TerminalEventAckResult, String> {
+    crate::utils::runtime_profile::record_event(
+        crate::utils::runtime_profile::RuntimeMetric::TerminalAckEvents,
+        1,
+    );
     state
         .terminal_sessions
         .ack_events(request)

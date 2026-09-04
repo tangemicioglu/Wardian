@@ -10,6 +10,7 @@ pub mod process;
 pub mod pty_buffer;
 pub mod pty_decode;
 pub mod queue;
+pub(crate) mod runtime_profile;
 pub mod shell;
 pub mod terminal_input;
 

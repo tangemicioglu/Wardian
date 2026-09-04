@@ -32,6 +32,7 @@ Use this index when implementing or debugging Wardian internals.
 ## Testing and Verification
 
 - [Developer Setup](./setup.md)
+- [Runtime Resource Profiling](./runtime-resource-profiling.md)
 - [CI Verification](./ci-verification.md)
 - [Release Updates](./release-updates.md)
 - [Package Manager Distribution](./package-manager-distribution.md)

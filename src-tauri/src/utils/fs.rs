@@ -666,6 +666,57 @@ const CODEX_INDEX_LOCK_FILE: &str = ".wardian-codex-index.lock";
 
 static CODEX_INDEX_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CodexIndexFileWatermark {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+    is_file: bool,
+    is_link: bool,
+}
+
+#[derive(Clone)]
+struct CodexIndexSyncState {
+    source: Option<CodexIndexFileWatermark>,
+    target: Option<CodexIndexFileWatermark>,
+}
+
+type CodexIndexSyncKey = (std::path::PathBuf, std::path::PathBuf);
+
+static CODEX_INDEX_SYNC_CACHE: OnceLock<
+    Mutex<std::collections::HashMap<CodexIndexSyncKey, CodexIndexSyncState>>,
+> = OnceLock::new();
+
+fn codex_index_file_watermark(
+    path: &std::path::Path,
+) -> Result<Option<CodexIndexFileWatermark>, String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    Ok(Some(CodexIndexFileWatermark {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        created: metadata.created().ok(),
+        is_file: metadata.is_file(),
+        is_link: is_directory_link(&metadata),
+    }))
+}
+
+fn target_preserves_cached_codex_records(
+    previous: &Option<CodexIndexFileWatermark>,
+    current: &Option<CodexIndexFileWatermark>,
+) -> bool {
+    match (previous, current) {
+        (None, None) => true,
+        (Some(previous), Some(current)) if current.is_file && !current.is_link => {
+            current == previous || current.len > previous.len
+        }
+        _ => false,
+    }
+}
+
 fn ensure_codex_sessions_projection(
     real_codex_home: &std::path::Path,
     projected_home: &std::path::Path,
@@ -945,7 +996,7 @@ fn sync_codex_home_indexes_from(
 
     let result = (|| {
         for file_name in CODEX_INDEX_FILES {
-            append_missing_codex_jsonl_records(
+            sync_changed_codex_jsonl_records(
                 &projected_home.join(file_name),
                 &real_codex_home.join(file_name),
             )?;
@@ -955,6 +1006,49 @@ fn sync_codex_home_indexes_from(
     let _ = lock_file.unlock();
     drop(process_lock);
     result
+}
+
+fn sync_changed_codex_jsonl_records(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    let source_watermark = codex_index_file_watermark(source)?;
+    let target_watermark = codex_index_file_watermark(target)?;
+    let key = (source.to_path_buf(), target.to_path_buf());
+    let cache = CODEX_INDEX_SYNC_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+    {
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(previous) = cache.get_mut(&key) {
+            if previous.source == source_watermark
+                && target_preserves_cached_codex_records(&previous.target, &target_watermark)
+            {
+                previous.target = target_watermark;
+                return Ok(());
+            }
+        }
+    }
+
+    append_missing_codex_jsonl_records(source, target)?;
+    let published_target = codex_index_file_watermark(target)?;
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for ((_, cached_target), state) in cache.iter_mut() {
+        if cached_target == target {
+            state.target = published_target.clone();
+        }
+    }
+    cache.insert(
+        key,
+        CodexIndexSyncState {
+            source: source_watermark,
+            target: published_target,
+        },
+    );
+    Ok(())
 }
 
 fn append_missing_codex_jsonl_records(
@@ -2016,6 +2110,38 @@ mod tests {
             1
         );
         assert!(!real_home.join("auth.json").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codex_home_index_sync_reacts_to_source_growth_and_missing_target() {
+        let root = unique_temp_dir("codex-home-index-change-gate");
+        let real_home = root.join("real-codex-home");
+        let projected_home = root.join("projected-home");
+        std::fs::create_dir_all(&real_home).expect("create real home");
+        std::fs::create_dir_all(&projected_home).expect("create projected home");
+        let source = projected_home.join("history.jsonl");
+        let target = real_home.join("history.jsonl");
+        std::fs::write(&source, "{\"session_id\":\"one\"}\n").expect("write first source row");
+
+        sync_codex_home_indexes_from(&real_home, &projected_home).expect("initial sync");
+        sync_codex_home_indexes_from(&real_home, &projected_home).expect("unchanged sync");
+        std::fs::write(
+            &source,
+            "{\"session_id\":\"one\"}\n{\"session_id\":\"two\"}\n",
+        )
+        .expect("grow source index");
+
+        sync_codex_home_indexes_from(&real_home, &projected_home).expect("sync source growth");
+        let central = std::fs::read_to_string(&target).expect("read grown central index");
+        assert_eq!(central.matches("session_id").count(), 2);
+
+        std::fs::remove_file(&target).expect("remove central index");
+        sync_codex_home_indexes_from(&real_home, &projected_home)
+            .expect("restore missing central index");
+        let restored = std::fs::read_to_string(&target).expect("read restored central index");
+        assert_eq!(restored.matches("session_id").count(), 2);
 
         let _ = std::fs::remove_dir_all(&root);
     }
