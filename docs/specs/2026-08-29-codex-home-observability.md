@@ -42,13 +42,16 @@ plus an exclusive lock file serializes Wardian's central writers.
 
 SQLite databases (`state_5.sqlite*`, `logs_2.sqlite*`, and other Codex
 databases) remain per-agent. They are not junctioned, copied, or hardlinked,
-because WAL/SHM files are path-sensitive. Runtime logs, caches, and temporary
-files remain local as well.
+because WAL/SHM files are path-sensitive. Runtime logs, non-plugin caches, and
+temporary files remain local as well.
 
 `auth.json` and `cap_sid` are projected from the native home into each agent
 home only. No credentials or capability files are copied from an agent home
 back to the native home. Configuration remains an agent-local overlay over
 shared defaults, including agent-owned workspace trust and local overrides.
+Provider-owned marketplace catalogs and plugin implementation caches are
+projected separately as directory links; they do not include agent databases,
+sessions, or configuration state.
 
 ### Bootstrap and ongoing observation
 

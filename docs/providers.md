@@ -129,6 +129,13 @@ state with:
 wardian agent doctor <agent-name-or-uuid>
 ```
 
+During habitat refresh, Wardian projects the native Codex marketplace catalogs
+and plugin cache into the agent home as directory links. The links are
+provider-owned implementation assets; agent databases, sessions, configuration
+overlays, and plugin enablement state remain local. Native marketplace and MCP
+runtime entries are refreshed so existing agents do not retain stale provider
+paths, while agent-only MCP entries remain available.
+
 ### Session and Status Handling
 
 Wardian starts a fresh Codex session by writing a minimal rollout into the agent's projected `CODEX_HOME`, then resumes that exact provider UUID interactively. This avoids a bootstrap model turn while preserving per-agent session isolation. Status tracking uses Codex thread and turn events, approval requests, command events, and completion markers.

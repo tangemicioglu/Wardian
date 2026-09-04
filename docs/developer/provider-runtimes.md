@@ -149,11 +149,14 @@ Current model:
   observations.
 - Codex SQLite databases such as `state_5.sqlite*` and `logs_2.sqlite*` remain
   per-agent because SQLite journal/WAL files are path-sensitive and are never
-  shared or hardlinked. Runtime logs, caches, and temporary files remain local.
+  shared or hardlinked. Runtime logs, databases, and temporary files remain
+  local, except for the provider-owned marketplace catalogs and plugin cache
+  directories explicitly projected below.
 - `auth.json` and `cap_sid` flow only from the native Codex home into an agent
   home; they are never copied back outward.
-- Codex runtime directories such as `log`, cache, temp, and
-  generated database files remain per-agent.
+- Codex runtime directories such as `log`, temp, and generated database files
+  remain per-agent. The provider plugin cache is the explicit exception
+  described below.
 - On Windows, Codex elevated sandbox support is treated separately from session
   state:
   - `.sandbox-secrets` and `.sandbox-bin` are projected from the user's Codex
@@ -165,18 +168,25 @@ Current model:
     `setup_error.json` stay local to the agent or bootstrap home.
 - Codex system skills remain under `CODEX_HOME/skills/.system`
 - Wardian-assigned skills are projected into `CODEX_HOME/skills/<skill-name>`
+- Native Codex marketplace catalogs under `.tmp/bundled-marketplaces` and
+  `.tmp/plugins`, plus `plugins/cache`, are projected into each agent home as
+  directory links. These are provider-owned implementation assets, not shared
+  agent state.
 
 This preserves per-agent skill scope without forcing the project repo itself to hold agent-specific skill directories.
 
 ### Plugin pass-through and diagnostics
 
-Plugin installation and enablement remain entirely in each agent's
-`CODEX_HOME`. Wardian does not apply a class allowlist, does not alter installed
-or enabled plugin state, and does not pass global plugin/app disable flags.
-Plugin implementation files may be cached by Codex, but the per-agent installed
-and enabled surface must remain local to the agent home. A configuration or
-plugin change needs a new Codex session because an existing thread has a fixed
-tool list.
+Plugin enablement and agent-specific configuration remain entirely in each
+agent's `CODEX_HOME`. Wardian does not apply a class allowlist, does not alter
+installed or enabled plugin state, and does not pass global plugin/app disable
+flags.
+The native marketplace catalogs and plugin implementation cache are projected
+as provider-owned directory links so every agent can resolve the same current
+plugin surface without copying agent databases. Agent-local configuration is
+reconciled with current marketplace and MCP runtime records; agent-only MCP
+entries remain intact. A configuration or plugin change needs a new Codex
+session because an existing thread has a fixed tool list.
 
 Use the provider-neutral control surface to inspect effective state without
 reading sensitive Codex files:
