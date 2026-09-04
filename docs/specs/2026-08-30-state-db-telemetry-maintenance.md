@@ -40,9 +40,12 @@ The software call is the normal core API:
 wardian_core::telemetry::maintain(&connection, retain_days, backup_path, vacuum)?;
 ```
 
-The caller owns policy selection and schedules this function only at a
-quiescent lifecycle boundary; the function owns backup verification, durable
-recovery markers, deletion, checkpointing, and optional compaction.
+The caller owns policy selection and invokes this function from the existing
+ingest coordinator after a source pass, through the application database
+serialization boundary. The function owns backup verification, durable recovery
+markers, deletion, checkpointing, and optional compaction. The former
+provider-runtime quiescence rule is superseded by
+[`2026-08-31-live-fleet-telemetry-maintenance.md`](./2026-08-31-live-fleet-telemetry-maintenance.md).
 
 The function creates and integrity-checks the backup before mutating the
 source. A new backup is built through a temporary sibling and atomically
@@ -58,8 +61,8 @@ the original retention window. It then checkpoints the WAL and clears the phase
 marker. The
 Rate limits are account-level gauges. The write path keeps only the newest
 observation per provider, and maintenance removes older observations already
-present in an installed database. `VACUUM` is opt-in and runs only when the
-software maintenance policy requests it at a quiescent lifecycle boundary.
+present in an installed database. `VACUUM` remains an explicit core option; the
+automatic 90-day application retention policy does not request it.
 
 The desktop application currently supplies a 90-day product policy. Choosing a
 shorter or longer window remains a product decision and requires updating the

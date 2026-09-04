@@ -853,6 +853,12 @@ fn next_interval(
     }
 }
 
+/// Retention runs only after an ingest pass and only when its in-memory deadline
+/// has elapsed. Checking the deadline is the only added work on ordinary passes.
+fn telemetry_maintenance_is_due(now: Instant, next_attempt: Instant) -> bool {
+    now >= next_attempt
+}
+
 /// Start the background ingest loop.
 ///
 /// The first pass is immediate rather than one interval away, so opening the app
@@ -861,6 +867,8 @@ fn next_interval(
 pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut discovery_cache = BackgroundDiscoveryCache::default();
+        let mut next_maintenance_attempt =
+            Instant::now() + crate::state::telemetry_maintenance::initial_delay();
         loop {
             let state = app_handle.state::<AppState>();
             let descriptors = agent_descriptors(&state).await;
@@ -912,6 +920,12 @@ pub fn start_telemetry_ingest(app_handle: tauri::AppHandle) {
                     "[Wardian] Telemetry ingest pass took {}s; next pass deferred until it completed",
                     pass_started.elapsed().as_secs()
                 ));
+            }
+
+            let now = Instant::now();
+            if telemetry_maintenance_is_due(now, next_maintenance_attempt) {
+                let delay = crate::state::telemetry_maintenance::run_if_due_after_ingest().await;
+                next_maintenance_attempt = Instant::now() + delay;
             }
 
             tokio::time::sleep(next_interval(any_agent_known, any_agent_live, deferred)).await;
@@ -1265,6 +1279,18 @@ mod tests {
         // history into one that takes days to become true.
         assert_eq!(next_interval(true, false, 12), INGEST_INTERVAL_BACKFILL);
         assert!(next_interval(true, false, 12) < next_interval(true, true, 0));
+    }
+
+    #[test]
+    fn retention_only_runs_after_its_in_memory_deadline() {
+        let now = Instant::now();
+        let elapsed_deadline = now.checked_sub(Duration::from_secs(1)).unwrap();
+
+        assert!(telemetry_maintenance_is_due(now, elapsed_deadline));
+        assert!(!telemetry_maintenance_is_due(
+            now,
+            now + Duration::from_secs(1)
+        ));
     }
 
     #[test]
