@@ -11,9 +11,14 @@
 //! the arithmetic and the parser wiring on every machine including CI. It cannot
 //! prove format fidelity, because it is something this crate wrote.
 //!
-//! **The real-log tests run when a log is present**, and are the only check that
-//! the format assumption still holds against a codex Wardian does not control.
-//! They skip elsewhere, which is why they are not the only coverage.
+//! External logs are checked explicitly by the `verify_provider_log` example.
+//! Default tests read only committed fixtures and test-owned snapshots.
+
+#[path = "common/provider_log.rs"]
+mod provider_log;
+
+#[path = "common/fixture_environment.rs"]
+mod fixture_environment;
 
 use rusqlite::Connection;
 use wardian_core::telemetry::ingest::ingest_source;
@@ -26,40 +31,6 @@ fn fixture_log() -> std::path::PathBuf {
         .join("tests")
         .join("fixtures")
         .join("codex-rollout.jsonl")
-}
-
-/// Newest codex rollout log on this machine, if any.
-fn newest_codex_log() -> Option<std::path::PathBuf> {
-    if let Ok(explicit) = std::env::var("WARDIAN_TEST_CODEX_LOG") {
-        let path = std::path::PathBuf::from(explicit);
-        return path.exists().then_some(path);
-    }
-
-    let root = dirs::home_dir()?.join(".codex").join("sessions");
-    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
-                continue;
-            };
-            if newest.as_ref().is_none_or(|(seen, _)| modified > *seen) {
-                newest = Some((modified, path));
-            }
-        }
-    }
-    newest.map(|(_, path)| path)
 }
 
 /// The provider's own final cumulative figures, read straight from the log.
@@ -216,124 +187,10 @@ fn the_fixture_records_rate_limits_without_summing_them() {
 }
 
 #[test]
-fn summed_deltas_reproduce_the_providers_cumulative_gauge() {
-    let Some(path) = newest_codex_log() else {
-        eprintln!("skipped: no codex rollout log on this machine");
-        return;
-    };
-    // The newest rollout may be the active Codex session running the test
-    // itself. Snapshot it first so the provider totals and the bytes ingested
-    // are one immutable input rather than two reads racing an append.
-    let snapshot_dir = tempfile::tempdir().expect("create real-log snapshot directory");
-    let snapshot_path = snapshot_dir.path().join("rollout.jsonl");
-    if let Err(error) = std::fs::copy(&path, &snapshot_path) {
-        eprintln!("skipped: could not snapshot {}: {error}", path.display());
-        return;
-    }
-    let Some(declared) = declared_totals(&snapshot_path) else {
-        eprintln!("skipped: {} carries no token_count records", path.display());
-        return;
-    };
-
-    let store = ingest(&snapshot_path);
-    let (input, cached, output, reasoning) = ingested_totals(&store);
-
-    // Guard against a vacuous pass: an empty log would satisfy equality while
-    // proving nothing about the arithmetic.
-    assert!(
-        declared.0 > 0,
-        "{} declares no input tokens, so this assertion would be vacuous",
-        snapshot_path.display()
-    );
-    // Cache reads must be a strict part of the prompt total on a real log, not
-    // a separate series added beside it. This is the provider-semantics claim
-    // the normalization rests on, checked against a codex Wardian does not
-    // control rather than against a fixture this crate wrote.
-    assert!(
-        declared.1 < declared.0,
-        "codex should report cached input as part of its prompt total in {}",
-        snapshot_path.display()
-    );
-    eprintln!(
-        "real codex log {}: input={} cached={} output={} reasoning={}",
-        path.display(),
-        declared.0,
-        declared.1,
-        declared.2,
-        declared.3
-    );
-
+fn the_fixture_produces_usable_facts_and_survives_forced_reparse() {
+    let snapshot = provider_log::ProviderLog::capture("codex", &fixture_log()).unwrap();
     assert_eq!(
-        (input + cached, cached, output, reasoning),
-        declared,
-        "summed last_token_usage must reconstruct the final total_token_usage in {}",
-        snapshot_path.display()
+        snapshot.verify().unwrap(),
+        (100_544, 730_880, 0, 5_254, 2_244)
     );
-}
-
-#[test]
-fn a_real_log_produces_usable_facts() {
-    let Some(path) = newest_codex_log() else {
-        eprintln!("skipped: no codex rollout log on this machine");
-        return;
-    };
-    let store = ingest(&path);
-
-    let intervals: i64 = store
-        .query_row("SELECT count(*) FROM telemetry_activity", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert!(intervals > 0, "a real log should yield activity intervals");
-
-    // Every stored interval must be a forward span.
-    let inverted: i64 = store
-        .query_row(
-            "SELECT count(*) FROM telemetry_activity WHERE ended_at < started_at",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(inverted, 0);
-
-    // Rollups must not disagree with the facts they summarize.
-    let (fact_input, rollup_input): (i64, i64) = (
-        store
-            .query_row(
-                "SELECT COALESCE(SUM(input_tokens),0) FROM telemetry_turns",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap(),
-        store
-            .query_row(
-                "SELECT COALESCE(SUM(input_tokens),0) FROM telemetry_rollup_hourly",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap(),
-    );
-    assert_eq!(fact_input, rollup_input);
-}
-
-#[test]
-fn re_ingesting_a_real_log_is_idempotent() {
-    let Some(path) = newest_codex_log() else {
-        eprintln!("skipped: no codex rollout log on this machine");
-        return;
-    };
-
-    let store = Connection::open_in_memory().unwrap();
-    run_telemetry_migrations(&store).unwrap();
-    let ctx = SourceContext::new("agent-real", "codex", &path);
-
-    ingest_source(&store, &ctx).unwrap();
-    let first = ingested_totals(&store);
-    // Force a full re-read the way a parser version bump would.
-    store
-        .execute("UPDATE telemetry_sources SET parser_version = 0", [])
-        .unwrap();
-    ingest_source(&store, &ctx).unwrap();
-
-    assert_eq!(ingested_totals(&store), first);
 }

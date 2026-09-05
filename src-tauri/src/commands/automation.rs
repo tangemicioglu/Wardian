@@ -1270,14 +1270,22 @@ mod tests {
     use wardian_core::engine::{RunState, RunStatus};
 
     struct EnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<std::ffi::OsString>,
     }
 
     impl EnvGuard {
         fn set(home: &std::path::Path) -> Self {
+            Self::from_guard(home, crate::utils::wardian_test_env_lock())
+        }
+
+        async fn set_async(home: &std::path::Path) -> Self {
+            Self::from_guard(home, crate::utils::wardian_test_env_lock_async().await)
+        }
+
+        fn from_guard(home: &std::path::Path, lock: tokio::sync::MutexGuard<'static, ()>) -> Self {
             let guard = Self {
-                _lock: crate::utils::wardian_test_env_lock(),
+                _lock: lock,
                 previous_home: std::env::var_os("WARDIAN_HOME"),
             };
             std::env::set_var("WARDIAN_HOME", home);
@@ -1699,7 +1707,7 @@ edges:
     #[tokio::test]
     async fn schedule_list_reads_persisted_schedules() {
         let dir = tempfile::tempdir().unwrap();
-        let _env = EnvGuard::set(dir.path());
+        let _env = EnvGuard::set_async(dir.path()).await;
 
         wardian_core::schedule::save_schedules(&[sample_schedule()]).unwrap();
         let loaded = schedule_list().await.unwrap();

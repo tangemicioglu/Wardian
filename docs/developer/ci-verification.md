@@ -17,6 +17,20 @@ the command list and flags stay coupled to CI. It fails fast and echoes the
 literal failing command. Use `npm run verify:ci -- --list` to inspect the
 resolved sequence without executing it.
 
+`--only` accepts exactly one of `frontend`, `backend`, or `docs`. Missing,
+empty, unknown, and repeated category options fail before any check starts.
+Each workflow marker must immediately precede an equally indented, literal
+single-line `run:` command. YAML block scalars are not supported.
+
+Backend verification lints and tests all workspace targets, including tests
+and examples. Documentation tests run separately because `--all-targets` does
+not include them. The command-contract tests in `src/verify-ci.test.ts` pin
+this coverage and exercise invalid arguments and workflow declarations.
+
+For provider fixtures, shared environment locks, and deliberate contention,
+use [Test Reliability](./test-reliability.md). That guide maps each pattern to
+its executable check and states the limits of the evidence.
+
 The local sequence covers the frontend, backend, and documentation quality
 steps. PR screenshot/code-claim checks, dependency audits, coverage uploads,
 and browser/native suites remain CI- or environment-specific.

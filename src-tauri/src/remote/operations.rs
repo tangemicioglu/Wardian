@@ -1730,7 +1730,11 @@ async fn send_remote_prompt_with_idempotency(
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::HeldMutex;
     use super::*;
     use crate::state::{ActiveAgent, AgentWatchState, AppState};
     use std::sync::{Arc, Mutex};
@@ -1999,7 +2003,7 @@ mod tests {
         let config = agent.config.clone();
         insert_agent(&state, agent).await;
         let initial_roster = remote_agent_roster(&state).await;
-        let config_guard = config.lock().expect("config");
+        let config_guard = HeldMutex::new(config.clone());
 
         let roster = tokio::time::timeout(
             std::time::Duration::from_millis(200),
@@ -2031,7 +2035,7 @@ mod tests {
         insert_agent(&state, agent).await;
         let _ = remote_agent_roster(&state).await;
         *status.lock().expect("status") = "Idle".to_string();
-        let config_guard = config.lock().expect("config");
+        let config_guard = HeldMutex::new(config.clone());
 
         let roster = tokio::time::timeout(
             std::time::Duration::from_millis(200),
@@ -2078,7 +2082,7 @@ mod tests {
         insert_agent(&state, busy).await;
         insert_agent(&state, live).await;
         let initial_roster = remote_agent_roster(&state).await;
-        let busy_guard = busy_status.lock().expect("busy status");
+        let busy_guard = HeldMutex::new(busy_status.clone());
         *live_status.lock().expect("live status") = "Action Needed".to_string();
 
         let roster = tokio::time::timeout(
@@ -2113,7 +2117,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_agent_roster_uses_persisted_config_without_waiting_for_live_state() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         let settings = temp.path().join("settings");
         std::fs::create_dir_all(&settings).expect("settings dir");
@@ -2137,7 +2141,7 @@ mod tests {
         let agent = test_agent("agent-1", "CoderOne", "Coder", "Processing");
         let config = agent.config.clone();
         insert_agent(&state, agent).await;
-        let config_guard = config.lock().expect("config");
+        let config_guard = HeldMutex::new(config.clone());
 
         let roster = tokio::time::timeout(
             std::time::Duration::from_millis(200),
@@ -2159,7 +2163,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_watchlist_state_reads_persisted_state_and_prefs() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         let watchlists_dir = temp.path().join("watchlists");
         std::fs::create_dir_all(&watchlists_dir).expect("watchlists dir");
@@ -2199,7 +2203,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_watchlist_state_uses_empty_defaults_for_missing_or_bad_files() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         std::fs::create_dir_all(temp.path().join("watchlists")).expect("watchlists dir");
         std::fs::write(temp.path().join("watchlists/index.json"), "{").expect("bad index");
@@ -2216,7 +2220,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_queue_items_reads_the_desktop_inbox_file() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         let queue_dir = temp.path().join("queue");
         std::fs::create_dir_all(&queue_dir).expect("queue dir");
@@ -2240,7 +2244,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_queue_items_keeps_persisted_workflow_completions() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         crate::utils::queue::save_items(&[serde_json::json!({
@@ -2261,7 +2265,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_queue_items_merges_cached_runtime_projection() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         crate::utils::queue::save_items(&[serde_json::json!({
@@ -2337,7 +2341,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_provider_choice_survives_reload_as_uncertain() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         crate::utils::queue::save_items(&[serde_json::json!({
@@ -2360,7 +2364,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_queue_mutations_preserve_both_updates_and_valid_json() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         crate::utils::queue::save_items(&[
@@ -2402,7 +2406,7 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_snapshot_merge_preserves_remote_triage() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let initial = vec![
@@ -2445,7 +2449,7 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_save_without_load_baseline_preserves_remote_triage() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let initial = vec![serde_json::json!({ "id": "first", "read": false })];
@@ -2471,7 +2475,7 @@ mod tests {
 
     #[tokio::test]
     async fn baseline_less_desktop_save_does_not_resurrect_remote_dismissal() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let initial = vec![serde_json::json!({ "id": "dismissed", "read": false })];
@@ -2582,7 +2586,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_queue_items_projects_live_inbox_notifications() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
@@ -2623,7 +2627,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_mutation_lookup_waits_for_authoritative_notifications() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))

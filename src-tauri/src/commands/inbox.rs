@@ -426,14 +426,14 @@ mod tests {
     }
 
     struct EnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<std::ffi::OsString>,
     }
 
     impl EnvGuard {
-        fn set(home: &std::path::Path) -> Self {
+        async fn set_async(home: &std::path::Path) -> Self {
             let guard = Self {
-                _lock: crate::utils::wardian_test_env_lock(),
+                _lock: crate::utils::wardian_test_env_lock_async().await,
                 previous_home: std::env::var_os("WARDIAN_HOME"),
             };
             std::env::set_var("WARDIAN_HOME", home);
@@ -453,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_run_query_includes_a_missing_scheduled_blueprint_with_id_fallback() {
         let home = tempfile::tempdir().unwrap();
-        let _env = EnvGuard::set(home.path());
+        let _env = EnvGuard::set_async(home.path()).await;
         let run_root = home
             .path()
             .join("logs")

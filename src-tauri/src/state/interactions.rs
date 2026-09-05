@@ -1147,7 +1147,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_delivery_attempts_advance_message_transport_status() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
         let state = InteractionState::default();
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_approval_does_not_block_a_new_approval_from_the_same_agent() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
         let state = InteractionState::default();
@@ -1492,13 +1492,7 @@ mod tests {
 
     #[tokio::test]
     async fn interactions_and_provider_state_hydrate_from_persistence() {
-        struct TestEnvLock {
-            _lock: std::sync::MutexGuard<'static, ()>,
-        }
-
-        let _guard = TestEnvLock {
-            _lock: crate::utils::wardian_test_env_lock(),
-        };
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
 
@@ -1676,7 +1670,7 @@ mod reply_tests {
 
     #[tokio::test]
     async fn deleting_agent_invalidates_cached_tasks_before_late_reply() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         let previous_home = std::env::var_os("WARDIAN_HOME");
         unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };
@@ -1736,7 +1730,7 @@ mod reply_tests {
 
     #[tokio::test]
     async fn deletion_serializes_queued_delivery_and_provider_writes() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         let previous_home = std::env::var_os("WARDIAN_HOME");
         unsafe { std::env::set_var("WARDIAN_HOME", home.path()) };

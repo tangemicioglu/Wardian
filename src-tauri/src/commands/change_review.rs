@@ -1344,7 +1344,7 @@ mod tests {
         previous_home: Option<std::ffi::OsString>,
         // `WARDIAN_HOME` is process-global and the coverage job runs tests in
         // parallel, so the home directory has to be serialized.
-        _env_guard: std::sync::MutexGuard<'static, ()>,
+        _env_guard: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl SnapshotRepo {

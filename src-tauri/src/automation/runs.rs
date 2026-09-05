@@ -915,7 +915,7 @@ pub async fn drive_resume_with_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::MutexGuard;
+    use tokio::sync::MutexGuard;
     use wardian_core::engine::{
         event::EventKind,
         store::{read_checkpoint, read_events},
@@ -955,9 +955,9 @@ edges:
     }
 
     impl EnvGuard {
-        fn set(home: &std::path::Path, mock_script: &std::path::Path) -> Self {
+        async fn set_async(home: &std::path::Path, mock_script: &std::path::Path) -> Self {
             let guard = Self {
-                _lock: crate::utils::wardian_test_env_lock(),
+                _lock: crate::utils::wardian_test_env_lock_async().await,
                 previous_home: std::env::var_os("WARDIAN_HOME"),
                 previous_session_id: std::env::var_os("WARDIAN_SESSION_ID"),
                 previous_mock_scenario: std::env::var_os("WARDIAN_MOCK_SCENARIO"),
@@ -1338,7 +1338,7 @@ edges: []
         let blueprint_path = automations_dir.join("executor.md");
         std::fs::write(&blueprint_path, EXECUTOR_BLUEPRINT).unwrap();
 
-        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let _env = EnvGuard::set_async(home.path(), &mock_script_path()).await;
         let blueprint = wardian_core::automation::parse_file(&blueprint_path).unwrap();
         let report = wardian_core::automation::validate(&blueprint);
         assert!(report.is_valid(), "diagnostics: {:?}", report.diagnostics);
@@ -1375,7 +1375,7 @@ edges: []
         let blueprint_path = automations_dir.join("invoker.md");
         std::fs::write(&blueprint_path, INVOKER_BLUEPRINT).unwrap();
 
-        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let _env = EnvGuard::set_async(home.path(), &mock_script_path()).await;
 
         let blueprint = wardian_core::automation::parse_file(&blueprint_path).unwrap();
         let report = wardian_core::automation::validate(&blueprint);

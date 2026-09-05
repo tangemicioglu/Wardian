@@ -759,14 +759,14 @@ mod tests {
     };
 
     struct TestWardianHome {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         _home: tempfile::TempDir,
         previous_home: Option<std::ffi::OsString>,
     }
 
     impl TestWardianHome {
-        fn new() -> Self {
-            let lock = crate::utils::wardian_test_env_lock();
+        async fn new_async() -> Self {
+            let lock = crate::utils::wardian_test_env_lock_async().await;
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", home.path());
@@ -821,7 +821,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_commit_rejects_model_selected_agent_identity() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
         let payload = serde_json::json!({
             "agent_id": "agent-b",
@@ -855,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_commit_keeps_launch_authority_after_setting_changes() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
         std::fs::write(
             home._home.path().join("settings/app.json"),
@@ -886,7 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_commit_rejects_model_selected_cursor_epoch() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let exec = exec_with(FakeAgentRunner::new()).with_memory_principal("agent-a".into());
         let payload = serde_json::json!({
             "agent_id": "agent-a",
@@ -943,7 +943,7 @@ mod tests {
 
     #[tokio::test]
     async fn automation_cannot_commit_for_caller_selected_peer_principal() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let run_root = tempfile::tempdir().unwrap();
         let payload = serde_json::json!({
             "agent_id": "agent-b",
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[tokio::test]
     async fn bound_offline_agent_uses_headless_profile_runner() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let headless = Arc::new(FakeAgentRunner::new().with_response("plan", "{\"ok\":true}"));
         let live =
@@ -1385,7 +1385,7 @@ mod tests {
             }
         }
 
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let mut assignments = AutomationAssignments::new();
         assignments.insert(
@@ -1464,7 +1464,7 @@ mod tests {
             }
         }
 
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let mut assignments = AutomationAssignments::new();
         assignments.insert(
@@ -1516,7 +1516,7 @@ mod tests {
 
     #[tokio::test]
     async fn background_resume_requires_saved_provider_conversation() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let mut assignments = AutomationAssignments::new();
         assignments.insert(
@@ -1567,7 +1567,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_agent_binding_uses_assignment_route_not_unleased_headless_fallback() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let mut bindings = HashMap::new();
         bindings.insert("Coder".to_string(), "agent-123".to_string());

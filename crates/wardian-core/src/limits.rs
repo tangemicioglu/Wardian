@@ -96,6 +96,6 @@ mod tests {
     /// reader about what the view actually shows.
     #[test]
     fn activity_pairs_cannot_exceed_the_records_they_come_from() {
-        assert!(MAX_ACTIVITY_PAIRS <= MAX_ACTIVITY_RECORDS);
+        const { assert!(MAX_ACTIVITY_PAIRS <= MAX_ACTIVITY_RECORDS) };
     }
 }

@@ -402,7 +402,7 @@ edges:
 "#;
 
     struct EnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<std::ffi::OsString>,
         previous_session_id: Option<std::ffi::OsString>,
         previous_mock_scenario: Option<std::ffi::OsString>,
@@ -412,8 +412,24 @@ edges:
 
     impl EnvGuard {
         fn set(home: &std::path::Path, mock_script: &std::path::Path) -> Self {
+            Self::from_guard(home, mock_script, crate::utils::wardian_test_env_lock())
+        }
+
+        async fn set_async(home: &std::path::Path, mock_script: &std::path::Path) -> Self {
+            Self::from_guard(
+                home,
+                mock_script,
+                crate::utils::wardian_test_env_lock_async().await,
+            )
+        }
+
+        fn from_guard(
+            home: &std::path::Path,
+            mock_script: &std::path::Path,
+            lock: tokio::sync::MutexGuard<'static, ()>,
+        ) -> Self {
             let guard = Self {
-                _lock: crate::utils::wardian_test_env_lock(),
+                _lock: lock,
                 previous_home: std::env::var_os("WARDIAN_HOME"),
                 previous_session_id: std::env::var_os("WARDIAN_SESSION_ID"),
                 previous_mock_scenario: std::env::var_os("WARDIAN_MOCK_SCENARIO"),
@@ -507,7 +523,7 @@ edges:
     async fn due_schedule_fires_and_writes_a_run() {
         let home = tempfile::tempdir().unwrap();
         let blueprint_path = seed_blueprint(home.path(), "sched-test", SCHEDULED_BLUEPRINT);
-        let _env = EnvGuard::set(home.path(), &mock_script_path());
+        let _env = EnvGuard::set_async(home.path(), &mock_script_path()).await;
 
         let blueprint = wardian_core::automation::parse_file(&blueprint_path).unwrap();
         let report = wardian_core::automation::validate(&blueprint);

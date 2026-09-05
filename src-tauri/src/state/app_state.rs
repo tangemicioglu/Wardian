@@ -592,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_hydration_restores_pending_delivery_after_a_restart() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
         let seeded = AppState::new();
@@ -643,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_hydration_accepts_a_message_with_a_provider_receipt() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
         let seeded = AppState::new();
@@ -710,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_hydration_fails_an_unconfirmed_in_flight_delivery_without_replay() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let home = tempfile::tempdir().unwrap();
         wardian_core::db::init_db_at_path(&home.path().join("state.db")).unwrap();
         let seeded = AppState::new();
