@@ -50,6 +50,7 @@ export interface ShellSettings {
   agent_session_persistence: 'fresh' | 'resume';
   codex_runtime_policy?: CodexRuntimePolicy;
   default_provider?: DefaultProviderSetting;
+  default_workspace?: string;
   conversation_logging?: ConversationLoggingSetting;
 }
 
@@ -60,6 +61,7 @@ export interface ShellSettingsOverrides {
   agent_session_persistence?: 'fresh' | 'resume';
   codex_runtime_policy?: CodexRuntimePolicyOverrides;
   default_provider?: DefaultProviderSetting;
+  default_workspace?: string;
   conversation_logging?: ConversationLoggingSetting;
 }
 

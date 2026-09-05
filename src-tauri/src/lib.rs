@@ -672,6 +672,7 @@ pub fn run() {
             commands::workbench::save_workbench_state,
             commands::workbench::reset_workbench_state,
             commands::agent::spawn_agent,
+            commands::agent::get_generated_agent_name,
             commands::agent::list_provider_readiness,
             commands::agent::list_provider_model_catalog,
             commands::agent::clone_agent,

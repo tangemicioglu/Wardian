@@ -16,8 +16,11 @@ import { test, expect, type Page } from "@playwright/test";
 import * as path from "path";
 import { openSurface, surfacePanel } from "../fixtures/workbench";
 
-async function installCustomCloneIpcMock(page: Page, options: { includeRecentSortFixture?: boolean } = {}) {
-  await page.addInitScript(({ includeRecentSortFixture }) => {
+async function installCustomCloneIpcMock(
+  page: Page,
+  options: { includeInitialAgent?: boolean; includeRecentSortFixture?: boolean } = {},
+) {
+  await page.addInitScript(({ includeInitialAgent, includeRecentSortFixture }) => {
     type Agent = {
       session_id: string;
       session_name: string;
@@ -28,15 +31,18 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
       is_off: boolean;
     };
 
-    const agents: Agent[] = [{
-      session_id: "mock-session-e2e-001",
-      session_name: "E2E Mock Agent",
-      description: "Owns release notes and keeps deployment guidance current.",
-      agent_class: "TestClass",
-      folder: "C:/projects/e2e",
-      provider: "claude",
-      is_off: false,
-    }];
+    const agents: Agent[] = [];
+    if (includeInitialAgent !== false) {
+      agents.push({
+        session_id: "mock-session-e2e-001",
+        session_name: "E2E Mock Agent",
+        description: "Owns release notes and keeps deployment guidance current.",
+        agent_class: "TestClass",
+        folder: "C:/projects/e2e",
+        provider: "claude",
+        is_off: false,
+      });
+    }
     if (includeRecentSortFixture) {
       agents.push({
         session_id: "mock-session-e2e-002",
@@ -125,7 +131,10 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
         }
         if (command === "list_agents") return agents;
         if (command === "list_agent_classes") {
-          return [{ name: "TestClass", description: "E2E test class", is_default: true }];
+          return [
+            { name: "Generalist", description: "General-purpose E2E class", is_default: true },
+            { name: "TestClass", description: "E2E test class", is_default: true },
+          ];
         }
         if (command === "list_provider_readiness") {
           return [
@@ -197,6 +206,21 @@ async function installCustomCloneIpcMock(page: Page, options: { includeRecentSor
         if (command === "load_onboarding_hints") {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         }
+        if (command === "load_shell_settings") {
+          return {
+            shell_id: "auto",
+            custom_executable: null,
+            custom_args: null,
+            agent_session_persistence: "resume",
+            default_provider: "claude",
+            default_workspace: "C:/projects/e2e",
+            conversation_logging: "enabled",
+          };
+        }
+        if (command === "get_generated_agent_name") {
+          const agentClass = typeof args?.agentClass === "string" ? args.agentClass : "Generalist";
+          return `${agentClass}-alpha`;
+        }
         if (command === "dismiss_onboarding_hint") {
           return { dismissed_hint_ids: ["spawn-agent-first-run:v1"] };
         }
@@ -254,6 +278,7 @@ test.describe("Agent Spawn Form", () => {
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage();
+    await installCustomCloneIpcMock(page, { includeInitialAgent: false });
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="sidebar-tab-agent-config"]').click();
@@ -269,6 +294,21 @@ test.describe("Agent Spawn Form", () => {
     await expect(page.locator('[data-testid="spawn-workspace-path"]')).toBeVisible();
     await expect(page.locator('[data-testid="spawn-provider"]')).toBeVisible();
     await expect(page.locator('[data-testid="spawn-submit"]')).toBeVisible();
+  });
+
+  test("shows the default workspace and generated name before submission", async () => {
+    await expect(page.locator('[data-testid="spawn-workspace-path"]')).toHaveValue("C:/projects/e2e");
+    await expect(page.locator('[data-testid="spawn-agent-name"]')).toHaveAttribute("placeholder", "Generalist-alpha");
+    await page.locator('[data-tour-target="spawn-agent-form"]').screenshot({
+      path: path.join(
+        "e2e",
+        "screenshots",
+        "spawn-defaults",
+        "2026-09-05",
+        "spawn-panel-defaults.png",
+      ),
+      animations: "disabled",
+    });
   });
 
   test("submit button is present when name is filled", async () => {

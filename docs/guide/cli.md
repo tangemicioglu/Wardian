@@ -448,6 +448,12 @@ case-insensitive and are stored canonically (`Reviewer`, `codex`). Unknown
 classes and providers fail without creating agent state. Names and workspace
 paths are also validated by the creation command.
 
+`agent spawn` requires a non-empty workspace and uses the same Rust name rules
+as the GUI: names are 1–64 characters, start with a letter or number, and use
+only letters, numbers, underscores, or hyphens. `all`, leading-hyphen names,
+and UUID-shaped names are reserved. Omit `--name` to receive a class-based
+phonetic name such as `Coder-alpha`.
+
 Model IDs and reasoning efforts are provider-discovered; use
 `wardian agent models --provider <provider>` to inspect the currently exposed
 catalog rather than relying on a fixed CLI list. Provider-specific live

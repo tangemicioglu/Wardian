@@ -204,6 +204,7 @@ interface SettingsState {
   agent_session_persistence: 'fresh' | 'resume';
   codex_runtime_policy: CodexRuntimePolicy;
   default_provider: DefaultProviderSetting;
+  default_workspace: string;
   conversation_logging: ConversationLoggingSetting;
   app_settings_overrides: AppSettingsOverrides;
   shell_settings_overrides: ShellSettingsOverrides;
@@ -230,6 +231,7 @@ interface SettingsState {
   setCustomArgs: (value: string) => void;
   setAgentSessionPersistence: (value: 'fresh' | 'resume') => void;
   setDefaultProvider: (value: DefaultProviderSetting) => void;
+  setDefaultWorkspace: (value: string) => void;
   setConversationLogging: (value: ConversationLoggingSetting) => void;
   setCodexSandboxMode: (value: CodexSandboxMode) => void;
   setCodexApprovalPolicy: (value: CodexApprovalPolicy) => void;
@@ -266,6 +268,7 @@ const DEFAULT_SHELL_SETTINGS: ShellSettings = {
   agent_session_persistence: 'resume',
   codex_runtime_policy: DEFAULT_CODEX_RUNTIME_POLICY,
   default_provider: 'auto',
+  default_workspace: '',
   conversation_logging: 'enabled',
 };
 
@@ -419,6 +422,9 @@ function shellOverridesFromSettings(settings: ShellSettings): ShellSettingsOverr
     ...(normalizeDefaultProviderSetting(settings.default_provider) !== (DEFAULT_SHELL_SETTINGS.default_provider ?? 'auto')
       ? { default_provider: normalizeDefaultProviderSetting(settings.default_provider) }
       : {}),
+    ...((settings.default_workspace?.trim() ?? '') !== ''
+      ? { default_workspace: settings.default_workspace?.trim() }
+      : {}),
     ...(normalizeConversationLoggingSetting(settings.conversation_logging) !== DEFAULT_SHELL_SETTINGS.conversation_logging
       ? { conversation_logging: normalizeConversationLoggingSetting(settings.conversation_logging) }
       : {}),
@@ -482,6 +488,9 @@ function normalizeShellOverrides(overrides: ShellSettingsOverrides | undefined):
       : {}),
     ...(Object.keys(codexOverrides).length > 0 ? { codex_runtime_policy: codexOverrides } : {}),
     ...(overrides?.default_provider ? { default_provider: normalizeDefaultProviderSetting(overrides.default_provider) } : {}),
+    ...((overrides?.default_workspace?.trim() ?? '') !== ''
+      ? { default_workspace: overrides?.default_workspace?.trim() }
+      : {}),
     ...(normalizeConversationLoggingSetting(overrides?.conversation_logging) !== DEFAULT_SHELL_SETTINGS.conversation_logging
       ? { conversation_logging: normalizeConversationLoggingSetting(overrides?.conversation_logging) }
       : {}),
@@ -529,6 +538,7 @@ export const useSettingsStore = create<SettingsState>()(
       agent_session_persistence: DEFAULT_SHELL_SETTINGS.agent_session_persistence,
       codex_runtime_policy: DEFAULT_CODEX_RUNTIME_POLICY,
       default_provider: DEFAULT_SHELL_SETTINGS.default_provider ?? 'auto',
+      default_workspace: DEFAULT_SHELL_SETTINGS.default_workspace ?? '',
       conversation_logging: DEFAULT_SHELL_SETTINGS.conversation_logging ?? 'enabled',
       app_settings_overrides: EMPTY_APP_SETTINGS_OVERRIDES,
       shell_settings_overrides: EMPTY_SHELL_SETTINGS_OVERRIDES,
@@ -651,6 +661,16 @@ export const useSettingsStore = create<SettingsState>()(
         return {
           default_provider: normalized,
           shell_settings_overrides: { ...state.shell_settings_overrides, default_provider: normalized },
+        };
+      }),
+      setDefaultWorkspace: (default_workspace) => set((state) => {
+        const trimmed = default_workspace.trim();
+        const { default_workspace: _removed, ...rest } = state.shell_settings_overrides;
+        return {
+          default_workspace,
+          shell_settings_overrides: trimmed
+            ? { ...state.shell_settings_overrides, default_workspace: trimmed }
+            : rest,
         };
       }),
       setConversationLogging: (conversation_logging) => set((state) => {
@@ -789,6 +809,7 @@ export const useSettingsStore = create<SettingsState>()(
             agent_session_persistence: settings.agent_session_persistence ?? DEFAULT_SHELL_SETTINGS.agent_session_persistence,
             codex_runtime_policy: normalizeCodexRuntimePolicy(settings.codex_runtime_policy),
             default_provider: normalizeDefaultProviderSetting(settings.default_provider),
+            default_workspace: settings.default_workspace?.trim() ?? '',
             conversation_logging: normalizeConversationLoggingSetting(settings.conversation_logging),
             shell_settings_overrides: normalizeShellOverrides(overrides),
             shell_settings_loaded: true,
@@ -802,6 +823,7 @@ export const useSettingsStore = create<SettingsState>()(
             agent_session_persistence: DEFAULT_SHELL_SETTINGS.agent_session_persistence,
             codex_runtime_policy: DEFAULT_CODEX_RUNTIME_POLICY,
             default_provider: DEFAULT_SHELL_SETTINGS.default_provider ?? 'auto',
+            default_workspace: DEFAULT_SHELL_SETTINGS.default_workspace ?? '',
             conversation_logging: DEFAULT_SHELL_SETTINGS.conversation_logging ?? 'enabled',
             shell_settings_overrides: EMPTY_SHELL_SETTINGS_OVERRIDES,
             shell_settings_loaded: true,
@@ -825,6 +847,7 @@ export const useSettingsStore = create<SettingsState>()(
           agent_session_persistence: get().agent_session_persistence,
           codex_runtime_policy: normalizeCodexRuntimePolicy(get().codex_runtime_policy),
           default_provider: normalizeDefaultProviderSetting(get().default_provider),
+          default_workspace: get().default_workspace.trim(),
           conversation_logging: normalizeConversationLoggingSetting(get().conversation_logging),
         };
         const settings: SettingsDocument<ShellSettings, ShellSettingsOverrides> = {
@@ -841,6 +864,7 @@ export const useSettingsStore = create<SettingsState>()(
           agent_session_persistence: saved.agent_session_persistence ?? DEFAULT_SHELL_SETTINGS.agent_session_persistence,
           codex_runtime_policy: normalizeCodexRuntimePolicy(saved.codex_runtime_policy ?? fallbackSettings.codex_runtime_policy),
           default_provider: normalizeDefaultProviderSetting(saved.default_provider ?? fallbackSettings.default_provider),
+          default_workspace: saved.default_workspace?.trim() ?? fallbackSettings.default_workspace ?? '',
           conversation_logging: normalizeConversationLoggingSetting(saved.conversation_logging ?? fallbackSettings.conversation_logging),
           shell_settings_overrides: normalizeShellOverrides(overrides),
           shell_settings_loaded: true,
@@ -857,6 +881,7 @@ export const useSettingsStore = create<SettingsState>()(
           agent_session_persistence: saved.agent_session_persistence ?? DEFAULT_SHELL_SETTINGS.agent_session_persistence,
           codex_runtime_policy: normalizeCodexRuntimePolicy(saved.codex_runtime_policy ?? get().codex_runtime_policy),
           default_provider: normalizeDefaultProviderSetting(saved.default_provider ?? get().default_provider),
+          default_workspace: saved.default_workspace?.trim() ?? get().default_workspace,
           conversation_logging: normalizeConversationLoggingSetting(saved.conversation_logging ?? get().conversation_logging),
           shell_settings_loaded: true,
         });

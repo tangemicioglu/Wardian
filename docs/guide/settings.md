@@ -45,8 +45,8 @@ Categories:
   editor used by Explorer, chat, and terminals.
 - **Watchlist**: roster behavior for newly spawned agents.
 - **Terminal**: terminal font and shell defaults.
-- **Agent Runtime**: default provider, regular agent session behavior, and
-  provider-specific runtime defaults such as the Codex subsection.
+- **Agent Runtime**: the default workspace and provider, regular agent session
+  behavior, and provider-specific runtime defaults such as the Codex subsection.
 - **Provider Utilities**: provider-specific maintenance actions such as Gemini
   patching.
 - **Remote Access**: phone pairing, local gateway configuration, paired
@@ -234,6 +234,10 @@ Runtime shell changes affect future terminal launches and shell-hosted automatio
 commands.
 
 ## Agent Runtime
+
+**Default workspace** is prefilled in the Spawn Agent panel for new agents. The
+spawn action remains unavailable until it has a non-empty workspace path, and
+the saved value applies to future spawns only.
 
 **Default provider** controls the provider Wardian preselects when starting a
 new visible agent. **Auto** prefers Claude when available and falls back to the

@@ -216,6 +216,13 @@ const rowDefinitions: SettingsRowDefinition[] = [
     keywords: ["terminal", "shell", "custom", "arguments", "args"],
   },
   {
+    id: "default-workspace",
+    category: "Agent Runtime",
+    label: "Default workspace",
+    detail: "Workspace prefilled for new agents; a path is required before spawning.",
+    keywords: ["agent", "workspace", "folder", "path", "spawn", "default"],
+  },
+  {
     id: "default-provider",
     category: "Agent Runtime",
     label: "Default provider",
@@ -451,6 +458,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     agent_session_persistence,
     conversation_logging,
     default_provider,
+    default_workspace,
     codex_runtime_policy,
     available_shells,
     shell_settings_loaded,
@@ -462,6 +470,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
     setCustomArgs,
     setAgentSessionPersistence,
     setConversationLogging,
+    setDefaultWorkspace,
     loadAppSettings,
     setDefaultProvider,
     setCodexSandboxMode,
@@ -1081,6 +1090,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, a
               <option value="opencode">OpenCode</option>
               <option value="pi">Pi</option>
             </select>
+          </SettingRow>
+        );
+      case "default-workspace":
+        return (
+          <SettingRow key={row.id} label={row.label} detail={row.detail}>
+            <input
+              data-testid="default-workspace"
+              aria-label="Default workspace"
+              value={default_workspace}
+              onChange={(event) => setDefaultWorkspace(event.target.value)}
+              placeholder="Path to workspace folder"
+              className={optionClass}
+            />
           </SettingRow>
         );
       case "session-persistence":

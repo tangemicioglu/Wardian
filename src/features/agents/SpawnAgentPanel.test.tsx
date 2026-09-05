@@ -32,14 +32,14 @@ const allProvidersReady: ProviderReadiness[] = [
 
 const spawnResponse = {
   session_id: "agent-1",
-  session_name: "Generalist-1",
+  session_name: "Generalist-alpha",
   agent_class: "Generalist",
-  folder: "",
+  folder: "C:/workspace",
   is_off: false,
 };
 
 const mockSpawnInvokes = (providerReadiness = allProvidersReady) => {
-  invokeMock.mockImplementation(async (command) => {
+  invokeMock.mockImplementation(async (command, args) => {
     if (command === "list_provider_readiness") return providerReadiness;
     if (command === "list_provider_model_catalog") {
       return {
@@ -51,7 +51,17 @@ const mockSpawnInvokes = (providerReadiness = allProvidersReady) => {
       };
     }
     if (command === "validate_directory_path") return true;
-    if (command === "spawn_agent") return spawnResponse;
+    if (command === "get_generated_agent_name") {
+      const agentClass = (args as { agentClass?: string } | undefined)?.agentClass ?? "Generalist";
+      return `${agentClass}-alpha`;
+    }
+    if (command === "spawn_agent") {
+      const sessionName = ((args as { req?: { sessionName?: string } } | undefined)?.req?.sessionName) ?? "";
+      if (sessionName.includes(" ")) {
+        throw new Error("Agent name may contain only letters, numbers, underscores, or hyphens; spaces are not allowed.");
+      }
+      return spawnResponse;
+    }
     return null;
   });
 };
@@ -64,7 +74,11 @@ describe("SpawnAgentPanel", () => {
       dismissedHintIds: [],
       hintsLoaded: true,
     });
-    useSettingsStore.setState({ default_provider: "auto" });
+    useSettingsStore.setState({
+      default_provider: "auto",
+      default_workspace: "C:/workspace",
+      shell_settings_loaded: true,
+    });
     mockSpawnInvokes();
   });
 
@@ -135,6 +149,43 @@ describe("SpawnAgentPanel", () => {
     expect(screen.getByTestId("spawn-workspace-path")).toHaveValue("C:\\projects\\picked-app");
   });
 
+  it("prefills the default workspace and asks Rust for the class-specific generated name", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SpawnAgentPanel
+        agentClasses={[
+          { name: "Generalist", description: "", is_default: true },
+          { name: "Reviewer", description: "", is_default: true },
+        ]}
+        onSpawned={() => {}}
+      />,
+    );
+
+    expect(screen.getByTestId("spawn-workspace-path")).toHaveValue("C:/workspace");
+    expect(await screen.findByPlaceholderText("Generalist-alpha")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId("spawn-agent-class"), "Reviewer");
+
+    expect(await screen.findByPlaceholderText("Reviewer-alpha")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("get_generated_agent_name", {
+      agentClass: "Reviewer",
+    });
+  });
+
+  it("disables spawning until a workspace is available", async () => {
+    useSettingsStore.setState({ default_workspace: "" });
+
+    render(
+      <SpawnAgentPanel
+        agentClasses={[{ name: "Generalist", description: "", is_default: true }]}
+        onSpawned={() => {}}
+      />,
+    );
+
+    expect(await screen.findByTestId("spawn-submit")).toBeDisabled();
+  });
+
   it("keeps the current workspace path when the folder picker is cancelled", async () => {
     openMock.mockResolvedValue(null);
     const user = userEvent.setup();
@@ -147,6 +198,7 @@ describe("SpawnAgentPanel", () => {
     );
 
     const workspacePath = screen.getByTestId("spawn-workspace-path");
+    await user.clear(workspacePath);
     await user.type(workspacePath, "C:\\projects\\typed-app");
     await user.click(screen.getByRole("button", { name: "Choose workspace folder" }));
 
@@ -168,8 +220,9 @@ describe("SpawnAgentPanel", () => {
 
     expect(invokeMock).toHaveBeenCalledWith("spawn_agent", {
       req: expect.objectContaining({
-        sessionName: "",
+        sessionName: "Generalist-alpha",
         agentClass: "Generalist",
+        folder: "C:/workspace",
       }),
     });
     expect(onSpawned).toHaveBeenCalledWith(spawnResponse);
@@ -228,6 +281,7 @@ describe("SpawnAgentPanel", () => {
 
   it("blocks explicit names with spaces", async () => {
     const user = userEvent.setup();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
 
     render(
       <SpawnAgentPanel
@@ -239,8 +293,10 @@ describe("SpawnAgentPanel", () => {
     await user.type(screen.getByTestId("spawn-agent-name"), " Coder ");
     await user.click(screen.getByTestId("spawn-submit"));
 
-    expect(invokeMock).not.toHaveBeenCalledWith("spawn_agent", expect.anything());
-    expect(screen.getByText(/Names must be alphanumeric/)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("spawn_agent", expect.anything());
+    await waitFor(() => {
+      expect(screen.getByText(/spaces are not allowed/i)).toBeInTheDocument();
+    });
   });
 
   it("disables missing providers and explains provider readiness", async () => {

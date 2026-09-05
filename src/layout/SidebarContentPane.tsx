@@ -94,7 +94,7 @@ export const SidebarContentPane: React.FC<SidebarContentPaneProps> = ({
                   onClick={() => setSelectedAgentIds(new Set())}
                   className="shrink-0 rounded border border-wardian-border px-2 py-1 text-[10px] font-bold text-muted transition-colors hover:border-[var(--color-wardian-accent)] hover:text-[var(--color-wardian-accent)]"
                 >
-                  Create agent
+                  Spawn agent
                 </button>
               ) : null}
             />

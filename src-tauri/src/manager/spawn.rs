@@ -802,7 +802,7 @@ pub async fn spawn_agent(
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     let project = wardian_core::db::project_name_from_workspace(&expected_folder);
-    let _ = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+    if let Err(error) = wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
         session_id: &config.session_id,
         session_name: &config.session_name,
         description: &config.description,
@@ -812,7 +812,18 @@ pub async fn spawn_agent(
         project: project.as_deref(),
         is_off: config.is_off,
         created_at: Some(&born_to_save),
-    });
+    }) {
+        let detail = error.to_string();
+        if detail.to_ascii_lowercase().contains("unique") {
+            return Err(format!(
+                "An agent with the name '{}' already exists; choose a different name.",
+                config.session_name
+            ));
+        }
+        super::log_debug(&format!(
+            "[WARDIAN] Failed to persist agent metadata during spawn: {detail}"
+        ));
+    }
 
     let app_state = app.state::<AppState>();
     if config.is_off {

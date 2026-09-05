@@ -203,7 +203,7 @@ describe("SidebarContentPane", () => {
       "font-bold",
       "tracking-wide",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Spawn agent" }));
     expect(setSelectedAgentIds).toHaveBeenCalledWith(new Set());
     expect(screen.getByTestId("configure-agent-panel-mock")).toBeInTheDocument();
   });

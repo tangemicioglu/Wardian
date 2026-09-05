@@ -34,7 +34,8 @@ user-set, even if the value equals the current default.
 - `settings/app.json` stores app preference overrides such as theme, terminal
   font size, terminal font family, and Gemini auto-patch.
 - `settings/shell.json` stores runtime overrides such as shell selection,
-  default provider, regular agent session policy, and Codex runtime policy.
+  default workspace and provider, regular agent session policy, and Codex
+  runtime policy.
 
 Runtime consumers continue to receive resolved effective settings. The Settings
 UI receives both the resolved settings and sparse overrides so saving one row

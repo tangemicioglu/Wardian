@@ -123,6 +123,55 @@ describe('default provider settings', () => {
     });
     expect(useSettingsStore.getState().default_provider).toBe('antigravity');
   });
+
+  it('loads and persists the default workspace as a sparse shell override', async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      settings: {
+        shell_id: 'auto',
+        custom_executable: null,
+        custom_args: null,
+        agent_session_persistence: 'resume',
+        conversation_logging: 'enabled',
+        default_provider: 'auto',
+        default_workspace: 'C:/projects/wardian',
+      },
+      overrides: {
+        default_workspace: 'C:/projects/wardian',
+      },
+    });
+
+    await useSettingsStore.getState().loadShellSettings();
+    expect(useSettingsStore.getState().default_workspace).toBe('C:/projects/wardian');
+
+    useSettingsStore.getState().setDefaultWorkspace('C:/projects/wardian-next');
+    mockedInvoke.mockResolvedValueOnce({
+      schema_version: 2,
+      settings: {
+        shell_id: 'auto',
+        custom_executable: null,
+        custom_args: null,
+        agent_session_persistence: 'resume',
+        conversation_logging: 'enabled',
+        default_provider: 'auto',
+        default_workspace: 'C:/projects/wardian-next',
+      },
+      overrides: {
+        default_workspace: 'C:/projects/wardian-next',
+      },
+    });
+
+    await useSettingsStore.getState().saveShellSettings();
+
+    expect(mockedInvoke).toHaveBeenCalledWith('save_shell_settings', {
+      settings: expect.objectContaining({
+        overrides: expect.objectContaining({
+          default_workspace: 'C:/projects/wardian-next',
+        }),
+      }),
+    });
+    expect(useSettingsStore.getState().default_workspace).toBe('C:/projects/wardian-next');
+  });
 });
 
 describe('conversation logging settings', () => {

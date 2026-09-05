@@ -4,7 +4,7 @@ use crate::providers::codex_model_selection::{apply_live_selection, resolve_live
 use crate::providers::ProviderFactory;
 use crate::state::conversation_archive::effective_conversation_logging;
 use crate::state::{ActiveAgent, AppState};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -16,6 +16,13 @@ use wardian_core::conversations::{ConversationBoundaryReason, ConversationLoggin
 use wardian_core::models::{
     AgentConfig, AgentSessionPersistence, AgentSessionPersistenceOverride, AgentTelemetry,
     DeployedSkillRef, ProviderConfig,
+};
+
+#[path = "agent_naming.rs"]
+mod agent_naming;
+use agent_naming::{
+    generated_agent_name, persisted_agent_session_names, resolve_requested_spawn_session_name,
+    validate_agent_name,
 };
 
 /// Outcome of applying a persisted agent model selection to its live provider.
@@ -1254,58 +1261,6 @@ fn mark_agent_paused_off(agent: &mut crate::state::ActiveAgent) {
     }
 }
 
-fn is_valid_name(name: &str) -> bool {
-    let re = regex::Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
-    re.is_match(name)
-}
-
-fn generated_agent_name(
-    agent_class: &str,
-    existing_names: &std::collections::HashSet<String>,
-) -> String {
-    generated_agent_name_from_base(&generated_agent_name_base(agent_class), existing_names)
-}
-
-fn generated_agent_name_base(agent_class: &str) -> String {
-    let mut previous_was_separator = false;
-    let mut base = String::new();
-
-    for ch in agent_class.trim().chars() {
-        if ch.is_ascii_alphanumeric() {
-            base.push(ch);
-            previous_was_separator = false;
-        } else if !previous_was_separator && !base.is_empty() {
-            base.push('-');
-            previous_was_separator = true;
-        }
-    }
-
-    let base = base.trim_matches('-');
-    if base.is_empty() {
-        "Agent".to_string()
-    } else {
-        base.to_string()
-    }
-}
-
-fn generated_agent_name_from_base(
-    base: &str,
-    existing_names: &std::collections::HashSet<String>,
-) -> String {
-    let mut index = 1;
-    loop {
-        let candidate = format!("{}-{}", base, index);
-        if !existing_names.contains(&candidate) {
-            return candidate;
-        }
-        index += 1;
-    }
-}
-
-fn invalid_agent_name_error() -> String {
-    "Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).".to_string()
-}
-
 pub(crate) fn canonical_agent_class_name(requested: &str) -> Result<String, String> {
     let home = crate::utils::fs::get_wardian_home()
         .ok_or_else(|| "Could not locate Wardian home".to_string())?;
@@ -1322,29 +1277,6 @@ pub(crate) fn canonical_agent_provider_name(requested: &str) -> Result<String, S
     } else {
         Err(format!("unsupported provider `{}`", requested.trim()))
     }
-}
-
-fn resolve_requested_spawn_session_name(
-    requested_session_name: &str,
-    agent_class: &str,
-    existing_names: &std::collections::HashSet<String>,
-) -> Result<String, String> {
-    if requested_session_name.trim().is_empty() {
-        return Ok(generated_agent_name(agent_class, existing_names));
-    }
-
-    if !is_valid_name(requested_session_name) {
-        return Err(invalid_agent_name_error());
-    }
-
-    if existing_names.contains(requested_session_name) {
-        return Err(format!(
-            "An agent with the name '{}' already exists.",
-            requested_session_name
-        ));
-    }
-
-    Ok(requested_session_name.to_string())
 }
 
 fn resolve_registered_session_name(
@@ -1424,17 +1356,34 @@ async fn reserve_spawn_session_name(
     requested_session_name: &str,
     agent_class: &str,
 ) -> Result<SpawnNameReservation, String> {
+    let mut existing_names = persisted_agent_session_names()?;
     let agents = state.agents.lock().await;
-    let mut existing_names = agents
-        .values()
-        .map(|agent| agent.config.lock().unwrap().session_name.clone())
-        .collect::<std::collections::HashSet<_>>();
+    existing_names.extend(
+        agents
+            .values()
+            .map(|agent| agent.config.lock().unwrap().session_name.clone())
+            .collect::<HashSet<_>>(),
+    );
     let mut reservations = state.agent_name_reservations.lock().await;
     existing_names.extend(reservations.iter().cloned());
     let session_name =
         resolve_requested_spawn_session_name(requested_session_name, agent_class, &existing_names)?;
     reservations.insert(session_name.clone());
     Ok(SpawnNameReservation { session_name })
+}
+
+async fn existing_spawn_session_names(state: &AppState) -> Result<HashSet<String>, String> {
+    let mut existing_names = persisted_agent_session_names()?;
+    let agents = state.agents.lock().await;
+    existing_names.extend(
+        agents
+            .values()
+            .map(|agent| agent.config.lock().unwrap().session_name.clone())
+            .collect::<HashSet<_>>(),
+    );
+    let reservations = state.agent_name_reservations.lock().await;
+    existing_names.extend(reservations.iter().cloned());
+    Ok(existing_names)
 }
 
 async fn release_spawn_name_reservation(state: &AppState, session_name: &str) {
@@ -1450,6 +1399,7 @@ async fn reserve_rename_session_name(
     session_id: &str,
     new_name: &str,
 ) -> Result<Option<SpawnNameReservation>, String> {
+    let persisted_names = persisted_agent_session_names()?;
     let agents = state.agents.lock().await;
     let current_name = agents
         .get(session_id)
@@ -1462,6 +1412,13 @@ async fn reserve_rename_session_name(
 
     if current_name == new_name {
         return Ok(None);
+    }
+
+    if persisted_names.iter().any(|name| name == new_name) {
+        return Err(format!(
+            "An agent with the name '{}' already exists.",
+            new_name
+        ));
     }
 
     if agents.values().any(|agent| {
@@ -2033,7 +1990,7 @@ fn assign_worktree_config(config: &mut AgentConfig, worktree_folder: &str) -> Re
 
 fn normalize_spawn_folder(folder: &str) -> Result<String, String> {
     if folder.trim().is_empty() {
-        return Ok(String::new());
+        return Err("Workspace path cannot be empty".to_string());
     }
 
     crate::utils::fs::validate_workspace_path(std::path::Path::new(folder))
@@ -2509,6 +2466,16 @@ pub async fn list_provider_model_catalog(
 }
 
 #[tauri::command]
+pub async fn get_generated_agent_name(
+    agent_class: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let agent_class = canonical_agent_class_name(&agent_class)?;
+    let existing_names = existing_spawn_session_names(&state).await?;
+    Ok(generated_agent_name(&agent_class, &existing_names))
+}
+
+#[tauri::command]
 pub async fn spawn_agent(
     req: SpawnAgentRequest,
     state: State<'_, AppState>,
@@ -2617,20 +2584,17 @@ pub async fn clone_agent(
         return Err("Source agent is required.".to_string());
     }
 
-    let (source_config, existing_names) = {
+    let existing_names = existing_spawn_session_names(&state).await?;
+    let source_config = {
         let agents = state.agents.lock().await;
-        let source = agents
+        let source_config = agents
             .get(&source_session_id)
             .ok_or_else(|| format!("Agent {} not found", source_session_id))?
             .config
             .lock()
             .unwrap()
             .clone();
-        let names = agents
-            .values()
-            .map(|agent| agent.config.lock().unwrap().session_name.clone())
-            .collect::<std::collections::HashSet<_>>();
-        (source, names)
+        source_config
     };
 
     let source_class = canonical_agent_class_name(&source_config.agent_class)?;
@@ -2652,9 +2616,7 @@ pub async fn clone_agent(
     let generated_session_name = requested_session_name.is_none();
     let session_name = requested_session_name
         .unwrap_or_else(|| clone_unique_name(&source_config.session_name, &existing_names));
-    if !is_valid_name(&session_name) {
-        return Err("Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).".to_string());
-    }
+    validate_agent_name(&session_name)?;
     if existing_names.contains(&session_name) {
         return Err(format!(
             "An agent with the name '{}' already exists.",
@@ -2807,20 +2769,17 @@ pub async fn get_agent_clone_preview(
         return Err("Source agent is required.".to_string());
     }
 
-    let (source_config, existing_names) = {
+    let existing_names = existing_spawn_session_names(&state).await?;
+    let source_config = {
         let agents = state.agents.lock().await;
-        let source = agents
+        let source_config = agents
             .get(&source_session_id)
             .ok_or_else(|| format!("Agent {} not found", source_session_id))?
             .config
             .lock()
             .unwrap()
             .clone();
-        let names = agents
-            .values()
-            .map(|agent| agent.config.lock().unwrap().session_name.clone())
-            .collect::<std::collections::HashSet<_>>();
-        (source, names)
+        source_config
     };
     let wardian_home = crate::utils::fs::get_wardian_home()
         .ok_or_else(|| "Could not find Wardian home".to_string())?;
@@ -4283,9 +4242,7 @@ pub async fn rename_agent(
     ));
 
     let new_name = new_name.trim().to_string();
-    if !is_valid_name(&new_name) {
-        return Err("Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).".to_string());
-    }
+    validate_agent_name(&new_name)?;
 
     let _lifecycle_guard = lock_agent_lifecycle(&state, &session_id).await;
     let rename_reservation = reserve_rename_session_name(&state, &session_id, &new_name).await?;
@@ -5242,12 +5199,12 @@ mod tests {
         discover_git_worktrees_for_configs, discover_git_worktrees_for_sources_with,
         enable_worktree_config, ensure_existing_worktree_is_git_registered,
         ensure_provider_available_before_session_bootstrap, find_assignable_worktree,
-        find_deletable_worktree_for_source, flatten_clone_file_paths, generated_agent_name,
-        insert_new_agent_order, is_under_managed_agent_worktree_root,
-        is_under_wardian_agent_worktree_root, lock_agent_lifecycle, mark_agent_paused_off,
-        new_agent_order_placement_for_setting, normalize_clone_folder_override,
-        normalize_discovered_git_worktree_path, normalize_existing_workspace_record_path,
-        normalize_spawn_folder, normalize_workspace_record_path, persist_agent_config,
+        find_deletable_worktree_for_source, flatten_clone_file_paths, insert_new_agent_order,
+        is_under_managed_agent_worktree_root, is_under_wardian_agent_worktree_root,
+        lock_agent_lifecycle, mark_agent_paused_off, new_agent_order_placement_for_setting,
+        normalize_clone_folder_override, normalize_discovered_git_worktree_path,
+        normalize_existing_workspace_record_path, normalize_spawn_folder,
+        normalize_workspace_record_path, persist_agent_config,
         persisted_resume_session_for_provider, prepare_agent_for_clear, prepare_clear_config,
         prepare_conversation_boundary, prepare_restored_config_for_spawn, prepare_resume_config,
         prepare_resume_config_for_runtime, promote_fresh_provider_session_after_resume,
@@ -5255,8 +5212,8 @@ mod tests {
         renew_agent_lifecycle_transition_lease, replace_agent_status_incarnation,
         reserve_rename_session_name, reserve_spawn_session_name,
         resolve_agent_worktree_branch_name, resolve_agent_worktree_path,
-        resolve_external_resume_session, resolve_requested_spawn_session_name,
-        restore_agent_config_in_state, restore_agent_runtime_after_aborted_clear,
+        resolve_external_resume_session, restore_agent_config_in_state,
+        restore_agent_runtime_after_aborted_clear,
         restore_antigravity_workspace_conversation_from_home, restore_runtime_state_after_resume,
         restore_runtime_state_snapshot_after_resume, stage_conversation_boundary,
         strip_claude_embedded_stream_flags, take_agent_runtime_for_termination,
@@ -6825,37 +6782,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
         );
     }
 
-    #[test]
-    fn generated_agent_name_uses_class_and_lowest_available_suffix() {
-        assert_eq!(
-            generated_agent_name("Coder", &clone_name_set(&["Coder-1", "Coder-2"])),
-            "Coder-3"
-        );
-    }
-
-    #[test]
-    fn generated_agent_name_sanitizes_class_name() {
-        assert_eq!(
-            generated_agent_name("Data Analyst", &HashSet::new()),
-            "Data-Analyst-1"
-        );
-    }
-
-    #[test]
-    fn generated_agent_name_falls_back_when_class_has_no_valid_name_chars() {
-        assert_eq!(generated_agent_name(" !!! ", &HashSet::new()), "Agent-1");
-    }
-
-    #[test]
-    fn explicit_spawn_name_with_spaces_still_fails_validation() {
-        let err = resolve_requested_spawn_session_name(" Coder ", "Coder", &HashSet::new())
-            .expect_err("explicit names with spaces must remain invalid");
-
-        assert!(err.contains("Invalid agent name"));
-    }
-
     #[tokio::test]
     async fn blank_spawn_name_reservations_choose_unique_names_before_spawn() {
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
+        let temp = tempfile::tempdir().expect("temp home");
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        wardian_core::db::init_db().expect("initialize test database");
         let state = AppState::new();
 
         let first = reserve_spawn_session_name(&state, "", "Coder")
@@ -6865,8 +6798,46 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
             .await
             .expect("second reservation");
 
-        assert_eq!(first.session_name, "Coder-1");
-        assert_eq!(second.session_name, "Coder-2");
+        assert_eq!(first.session_name, "Coder-alpha");
+        assert_eq!(second.session_name, "Coder-bravo");
+
+        match previous_home {
+            Some(value) => std::env::set_var("WARDIAN_HOME", value),
+            None => std::env::remove_var("WARDIAN_HOME"),
+        }
+    }
+
+    #[tokio::test]
+    async fn blank_spawn_name_skips_names_reserved_in_persistent_agent_metadata() {
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
+        let temp = tempfile::tempdir().expect("temp home");
+        let previous_home = std::env::var_os("WARDIAN_HOME");
+        std::env::set_var("WARDIAN_HOME", temp.path());
+        wardian_core::db::init_db().expect("initialize test database");
+        wardian_core::db::upsert_agent(&wardian_core::db::AgentUpsert {
+            session_id: "persisted-agent",
+            session_name: "Coder-alpha",
+            description: "",
+            agent_class: "Coder",
+            provider: "codex",
+            workspace: None,
+            project: None,
+            is_off: true,
+            created_at: None,
+        })
+        .expect("persist test agent");
+
+        let state = AppState::new();
+        let reservation = reserve_spawn_session_name(&state, "", "Coder")
+            .await
+            .expect("reservation after persisted collision");
+
+        assert_eq!(reservation.session_name, "Coder-bravo");
+
+        match previous_home {
+            Some(value) => std::env::set_var("WARDIAN_HOME", value),
+            None => std::env::remove_var("WARDIAN_HOME"),
+        }
     }
 
     #[tokio::test]
@@ -6937,6 +6908,12 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
 
         assert!(!normalized.contains('\\'));
         assert!(std::path::Path::new(&normalized).is_absolute());
+    }
+
+    #[test]
+    fn normalize_spawn_folder_rejects_empty_paths() {
+        let error = normalize_spawn_folder("  ").expect_err("empty workspace should fail");
+        assert_eq!(error, "Workspace path cannot be empty");
     }
 
     #[test]

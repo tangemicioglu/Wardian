@@ -1111,11 +1111,6 @@ function AppBody() {
       setEditingAgentId(null);
       return;
     }
-    const re = /^[a-zA-Z0-9_-]+$/;
-    if (!re.test(newName)) {
-      alert("Invalid agent name. Names must contain only alphanumeric characters, underscores, or hyphens (no spaces).");
-      return;
-    }
     try {
       await agentResources.rename_agent(sessionId, newName);
       setEditingAgentId(null);
