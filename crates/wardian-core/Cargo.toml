@@ -12,12 +12,17 @@ async-trait = "0.1"
 chrono = { workspace = true }
 dirs = { workspace = true }
 fs2 = { workspace = true }
+glob = "0.3"
+hmac = { workspace = true }
 once_cell = { workspace = true }
+rand = { workspace = true }
+regex = "1"
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = "0.9"
 sha2 = { workspace = true }
+subtle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1.49.0", features = ["sync", "macros", "rt", "rt-multi-thread", "time"] }
 uuid = { workspace = true }
