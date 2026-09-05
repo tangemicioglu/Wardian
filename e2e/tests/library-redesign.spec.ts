@@ -67,6 +67,18 @@ test.describe("Library Redesign", () => {
     await expect(page.locator('[data-testid="library-section-mcps"] span').nth(1)).toHaveCount(0);
   });
 
+  test("keeps the Automations label inside the section rail", async () => {
+    const bounds = await page.locator('[data-testid="library-section-rail"]').evaluate((rail) => {
+      const label = rail.querySelector('[data-testid="library-section-automations"] span');
+      if (!label) throw new Error("Automations label is missing");
+      const railBounds = rail.getBoundingClientRect();
+      const labelBounds = label.getBoundingClientRect();
+      return { rail_left: railBounds.left, rail_right: railBounds.right, label_left: labelBounds.left, label_right: labelBounds.right };
+    });
+    expect(bounds.label_left).toBeGreaterThanOrEqual(bounds.rail_left);
+    expect(bounds.label_right).toBeLessThanOrEqual(bounds.rail_right);
+  });
+
   test("navigates a nested skill folder and opens the entry", async () => {
     await page.locator('[data-testid="library-section-skills"]').click();
     await expect(page.locator('[data-testid="library-list"]')).toBeVisible();

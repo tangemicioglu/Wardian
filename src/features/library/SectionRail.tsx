@@ -41,7 +41,7 @@ export const SectionRail: React.FC<SectionRailProps> = ({ activeSection, section
     return (
         <div
             data-testid="library-section-rail"
-            className="w-16 flex-shrink-0 border-r border-wardian-border bg-wardian-sidebar-primary flex flex-col items-stretch overflow-y-auto"
+            className="w-20 flex-shrink-0 border-r border-wardian-border bg-wardian-sidebar-primary flex flex-col items-stretch overflow-y-auto"
         >
             {LIBRARY_SECTIONS.map((section) => {
                 const count = sections ? countEntries(sections[section.id].tree) : 0;
