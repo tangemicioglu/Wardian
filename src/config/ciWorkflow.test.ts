@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import ciWorkflow from "../../.github/workflows/ci.yml?raw";
 import codecovConfig from "../../.codecov.yml?raw";
 import readme from "../../README.md?raw";
+import { readVerificationPlan } from "../../scripts/verify-ci.mjs";
 
 function jobDefinition(jobName: string) {
   const lines = ciWorkflow.split(/\r?\n/);
@@ -42,9 +43,13 @@ describe("CI workflow contract", () => {
     expect(frontend).toContain(
       "npm run check:frontend-screenshot -- origin/${{ github.base_ref }} HEAD",
     );
-    expect(backend).toContain("cargo clippy --workspace -- -D warnings");
-    expect(backend).toContain("cargo test --workspace -- --test-threads=1");
-    expect(backend).toContain("cargo check --workspace");
+    expect(readVerificationPlan(backend).map(({ command }) => command)).toEqual([
+      "cargo clippy --workspace --all-targets -- -D warnings",
+      "cargo fmt --all -- --check",
+      "cargo test --workspace --all-targets -- --test-threads=1",
+      "cargo test --workspace --doc -- --test-threads=1",
+      "cargo check --workspace",
+    ]);
     expect(backendCoverage).toContain(
       "cargo llvm-cov --workspace --lcov --output-path coverage/rust-lcov.info",
     );

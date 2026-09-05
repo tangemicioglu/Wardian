@@ -355,14 +355,21 @@ mod tests {
     use wardian_core::models::AgentConfig;
 
     struct TestWardianHome {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<OsString>,
         _temp: tempfile::TempDir,
     }
 
     impl TestWardianHome {
         fn new() -> Self {
-            let lock = crate::utils::wardian_test_env_lock();
+            Self::from_guard(crate::utils::wardian_test_env_lock())
+        }
+
+        async fn new_async() -> Self {
+            Self::from_guard(crate::utils::wardian_test_env_lock_async().await)
+        }
+
+        fn from_guard(lock: tokio::sync::MutexGuard<'static, ()>) -> Self {
             let temp = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             std::env::set_var("WARDIAN_HOME", temp.path());
@@ -471,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_topology_mutation_allows_self_serve_endpoint() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let app = tauri::test::mock_app();
         app.manage(crate::state::AppState::new());
         let state = app.state::<crate::state::AppState>();
@@ -502,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_topology_mutation_denies_foreign_pair_and_records_audit() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let app = tauri::test::mock_app();
         app.manage(crate::state::AppState::new());
         let state = app.state::<crate::state::AppState>();
@@ -531,7 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_topology_mutation_fails_closed_on_unknown_caller() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let app = tauri::test::mock_app();
         app.manage(crate::state::AppState::new());
 
@@ -550,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_topology_mutation_operator_outside_session_is_unrestricted() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let app = tauri::test::mock_app();
         app.manage(crate::state::AppState::new());
 
@@ -579,7 +586,7 @@ mod tests {
     /// this test would have caught before it shipped.
     #[tokio::test]
     async fn dispatch_topology_mutation_unlink_converges_on_team_seed_suppression() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let app = tauri::test::mock_app();
         app.manage(crate::state::AppState::new());
         let state = app.state::<crate::state::AppState>();

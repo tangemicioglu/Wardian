@@ -6023,6 +6023,9 @@ fn agent_update_requires_restart(updated_fields: &[String], is_off: bool) -> boo
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::ActiveAgent;
@@ -6033,40 +6036,7 @@ mod tests {
         AgentConfig, AgentConversationMode, AutomationRoleAssignment, BusyPolicy,
     };
 
-    struct TestWardianHome {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        previous_home: Option<OsString>,
-        _temp: tempfile::TempDir,
-    }
-
-    impl TestWardianHome {
-        fn new() -> Self {
-            let lock = crate::utils::wardian_test_env_lock();
-            let temp = tempfile::tempdir().expect("temp wardian home");
-            let previous_home = std::env::var_os("WARDIAN_HOME");
-            std::env::set_var("WARDIAN_HOME", temp.path());
-            wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
-                .expect("init test database");
-            Self {
-                _lock: lock,
-                previous_home,
-                _temp: temp,
-            }
-        }
-
-        fn path(&self) -> &std::path::Path {
-            self._temp.path()
-        }
-    }
-
-    impl Drop for TestWardianHome {
-        fn drop(&mut self) {
-            match self.previous_home.take() {
-                Some(value) => std::env::set_var("WARDIAN_HOME", value),
-                None => std::env::remove_var("WARDIAN_HOME"),
-            }
-        }
-    }
+    use super::test_support::TestWardianHome;
 
     #[test]
     fn agent_description_update_does_not_require_restart() {
@@ -6134,7 +6104,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_endpoint_claim_is_exclusive_for_current_home() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let first = claim_control_endpoint().expect("first endpoint claim");
         let second = match claim_control_endpoint() {
@@ -6267,8 +6237,9 @@ mod tests {
         let source = sources.get("agent-1").expect("snapshot source");
         let _config_guard = source.config.lock().expect("config lock");
 
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), state.agents.lock())
-            .await
+        let _ = state
+            .agents
+            .try_lock()
             .expect("per-agent snapshot reads must not retain the global agent lock");
     }
 
@@ -6488,7 +6459,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_writes_terminal_bytes_after_opencode_is_ready() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "OpenCodeOne", "Coder").await;
         {
@@ -6522,7 +6493,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_codex_delivery_waits_for_provider_applied_payload() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -6585,7 +6556,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_archives_unconfirmed_live_input_with_agent_origin() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
             conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Disabled,
             ..Default::default()
@@ -6652,7 +6623,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_does_not_archive_agent_with_disabled_logging() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
             conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
             ..Default::default()
@@ -6692,7 +6663,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_does_not_archive_queued_input() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         let delivery = vec![DeliveryDetail {
@@ -6730,7 +6701,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_headless_exchange_is_archived_once_with_provider_context() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
             conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Disabled,
             ..Default::default()
@@ -6812,7 +6783,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_queues_when_current_conversation_is_leased() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -6866,7 +6837,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_headless_message_lease_marks_the_off_agent_headless() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -6897,7 +6868,7 @@ mod tests {
 
     #[tokio::test]
     async fn offline_message_does_not_start_while_worktree_mutation_is_active() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -6945,7 +6916,7 @@ mod tests {
 
     #[tokio::test]
     async fn headless_status_observations_follow_the_lease_lifecycle() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -7002,7 +6973,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_turn_start_receipt_requires_an_event_after_the_submit_cursor() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
 
@@ -7024,7 +6995,7 @@ mod tests {
 
     #[tokio::test]
     async fn headless_message_queues_while_a_resume_lifecycle_gate_is_held() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -7062,7 +7033,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_headless_completion_skips_a_replaced_agent_incarnation() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
             conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
             ..Default::default()
@@ -7128,7 +7099,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_headless_completion_skips_an_agent_removed_by_kill() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
             conversation_logging: wardian_core::conversations::ConversationLoggingSetting::Enabled,
             ..Default::default()
@@ -7176,7 +7147,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless_delayed");
         let _delay = ScopedEnvVar::set("WARDIAN_MOCK_DELAY_MS", "250");
         let workspace = tempfile::tempdir().expect("workspace");
@@ -7249,7 +7220,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless");
         let workspace = tempfile::tempdir().expect("workspace");
         let state = AppState::new();
@@ -7283,7 +7254,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let _scenario = ScopedEnvVar::set("WARDIAN_MOCK_SCENARIO", "headless");
         let workspace = tempfile::tempdir().expect("workspace");
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -7798,7 +7769,7 @@ mod tests {
 
     #[tokio::test]
     async fn broadcast_targets_scope_to_sender_neighbors() {
-        let home = TestWardianHome::new();
+        let home = TestWardianHome::new_async().await;
         let mut topology = wardian_core::topology::Topology::default();
         topology.add_edge("sender-1", "peer-1", "2026-07-02T00:00:00Z");
         wardian_core::topology::save_topology(home.path(), &topology).unwrap();
@@ -7848,7 +7819,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_writes_terminal_bytes_to_matched_agent() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -7921,7 +7892,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_prefixes_agent_origin_with_sender_name() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "source-1", "PlannerOne", "Planner").await;
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -7959,7 +7930,7 @@ mod tests {
 
     #[tokio::test]
     async fn command_delivery_keeps_origin_unattributed_and_records_input_mode() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "source-1", "PlannerOne", "Planner").await;
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -8009,7 +7980,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_queues_bare_approval_responses_when_action_required() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "source-1", "PlannerOne", "Planner").await;
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -8048,7 +8019,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_action_delivery_sends_provider_approval_key() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8099,7 +8070,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_submits_next_pending_message_when_target_is_idle() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8182,7 +8153,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_non_ready_state_queues_live_delivery_when_status_is_idle() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8224,7 +8195,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_idle_status_allows_live_delivery_despite_stale_readiness() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "ClaudeOne", "Coder").await;
         {
@@ -8267,7 +8238,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_for_codex_prompt_evidence() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8337,7 +8308,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_for_claude_prompt_evidence() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "ClaudeOne", "Coder").await;
         {
@@ -8412,7 +8383,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_for_gemini_prompt_evidence() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "GeminiOne", "Coder").await;
         {
@@ -8479,7 +8450,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_for_antigravity_prompt_evidence() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "AntigravityOne", "Coder").await;
         {
@@ -8546,7 +8517,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_marks_provider_busy_after_one_submitted_message() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8635,7 +8606,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_non_ready_state_rejects_approval_action_instead_of_queueing() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8678,7 +8649,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_readiness_generation_does_not_drain_mailbox() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         state
@@ -8734,7 +8705,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_until_target_is_idle() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -8770,7 +8741,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_waits_while_current_conversation_is_leased() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -8834,7 +8805,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_missing_sender_leaves_message_pending_for_next_observation() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8886,7 +8857,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_stops_when_a_ready_agent_has_no_input_channel() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -8950,7 +8921,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_submit_key_failure_marks_failed_without_retry() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -9034,7 +9005,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_drain_payload_send_failure_fails_without_replay() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         {
@@ -9106,7 +9077,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_prefixes_bare_approval_response_when_target_not_action_needed() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "source-1", "PlannerOne", "Planner").await;
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -9166,7 +9137,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_reports_agent_without_input_channel() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
 
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
@@ -9205,7 +9176,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_delivery_reports_partial_failures_after_successful_delivery() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         insert_test_agent(&state, "agent-2", "CoderTwo", "Coder").await;
@@ -9261,7 +9232,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_attempt_records_watch_event() {
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let state = AppState::new();
         insert_test_agent(&state, "agent-1", "CoderOne", "Coder").await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);

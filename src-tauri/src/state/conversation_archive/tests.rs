@@ -2909,7 +2909,7 @@ fn archive_context(provider_session_id: &str) -> ConversationArchiveContext {
     }
 }
 
-fn isolated_home() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+fn isolated_home() -> (tokio::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
     let guard = crate::utils::wardian_test_env_lock();
     let temp = tempfile::tempdir().expect("temp dir");
     std::env::set_var("WARDIAN_HOME", temp.path());

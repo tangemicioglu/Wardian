@@ -2102,10 +2102,6 @@ fn error(
 mod tests {
     use super::*;
 
-    fn native_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::utils::wardian_test_env_lock()
-    }
-
     struct NativeTestScriptGuard;
 
     impl Drop for NativeTestScriptGuard {
@@ -2278,7 +2274,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn native_runtime_retains_memory_lease_until_runtime_drop() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native memory tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native broker db");
@@ -2341,7 +2337,7 @@ input.on('line', (line) => {
 
     #[test]
     fn disabled_native_command_does_not_issue_a_memory_lease() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("native memory tempdir");
         std::fs::create_dir_all(temp.path().join("settings")).expect("settings directory");
         std::fs::write(
@@ -2419,7 +2415,7 @@ input.on('line', (line) => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn persistent_actor_confirms_two_turns_and_reuses_idempotent_result() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native broker tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native broker db");
@@ -2450,16 +2446,18 @@ input.on('line', (line) => {
         let _script_guard = NativeTestScriptGuard;
 
         let broker = Arc::new(NativeDeliveryBroker::new());
-        let mut config = AgentConfig::default();
-        config.provider = "claude".to_string();
-        config.session_id = "agent-native-test".to_string();
-        config.folder = temp.path().display().to_string();
-        config.provider_config = wardian_core::models::ProviderConfig::Claude(
-            wardian_core::models::ClaudeProviderConfig {
-                permission_mode: Some("manual".to_string()),
-                ..Default::default()
-            },
-        );
+        let config = AgentConfig {
+            provider: "claude".to_string(),
+            session_id: "agent-native-test".to_string(),
+            folder: temp.path().display().to_string(),
+            provider_config: wardian_core::models::ProviderConfig::Claude(
+                wardian_core::models::ClaudeProviderConfig {
+                    permission_mode: Some("manual".to_string()),
+                    ..Default::default()
+                },
+            ),
+            ..AgentConfig::default()
+        };
         let spec = NativeSessionSpec {
             target_agent_id: "agent-native-test".to_string(),
             provider: "claude".to_string(),
@@ -2511,7 +2509,7 @@ input.on('line', (line) => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn malformed_post_submit_framing_stays_unconfirmed_without_retry() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native broker tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native broker db");
@@ -2536,10 +2534,12 @@ input.on('line', (line) => {
         let _script_guard = NativeTestScriptGuard;
 
         let broker = Arc::new(NativeDeliveryBroker::new());
-        let mut config = AgentConfig::default();
-        config.provider = "claude".to_string();
-        config.session_id = "agent-native-test".to_string();
-        config.folder = temp.path().display().to_string();
+        let config = AgentConfig {
+            provider: "claude".to_string(),
+            session_id: "agent-native-test".to_string(),
+            folder: temp.path().display().to_string(),
+            ..AgentConfig::default()
+        };
         let record = broker
             .admit(test_admission(
                 "interaction-uncertain",
@@ -2584,7 +2584,7 @@ input.on('line', (line) => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn invalidate_premise_is_acknowledged_inside_the_active_pi_turn() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native broker tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native broker db");
@@ -2612,10 +2612,12 @@ input.on('line', (line) => {
         let _script_guard = NativeTestScriptGuard;
 
         let broker = Arc::new(NativeDeliveryBroker::new());
-        let mut config = AgentConfig::default();
-        config.provider = "pi".to_string();
-        config.session_id = "agent-native-test".to_string();
-        config.folder = temp.path().display().to_string();
+        let config = AgentConfig {
+            provider: "pi".to_string(),
+            session_id: "agent-native-test".to_string(),
+            folder: temp.path().display().to_string(),
+            ..AgentConfig::default()
+        };
         let spec = NativeSessionSpec {
             target_agent_id: "agent-native-test".to_string(),
             provider: "pi".to_string(),
@@ -2666,7 +2668,7 @@ input.on('line', (line) => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn restart_recovery_requeues_only_never_submitted_work() {
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native broker tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native broker db");
@@ -2719,21 +2721,23 @@ input.on('line', (line) => {
         let provider = std::env::var("WARDIAN_E2E_REAL_NATIVE_PROVIDER")
             .expect("WARDIAN_E2E_REAL_NATIVE_PROVIDER is required");
         assert!(NativeProviderProtocol::for_provider(&provider).is_some());
-        let _lock = native_test_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("native provider e2e tempdir");
         wardian_core::db::init_db_at_path(&temp.path().join("state.db"))
             .expect("initialize native provider e2e db");
         let agent_id = uuid::Uuid::new_v4().to_string();
         let broker = Arc::new(NativeDeliveryBroker::new());
-        let mut config = AgentConfig::default();
-        config.provider = provider.clone();
-        config.session_id = agent_id.clone();
-        config.session_name = format!("native-e2e-{provider}");
-        config.folder = std::env::current_dir()
-            .expect("current workspace")
-            .display()
-            .to_string();
-        config.fresh_provider_session_id = Some(uuid::Uuid::new_v4().to_string());
+        let config = AgentConfig {
+            provider: provider.clone(),
+            session_id: agent_id.clone(),
+            session_name: format!("native-e2e-{provider}"),
+            folder: std::env::current_dir()
+                .expect("current workspace")
+                .display()
+                .to_string(),
+            fresh_provider_session_id: Some(uuid::Uuid::new_v4().to_string()),
+            ..AgentConfig::default()
+        };
         let spec = NativeSessionSpec {
             target_agent_id: agent_id.clone(),
             provider: provider.clone(),

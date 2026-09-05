@@ -15,22 +15,26 @@ export function readVerificationPlan(workflowText) {
   const lines = workflowText.split(/\r?\n/);
   const plan = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const marker = lines[index].match(/^\s*#\s*local-verify:\s*(\S+)\s*$/);
+    const marker = lines[index].match(/^([ \t]*)#\s*local-verify:\s*(\S+)\s*$/);
     if (!marker) continue;
 
-    const runLine = lines[index + 1]?.match(/^\s*run:\s*(\S.*)\s*$/);
-    if (!runLine || runLine[1] === '|' || runLine[1] === '>-' || runLine[1] === '>') {
+    const runLine = lines[index + 1]?.match(/^([ \t]*)run:[ \t]*(\S.*)$/);
+    const command = runLine?.[2].trim();
+    // YAML block scalars start with | or >, followed by optional chomping,
+    // indentation, and comments. None is a literal single-line command.
+    if (!runLine || runLine[1] !== marker[1] || /^[|>]/.test(command)) {
       throw new Error(`local-verify marker at workflow line ${index + 1} must precede a single-line run step`);
     }
-    const category = marker[1];
+    const category = marker[2];
     if (!CATEGORIES.has(category)) throw new Error(`unknown local-verify category: ${category}`);
-    plan.push({ category, command: runLine[1].trim(), workflowLine: index + 2 });
+    plan.push({ category, command, workflowLine: index + 2 });
     index += 1;
   }
   if (plan.length === 0) throw new Error('CI workflow contains no local-verify steps');
   return plan;
 }
 
+/** Reject invalid or repeated category options before reading or executing CI. */
 export function parseArgs(argv) {
   let only = null;
   let list = false;
@@ -38,15 +42,15 @@ export function parseArgs(argv) {
     const argument = argv[index];
     if (argument === '--list') {
       list = true;
-    } else if (argument === '--only') {
-      only = argv[++index];
-    } else if (argument.startsWith('--only=')) {
-      only = argument.slice('--only='.length);
+    } else if (argument === '--only' || argument.startsWith('--only=')) {
+      if (only !== null) throw new Error('--only may only be specified once');
+      const category = argument === '--only' ? argv[++index] : argument.slice('--only='.length);
+      if (!CATEGORIES.has(category)) throw new Error(`--only must be one of: ${[...CATEGORIES].join(', ')}`);
+      only = category;
     } else {
       throw new Error(`unknown argument: ${argument}`);
     }
   }
-  if (only && !CATEGORIES.has(only)) throw new Error(`--only must be one of: ${[...CATEGORIES].join(', ')}`);
   return { list, only };
 }
 

@@ -5322,7 +5322,7 @@ mod tests {
         }
     }
 
-    fn use_isolated_resume_setting() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+    fn use_isolated_resume_setting() -> (tokio::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
         let guard = crate::utils::wardian_test_env_lock();
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
@@ -5652,9 +5652,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn full_agent_command_loads_saved_config_from_state() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let workspace = temp.path().join("workspace");
@@ -7100,9 +7099,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn agent_update_fields_mutate_live_state_and_capture_persisted_snapshot() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         let workspace = temp.path().join("renamed-workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
@@ -7228,9 +7226,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn model_selection_mutation_blocks_control_model_updates_until_live_apply_finishes() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let _home = WardianHomeGuard;
@@ -7364,11 +7361,13 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     #[tokio::test]
     async fn non_codex_model_selection_is_deferred_until_restart() {
         for is_off in [false, true] {
-            let mut config = AgentConfig::default();
-            config.session_id = "agent-1".to_string();
-            config.provider = "claude".to_string();
-            config.is_off = is_off;
-            config.model = Some("claude-target".to_string());
+            let mut config = AgentConfig {
+                session_id: "agent-1".to_string(),
+                provider: "claude".to_string(),
+                is_off,
+                model: Some("claude-target".to_string()),
+                ..Default::default()
+            };
             config.reset_provider_config_for_provider();
 
             let result =
@@ -8542,9 +8541,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn forced_delete_rejects_incorrect_confirmation_before_removing_agent() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp wardian home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let _home = WardianHomeGuard;
@@ -8582,9 +8580,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn list_agents_returns_all_live_agents_when_order_is_incomplete() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let app = tauri::test::mock_app();
         app.manage(AppState::new());
         let state = app.state::<AppState>();
@@ -8619,9 +8616,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn reorder_agents_rejects_invalid_orders_without_mutating_state_or_disk() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp wardian home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         let _home = WardianHomeGuard;
@@ -8779,9 +8775,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn lifecycle_transition_claims_the_persisted_lease_before_waiting_for_the_local_gate() {
-        let _lock = crate::utils::wardian_test_env_lock();
+        let _lock = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp wardian home");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let _home = WardianHomeGuard;
@@ -9516,9 +9511,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn clear_lifecycle_archive_uses_live_agent_context() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -9574,9 +9568,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn worktree_lifecycle_archive_uses_pre_move_context() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -9644,9 +9637,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn clear_ingests_watch_transcript_before_turn_index_is_written() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -9718,9 +9710,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn pending_clear_boundary_stays_uncommitted_and_retryable_before_replacement() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let _home = WardianHomeGuard;
@@ -9915,9 +9906,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn fresh_resume_boundary_failure_rolls_back_then_retry_converges_all_stores() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let _home = WardianHomeGuard;
@@ -10121,9 +10111,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn clear_replacement_state_failure_keeps_original_agent_and_metadata() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let _home = WardianHomeGuard;
@@ -10241,9 +10230,8 @@ Add-Content -LiteralPath $env:WARDIAN_COMMAND_SMOKE_LOG -Value $lines
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn clear_replacement_sqlite_failure_keeps_original_agent_pending() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         let _home = WardianHomeGuard;

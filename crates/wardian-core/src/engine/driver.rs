@@ -1446,7 +1446,7 @@ mod tests {
             matches!(&event.kind, EventKind::DecisionCompleted { node, port, .. }
                 if node == "choose" && port == "deny")
         }));
-        assert!(state.delivered.get("denied").is_some());
+        assert!(state.delivered.contains_key("denied"));
         assert!(state.skipped_edges.contains(&1));
 
         let replayed = Engine::replay(&blueprint, dir.path()).unwrap();

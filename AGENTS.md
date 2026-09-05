@@ -72,11 +72,13 @@ If a browser E2E test needs a higher layer to be meaningful, wrap it in `test.sk
 
 ## 🌿 Git & Pull Request Standards
 
+- **Default delivery (Wardian only)**: implementation tasks in this repository include committing, pushing, and opening or updating an issue-linked PR after verification and zero-blocker local-agent review. This is standing authorization for those steps unless the user explicitly requests local-only work. Never merge or deploy without separate authorization. Procedure: [Pull Request Delivery](docs/developer/pull-requests.md).
+- **Local review, not GitHub reviewer requests**: zero-blocker review means review by local agents, routed to Wardian-Reviewer. Never request reviewers on GitHub. GitHub's review status is not the local review verdict.
 - **Branching**: never work directly on `main`. Use descriptive branches (`feat/junction-refactor`, `fix/telemetry-bug`).
 - **Atomic commits**: small and semantic, using [Conventional Commits](https://www.conventionalcommits.org/).
 - **One PR, one issue**: every PR links an existing issue and carries only that issue's work. Open a separate branch for adjacent work rather than bundling it — a reviewer can only accept or reject the whole thing.
 - **PR descriptions**: use the template. Explain the "Why" and include verification evidence.
-- **CI readiness**: run the full suite before opening. A PR is "ready" only when four separately checkable facts hold, not when a status update says so: every required check is green, merge conflicts are resolved, a review verdict is on record with zero blocking findings, and the linked issue's behavior is reachable in normal operation without a human running an extra command. Verify each directly. The first three are properties of the artifact and can all pass on a change that fixes nothing.
+- **CI readiness**: run the full suite before opening. A PR is "ready" only when four separately checkable facts hold, not when a status update says so: every required check is green, merge conflicts are resolved, a local-agent review verdict is on record with zero blocking findings, and the linked issue's behavior is reachable in normal operation without a human running an extra command. Verify each directly. The first three are properties of the artifact and can all pass on a change that fixes nothing.
 
 ### GitHub CLI Bodies
 

@@ -1431,23 +1431,30 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     struct TestWardianHome {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<OsString>,
         _home: tempfile::TempDir,
     }
 
     impl TestWardianHome {
         fn new() -> Self {
-            let lock = crate::utils::wardian_test_env_lock();
+            Self::from_guard(crate::utils::wardian_test_env_lock())
+        }
+
+        async fn new_async() -> Self {
+            Self::from_guard(crate::utils::wardian_test_env_lock_async().await)
+        }
+
+        fn from_guard(lock: tokio::sync::MutexGuard<'static, ()>) -> Self {
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
-            std::env::set_var("WARDIAN_HOME", home.path());
             std::fs::create_dir_all(home.path().join("settings")).expect("settings directory");
             std::fs::write(
                 home.path().join("settings/app.json"),
                 r#"{"schema_version":2,"overrides":{"memory_enabled":true}}"#,
             )
             .expect("enable memory for headless tests");
+            std::env::set_var("WARDIAN_HOME", home.path());
             Self {
                 _lock: lock,
                 previous_home,
@@ -1515,7 +1522,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let test_home = TestWardianHome::new();
+        let test_home = TestWardianHome::new_async().await;
         let workspace = tempfile::tempdir().expect("temp workspace");
         let session_id = "headless-memory-agent";
         let store = wardian_core::memory::MemoryStore::from_default_home().unwrap();
@@ -1589,7 +1596,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _test_home = TestWardianHome::new();
+        let _test_home = TestWardianHome::new_async().await;
         let workspace = tempfile::tempdir().expect("temp workspace");
         let session_id = "headless-memory-failure";
         let process_key = "headless-memory-failure-process";
@@ -1679,7 +1686,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let test_home = TestWardianHome::new();
+        let test_home = TestWardianHome::new_async().await;
         let workspace = tempfile::tempdir().expect("temp workspace");
         let agent_id = "registered-memory-agent";
         let worker_id = "automation-bg-run-node";
@@ -1753,7 +1760,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let test_home = TestWardianHome::new();
+        let test_home = TestWardianHome::new_async().await;
         let workspace = tempfile::tempdir().expect("temp workspace");
         let worker_id = "automation-bg-temporary-node";
         let previous_scenario = std::env::var_os("WARDIAN_MOCK_SCENARIO");
@@ -1825,7 +1832,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a logged-in Codex CLI; run with cargo test -p Wardian -- --ignored real_codex_headless_projected_home_runs_shell_on_windows"]
     async fn real_codex_headless_projected_home_runs_shell_on_windows() {
-        let test_wardian_home = TestWardianHome::new();
+        let test_wardian_home = TestWardianHome::new_async().await;
         let settings_path = test_wardian_home
             ._home
             .path()
@@ -1948,7 +1955,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _home = TestWardianHome::new();
+        let _home = TestWardianHome::new_async().await;
         let now = chrono::Utc::now();
         let original_expires_at = (now + chrono::Duration::minutes(2)).to_rfc3339();
         let lease = wardian_core::conversation_lease::ConversationLease {

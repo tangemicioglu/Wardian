@@ -97,6 +97,11 @@ the handoff; no merge or publication is implied by this local branch.
 
 Recorded verification:
 
+This records the CLI audit at its original handoff. The follow-up
+[engineering guardrails audit](./2026-09-04-engineering-guardrails.md) resolves
+the ambient-log test dependency and makes all-target Clippy mandatory. The
+historical failures below are not the current contributor verification policy.
+
 - The final CLI suite passes all 352 tests, including directory casing and junction tests
   first observed failing before the review correction.
 - Required workspace Clippy, CLI all-target Clippy, formatting, and workspace

@@ -27,11 +27,7 @@ pub use pty_decode::*;
 pub use shell::*;
 pub use terminal_input::*;
 
-pub fn wardian_test_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
-
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+#[cfg(test)]
+mod test_env;
+#[cfg(test)]
+pub(crate) use test_env::{wardian_test_env_lock, wardian_test_env_lock_async};

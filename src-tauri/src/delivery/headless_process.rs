@@ -145,7 +145,7 @@ mod tests {
     use wardian_core::control::{DeliveryTransportKind, InteractionBodyRef};
 
     struct TestEnv {
-        _lock: std::sync::MutexGuard<'static, ()>,
+        _lock: tokio::sync::MutexGuard<'static, ()>,
         previous_home: Option<std::ffi::OsString>,
         previous_script: Option<std::ffi::OsString>,
         previous_scenario: Option<std::ffi::OsString>,
@@ -154,8 +154,8 @@ mod tests {
     }
 
     impl TestEnv {
-        fn new() -> Self {
-            let lock = crate::utils::wardian_test_env_lock();
+        async fn new_async() -> Self {
+            let lock = crate::utils::wardian_test_env_lock_async().await;
             let home = tempfile::tempdir().expect("temp wardian home");
             let previous_home = std::env::var_os("WARDIAN_HOME");
             let previous_script = std::env::var_os("WARDIAN_MOCK_SCRIPT");
@@ -231,7 +231,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _env = TestEnv::new();
+        let _env = TestEnv::new_async().await;
         let workspace = tempfile::tempdir().expect("workspace");
         let state = crate::state::AppState::new();
 
@@ -273,7 +273,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _env = TestEnv::new();
+        let _env = TestEnv::new_async().await;
         let workspace = tempfile::tempdir().expect("workspace");
         let script_dir = tempfile::tempdir().expect("script dir");
         let script = script_dir.path().join("failing-mock-agent.cjs");
@@ -336,7 +336,7 @@ mod tests {
         if !node_available() {
             return;
         }
-        let _env = TestEnv::new();
+        let _env = TestEnv::new_async().await;
         let workspace = tempfile::tempdir().expect("workspace");
         std::env::set_var("WARDIAN_MOCK_SCENARIO", "headless_delayed");
         std::env::set_var("WARDIAN_MOCK_DELAY_MS", "1000");

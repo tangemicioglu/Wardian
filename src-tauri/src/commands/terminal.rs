@@ -908,9 +908,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn delivered_terminal_prompt_is_archived_as_user_record() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {
@@ -951,9 +950,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn raw_terminal_submitted_prompt_is_archived_as_user_record() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp dir");
         std::env::set_var("WARDIAN_HOME", temp.path());
         crate::utils::save_shell_settings(&crate::utils::ShellSettings {

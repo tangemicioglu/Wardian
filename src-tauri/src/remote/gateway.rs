@@ -1985,7 +1985,7 @@ mod tests {
 
     #[tokio::test]
     async fn inbox_action_authorization_enforces_origin_session_and_csrf_boundary() {
-        let _guard = crate::utils::wardian_test_env_lock();
+        let _guard = crate::utils::wardian_test_env_lock_async().await;
         let temp = tempfile::tempdir().expect("temp home");
         unsafe { std::env::set_var("WARDIAN_HOME", temp.path()) };
         crate::remote::storage::save_remote_config_at(temp.path(), &config())

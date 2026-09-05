@@ -103,13 +103,17 @@ jobs:
           workspaces: .
       - name: Clippy
         # local-verify: backend
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Format
         # local-verify: backend
         run: cargo fmt --all -- --check
       - name: Test
         # local-verify: backend
-        run: cargo test --workspace -- --test-threads=1
+        run: cargo test --workspace --all-targets -- --test-threads=1
+
+      - name: Run Rust documentation tests
+        # local-verify: backend
+        run: cargo test --workspace --doc -- --test-threads=1
       # The browser-session suite drives a real Chromium and is `#[ignore]`d so
       # a machine without one still runs the rest. This runner ships Edge, and
       # `engine_candidates()` looks for Edge first, so the 44 tests need no

@@ -752,7 +752,7 @@ mod tests {
         // `WARDIAN_HOME` is process-global, and the Linux coverage job runs
         // `cargo llvm-cov --workspace` without `--test-threads=1`. Without this
         // guard the home directory races between concurrently running tests.
-        _env_guard: std::sync::MutexGuard<'static, ()>,
+        _env_guard: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl TestRepo {
