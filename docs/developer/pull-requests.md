@@ -22,11 +22,13 @@ do not duplicate the policy in those files.
    affected category when appropriate. Resolve failures or establish an exact
    base reproduction before recording a limitation; never report an unrun
    check as passing.
-3. Obtain an independent local-agent verdict through Wardian-Reviewer. Address
-   blocking findings and record the verdict and evidence. Review ends at zero
-   blocking findings; track non-blocking follow-ups in a linked issue. If a
-   structured reply is unavailable, inspect the reviewer's conversation log
-   for the verdict rather than inferring approval from idle status.
+3. Use Wardian's `autoreview` workflow when it is available to obtain an
+   independent local-agent verdict; otherwise obtain that verdict through a
+   reviewer agent. Address blocking findings and record the verdict and
+   evidence. Review ends at zero blocking findings; track non-blocking
+   follow-ups in a linked issue. If a structured reply is unavailable, inspect
+   the reviewer's conversation log for the verdict rather than inferring
+   approval from idle status.
 4. Commit only the intended files with a semantic message, then push the task
    branch. Do not force-push or overwrite another contributor's work.
 5. Open a PR or update the existing PR for that branch. Use the repository

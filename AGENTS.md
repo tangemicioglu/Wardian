@@ -67,13 +67,13 @@ If a browser E2E test needs a higher layer to be meaningful, wrap it in `test.sk
 
 - **Surgical changes**: precise, context-aware edits. Do not overwrite whole files except when scaffolding new modules.
 - **Resolve failing tests**: a failing test is a decision about which side is wrong, and it is yours. Fix the behavior when the test is right; fix the test when your change intentionally supersedes what it encoded. Never edit a test merely to turn red green. If the failure predates your change, show it reproduces on the base commit before setting it aside. Report the outcome either way.
-- **Review has a termination criterion**: every finding is blocking or non-blocking, and deciding which is yours. Only a blocking finding justifies another round; a non-blocking one goes in a linked issue. Review ends at zero blocking findings, not zero possible improvements — "are there more gaps" always answers yes, so it cannot be the stopping condition. Route to Wardian-Reviewer for the verdict instead of re-auditing your own diff.
+- **Review has a termination criterion**: every finding is blocking or non-blocking, and deciding which is yours. Only a blocking finding justifies another round; a non-blocking one goes in a linked issue. Review ends at zero blocking findings, not zero possible improvements — "are there more gaps" always answers yes, so it cannot be the stopping condition. Use Wardian's `autoreview` workflow when it is available; otherwise route to a reviewer agent for the verdict instead of re-auditing your own diff.
 - **TypeScript sovereignty**: adhere to `src/types/index.ts`. Never use `any` unless an external library forces it.
 
 ## 🌿 Git & Pull Request Standards
 
 - **Default delivery (Wardian only)**: implementation tasks in this repository include committing, pushing, and opening or updating an issue-linked PR after verification and zero-blocker local-agent review. This is standing authorization for those steps unless the user explicitly requests local-only work. Never merge or deploy without separate authorization. Procedure: [Pull Request Delivery](docs/developer/pull-requests.md).
-- **Local review, not GitHub reviewer requests**: zero-blocker review means review by local agents, routed to Wardian-Reviewer. Never request reviewers on GitHub. GitHub's review status is not the local review verdict.
+- **Local review, not GitHub reviewer requests**: zero-blocker review means review by local agents, obtained through the `autoreview` workflow when available and otherwise routed to a reviewer agent. Never request reviewers on GitHub. GitHub's review status is not the local review verdict.
 - **Branching**: never work directly on `main`. Use descriptive branches (`feat/junction-refactor`, `fix/telemetry-bug`).
 - **Atomic commits**: small and semantic, using [Conventional Commits](https://www.conventionalcommits.org/).
 - **One PR, one issue**: every PR links an existing issue and carries only that issue's work. Open a separate branch for adjacent work rather than bundling it — a reviewer can only accept or reject the whole thing.
