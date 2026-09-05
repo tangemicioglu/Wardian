@@ -14,6 +14,25 @@ const dismissedOnboardingHintIds = ["spawn-agent-first-run:v1"];
 const defaultSidebarContentWidth = 240;
 const wideSidebarContentWidth = 320;
 
+/**
+ * Budget for the first navigation against a cold dev server.
+ *
+ * Vite answers HTTP in about half a second but does not commit a navigation
+ * until its dependency optimizer has finished, and that first optimize pass
+ * runs well past Playwright's 30 s default. This is the window the optimizer
+ * gets, not a guess at how long the app takes to render.
+ */
+const COLD_START_NAVIGATION_TIMEOUT_MS = 180_000;
+
+/**
+ * Budget for every navigation after the warm-up.
+ *
+ * Vite can still discover a new dependency partway through the run — opening a
+ * surface that pulls Monaco or the automation canvas for the first time — and
+ * re-optimize, so these stay well above the default without being unbounded.
+ */
+const NAVIGATION_TIMEOUT_MS = 60_000;
+
 const agents = [
   {
     session_id: "docs-codex",
@@ -728,7 +747,17 @@ async function installTauriDocsMock(page, options = {}) {
         if (command === "load_dashboard_prefs") return null;
         if (command === "save_dashboard_prefs") return null;
         if (command === "get_explorer_root") return repoRoot;
-        if (command === "get_directory_tree") return directoryTree[args.path] || [];
+        // `DirectoryTreeResult`, not a bare array. The command was paginated and
+        // this mock kept returning the old shape, so `result.nodes` was
+        // undefined and the Explorer crashed into the error boundary the moment
+        // a tree rendered.
+        if (command === "get_directory_tree") {
+          return {
+            nodes: directoryTree[args.path] || [],
+            truncated: false,
+            next_offset: null,
+          };
+        }
         if (command === "read_file_preview") {
           return `# ${String(args.path || "").split("/").pop()}\n\nDocumentation preview content for the seeded screenshot workspace.\n`;
         }
@@ -778,14 +807,24 @@ async function installTauriDocsMock(page, options = {}) {
           };
         }
         if (command === "list_automations") return automations;
-        if (command === "automation_list_runs") return [];
+        // `RunSummaryListResult` and `BlueprintListResult`, not bare arrays.
+        // Both commands were paginated and this mock kept returning the old
+        // shape, so the automation surface read `undefined` off the result and
+        // crashed into the error boundary before the canvas ever rendered.
+        if (command === "automation_list_runs") {
+          return { runs: [], truncated: false, next_offset: null };
+        }
         if (command === "schedule_list") return [];
         if (command === "automation_list_blueprints") {
-          return automations.map((automation) => ({
-            id: automation.id,
-            name: automation.name,
-            path: `${repoRoot}/library/automations/${automation.id}.md`,
-          }));
+          return {
+            blueprints: automations.map((automation) => ({
+              id: automation.id,
+              name: automation.name,
+              path: `${repoRoot}/library/automations/${automation.id}.md`,
+            })),
+            truncated: false,
+            next_offset: null,
+          };
         }
         if (command === "automation_parse") {
           const automation = automations[0];
@@ -873,12 +912,41 @@ function collectPageDiagnostics(page, browserErrors) {
   });
 }
 
+/**
+ * Drive one throwaway navigation so the dev server is warm before any capture.
+ *
+ * `waitForServer()` only proves Vite answers HTTP, which it does long before it
+ * can serve a navigation: the first real page load is what triggers dependency
+ * optimization, and the HTML is not committed until that finishes. Polling for
+ * an HTTP answer and then navigating immediately races the optimizer, and the
+ * capture that loses the race is the first one in the run, so the whole
+ * sequence is abandoned before it produces anything.
+ *
+ * The mock is installed here too, so this exercises the same module graph the
+ * captures will need rather than warming a subset of it.
+ */
+async function warmUpDevServer(browser) {
+  const page = await browser.newPage({ viewport: { width: 1680, height: 960 }, deviceScaleFactor: 1 });
+  try {
+    await installTauriDocsMock(page);
+    await page.goto(baseUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: COLD_START_NAVIGATION_TIMEOUT_MS,
+    });
+    await page
+      .locator('[data-testid="app-shell"]')
+      .waitFor({ timeout: COLD_START_NAVIGATION_TIMEOUT_MS });
+  } finally {
+    await page.close();
+  }
+}
+
 async function openDocsPage(browser, browserErrors, mockOptions = {}) {
   const page = await browser.newPage({ viewport: { width: 1680, height: 960 }, deviceScaleFactor: 1 });
   collectPageDiagnostics(page, browserErrors);
   await installTauriDocsMock(page, mockOptions);
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await page.locator('[data-testid="app-shell"]').waitFor({ timeout: 15_000 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+  await page.locator('[data-testid="app-shell"]').waitFor({ timeout: NAVIGATION_TIMEOUT_MS });
   await stabilizeVisuals(page);
   await page.waitForTimeout(1_500);
   return page;
@@ -913,6 +981,8 @@ async function main() {
   const browserErrors = [];
 
   try {
+    await warmUpDevServer(browser);
+
     await captureTerminalLinkEvidence(browser, browserErrors);
 
     const page = await openDocsPage(browser, browserErrors);
@@ -944,8 +1014,16 @@ async function main() {
     await page.locator('[data-testid="spawn-workspace-path"]').blur();
     await capture(page, "spawn-agent/spawn-form.png");
 
+    // Broadcast is disabled until at least one agent is selected, and selection
+    // lives on the card *header*, not the card body — a click on the card
+    // itself lands in the terminal and selects nothing. Without this the fill
+    // below waits out its timeout against a permanently disabled textarea and
+    // the run ends here, abandoning the ten captures that follow.
+    await page.locator('[data-testid="agent-card-header-docs-codex"]').click();
+
     await page.locator('[data-testid="sidebar-tab-command"]').click();
     await page.waitForTimeout(500);
+    await page.locator('[data-testid="broadcast-textarea"]:not([disabled])').waitFor({ timeout: 10_000 });
     await page.locator('[data-testid="broadcast-textarea"]').fill("Summarize this workspace in five bullets. Do not edit files.");
     await page.locator('[data-testid="broadcast-textarea"]').waitFor({ timeout: 10_000 });
     await page.locator('[data-testid="broadcast-textarea"]').blur();
