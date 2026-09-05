@@ -21,6 +21,8 @@ vi.mock("../features/graph/GraphCanvas", () => ({
     resetSignal,
     onSelectAgent,
     onContextMenu,
+    onCanvasContextMenu,
+    showAllLabels,
     connectMode,
     selectedEdgeId,
     onSelectEdge,
@@ -29,6 +31,8 @@ vi.mock("../features/graph/GraphCanvas", () => ({
     resetSignal?: number;
     onSelectAgent: (id: string) => void;
     onContextMenu: (id: string, x: number, y: number) => void;
+    onCanvasContextMenu?: (x: number, y: number) => void;
+    showAllLabels?: boolean;
     connectMode?: boolean;
     selectedEdgeId?: string | null;
     onSelectEdge?: (edgeId: string) => void;
@@ -36,6 +40,7 @@ vi.mock("../features/graph/GraphCanvas", () => ({
     <>
       <button
         data-testid="mock-graph-node"
+        data-show-all-labels={showAllLabels === false ? "false" : "true"}
         data-connect-mode={connectMode ? "true" : "false"}
         data-selected-edge={selectedEdgeId ?? "none"}
         data-node-positions={JSON.stringify(projection.nodes.map((n) => [n.id, n.x, n.y]))}
@@ -53,6 +58,15 @@ vi.mock("../features/graph/GraphCanvas", () => ({
         onClick={() => onSelectEdge?.("a--b")}
       >
         edge-a--b
+      </button>
+      <button
+        data-testid="mock-graph-stage"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onCanvasContextMenu?.(12, 24);
+        }}
+      >
+        graph-stage
       </button>
     </>
   ),
@@ -140,8 +154,10 @@ describe("GraphView", () => {
     render(<GraphView {...defaultProps} />);
 
     expect(screen.getByTestId("graph-view")).toBeInTheDocument();
-    expect(screen.getByText("Agent List")).toBeInTheDocument();
-    expect(screen.getByText("Shift-drag to connect")).toBeInTheDocument();
+    expect(screen.getByText("All agents")).toBeInTheDocument();
+    expect(screen.getByTestId("graph-view").querySelector(".graph-onboarding-hint"))
+      .toHaveTextContent("Shift-drag between agents to create a connection.");
+    expect(screen.queryByText("Shift-drag to connect")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "same team" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "same team" })).toHaveClass("graph-lens--same-team");
     expect(screen.getByRole("button", { name: "same project" })).toHaveClass("graph-lens--shared-workspace");
@@ -192,6 +208,7 @@ describe("GraphView", () => {
           inspector_open: false,
           selected_edge_id: null,
           picker_search: "Alpha",
+          show_all_labels: false,
         }}
         onSurfaceStateChange={onSurfaceStateChange}
       />,
@@ -204,6 +221,7 @@ describe("GraphView", () => {
       inspected_agent_id: "b",
       inspector_open: false,
       picker_search: "Alpha",
+      show_all_labels: false,
     })));
   });
 
@@ -302,6 +320,7 @@ describe("GraphView", () => {
           inspector_open: true,
           selected_edge_id: "a--b",
           picker_search: "",
+          show_all_labels: true,
         }}
       />,
     );
@@ -361,6 +380,21 @@ describe("GraphView", () => {
     expect(screen.getByTestId("agent-context-menu")).toBeInTheDocument();
     expect(screen.getByText("Rename")).toBeInTheDocument();
     expect(screen.getByText("Query")).toBeInTheDocument();
+  });
+
+  it("opens a graph display context menu from the canvas background and toggles label visibility", async () => {
+    render(<GraphView {...defaultProps} />);
+
+    fireEvent.contextMenu(screen.getByTestId("mock-graph-stage"));
+
+    const toggle = await screen.findByRole("menuitem", { name: "Show selected agent names only" });
+    fireEvent.click(toggle);
+
+    expect(screen.getByTestId("mock-graph-node")).toHaveAttribute("data-show-all-labels", "false");
+    expect(screen.queryByRole("menuitem", { name: "Show selected agent names only" })).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId("mock-graph-stage"));
+    expect(await screen.findByRole("menuitem", { name: "Show all agent names" })).toBeInTheDocument();
   });
 
   it("opens the context menu for a relationship row's neighbor agent", async () => {

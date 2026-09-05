@@ -246,7 +246,7 @@ describe("GraphCanvas", () => {
     }));
   });
 
-  it("forces only selected labels while an agent is selected", () => {
+  it("forces only selected labels when all labels are disabled", () => {
     render(
       <GraphCanvas
         projection={{
@@ -261,6 +261,7 @@ describe("GraphCanvas", () => {
             },
           ],
         }}
+        showAllLabels={false}
         onSelectAgent={vi.fn()}
         onOpenAgent={vi.fn()}
         onContextMenu={vi.fn()}
@@ -272,6 +273,7 @@ describe("GraphCanvas", () => {
       highlighted: true,
     }));
     expect(mocks.graphology.addNode).toHaveBeenCalledWith("b", expect.objectContaining({
+      label: "",
       forceLabel: false,
       highlighted: false,
     }));
@@ -303,6 +305,28 @@ describe("GraphCanvas", () => {
     expect(onOpenAgent).toHaveBeenCalledWith("a");
     expect(preventDefault).toHaveBeenCalled();
     expect(onContextMenu).toHaveBeenCalledWith("a", 10, 20);
+  });
+
+  it("forwards background context-menu interactions", () => {
+    const onCanvasContextMenu = vi.fn();
+    const preventDefault = vi.fn();
+
+    render(
+      <GraphCanvas
+        projection={projection}
+        onSelectAgent={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onContextMenu={vi.fn()}
+        onCanvasContextMenu={onCanvasContextMenu}
+      />,
+    );
+
+    mocks.handlers.get("rightClickStage")?.({
+      event: { originalEvent: { preventDefault, clientX: 10, clientY: 20 } },
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onCanvasContextMenu).toHaveBeenCalledWith(10, 20);
   });
 
   it("zooms continuously from the wheel delta and keeps the cursor anchored", () => {

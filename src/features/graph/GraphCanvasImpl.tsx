@@ -23,6 +23,8 @@ export interface GraphCanvasProps {
   selectedEdgeId?: string | null;
   onSelectEdge?: (edgeId: string) => void;
   onConnect?: (a: string, b: string) => void;
+  onCanvasContextMenu?: (x: number, y: number) => void;
+  showAllLabels?: boolean;
 }
 
 interface SigmaNodePayload {
@@ -46,6 +48,10 @@ interface SigmaEdgePayload {
   };
 }
 
+interface SigmaStagePointerPayload {
+  event?: SigmaPointerPayload["event"];
+}
+
 export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   projection,
   resetSignal = 0,
@@ -56,15 +62,20 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   selectedEdgeId,
   onSelectEdge,
   onConnect,
+  onCanvasContextMenu,
+  showAllLabels = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const rendererRef = useRef<Sigma | null>(null);
   const labelColorRef = useRef<string | null>(null);
   const projectionRef = useRef(projection);
-  const handlersRef = useRef({ onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect });
+  const handlersRef = useRef({ onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect, onCanvasContextMenu });
   const dragSourceRef = useRef<string | null>(null);
-  const renderSignature = useMemo(() => graphRenderSignature(projection), [projection]);
+  const renderSignature = useMemo(
+    () => graphRenderSignature(projection, showAllLabels),
+    [projection, showAllLabels],
+  );
   const [tooltip, setTooltip] = useState<{ x: number; y: number; title: string; detail?: string } | null>(null);
   const [sigmaInstance, setSigmaInstance] = useState<Sigma | null>(null);
   const [themeVersion, setThemeVersion] = useState(0);
@@ -85,8 +96,8 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
   }, []);
 
   useEffect(() => {
-    handlersRef.current = { onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect };
-  }, [onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect]);
+    handlersRef.current = { onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect, onCanvasContextMenu };
+  }, [onSelectAgent, onOpenAgent, onContextMenu, onSelectEdge, onConnect, onCanvasContextMenu]);
 
   useEffect(() => {
     projectionRef.current = projection;
@@ -191,6 +202,12 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       const point = pointerPosition(original);
       handlersRef.current.onContextMenu(node, point.x, point.y);
     });
+    renderer.on("rightClickStage", ({ event }: SigmaStagePointerPayload) => {
+      const original = event?.original ?? event?.originalEvent;
+      original?.preventDefault();
+      const point = original ? pointerPosition(original) : sigmaPointerPosition(event);
+      handlersRef.current.onCanvasContextMenu?.(point.x, point.y);
+    });
     renderer.on("clickEdge", ({ edge }: SigmaEdgePayload) => {
       handlersRef.current.onSelectEdge?.(edge);
     });
@@ -277,17 +294,16 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       // Build off-renderer, then swap once. Mutating Sigma's live Graphology
       // instance emits a refresh for clear and every add.
       const graph = new Graph();
-      const hasSelectedNode = currentProjection.nodes.some((node) => node.selected);
 
       for (const node of currentProjection.nodes) {
         graph.addNode(node.id, {
-          label: node.label,
+          label: showAllLabels || node.selected ? node.label : "",
           x: node.x,
           y: node.y,
           size: node.size,
           color: resolveGraphColor(node.color, container),
           highlighted: node.selected,
-          forceLabel: !hasSelectedNode || node.selected,
+          forceLabel: showAllLabels || node.selected,
           zIndex: 1,
         });
       }
@@ -339,7 +355,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     return () => {
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
     };
-  }, [renderSignature, selectedEdgeId, themeVersion]);
+  }, [renderSignature, selectedEdgeId, showAllLabels, themeVersion]);
 
   const previousResetSignalRef = useRef(resetSignal);
   useEffect(() => {
@@ -387,8 +403,9 @@ function sigmaPointerPosition(event: { x?: number; y?: number } | undefined) {
   return { x: event?.x ?? 0, y: event?.y ?? 0 };
 }
 
-function graphRenderSignature(projection: AgentGraphProjection) {
+function graphRenderSignature(projection: AgentGraphProjection, showAllLabels: boolean) {
   return JSON.stringify({
+    showAllLabels,
     nodes: projection.nodes.map((node) => ({
       id: node.id,
       label: node.label,

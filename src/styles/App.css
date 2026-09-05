@@ -1176,6 +1176,9 @@ select option {
 }
 
 .graph-scope {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 120px;
   max-width: 220px;
   position: relative;
@@ -1186,12 +1189,6 @@ select option {
   font-size: 12px;
   font-weight: 700;
   color: var(--color-wardian-text);
-}
-
-.graph-scope-count {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--color-wardian-text-muted);
 }
 
 .graph-lenses {
@@ -1445,25 +1442,6 @@ select option {
   background: color-mix(in srgb, var(--color-wardian-accent), transparent 92%);
   font-size: 11px;
   font-weight: 700;
-}
-
-.graph-shift-drag-hint {
-  height: 26px;
-  padding: 0 6px;
-  color: var(--color-wardian-text-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  pointer-events: none;
-  font-size: 12px;
-}
-
-.graph-lens-separator {
-  width: 1px;
-  height: 16px;
-  background: var(--color-wardian-border);
-  pointer-events: none;
 }
 
 .graph-neighbors-list {

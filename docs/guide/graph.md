@@ -8,6 +8,13 @@ wheel notch remains a small step. Graph nodes, topology edges, and animated
 communication activity share the same camera frame, so overlays remain attached
 to their endpoints throughout the gesture.
 
+The toolbar shows the current scope on one line. The all-agent scope is labeled
+**All agents**. Right-click the empty canvas and choose **Show selected agent
+names only** to reduce label density; the setting is saved with the Graph view.
+Choose **Show all agent names** to restore the default. The Shift-drag
+connection gesture is explained by the first-use Graph tip and is available
+again in this guide when needed.
+
 ![Wardian Graph view showing status-colored agent nodes, relationship lenses, and the inspector](../assets/screenshots/graph/graph-view.png)
 
 ## What the Graph Shows
