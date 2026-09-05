@@ -8,6 +8,7 @@ mod graph;
 mod inbox;
 mod json_input;
 mod library;
+mod listener;
 mod live;
 mod memory;
 mod output;
@@ -637,6 +638,13 @@ fn handle_automation(args: AutomationArgs) -> Result<String, CliError> {
         }
         AutomationCommand::Schedule(command) => render_automation_schedule(*command),
         AutomationCommand::SessionClose(command) => render_automation_session_close(*command),
+        AutomationCommand::Listener(command) => listener::render(
+            *command,
+            parse_automation_exec_input,
+            parse_automation_bindings,
+            |blueprint| validate_schedule_blueprint(blueprint).map(|_| ()),
+            validate_schedule_provider,
+        ),
     }
 }
 
@@ -1603,7 +1611,7 @@ fn current_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn render_json(body: serde_json::Value) -> Result<String, CliError> {
+pub(crate) fn render_json(body: serde_json::Value) -> Result<String, CliError> {
     serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
