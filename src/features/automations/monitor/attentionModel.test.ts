@@ -22,6 +22,31 @@ describe('automationAttention', () => {
     expect(result.runIds.size).toBe(0);
   });
 
+  it('collapses listener runs by invoker the way it collapses schedule runs', () => {
+    // Without this, a busy file listener's every fire would compete for
+    // attention individually instead of being represented by its newest run.
+    const result = automationAttention(
+      [
+        { run_id: 'old', blueprint_id: 'audit', listener_id: 'watcher', status: 'failed', updated_at: '2026-08-31T10:00:00Z' },
+        { run_id: 'new', blueprint_id: 'audit', listener_id: 'watcher', status: 'completed', updated_at: '2026-08-31T12:00:00Z' },
+      ],
+      [],
+    );
+
+    expect(result.runIds.size).toBe(0);
+  });
+
+  it('keeps a listener failure in attention when nothing newer superseded it', () => {
+    const result = automationAttention(
+      [
+        { run_id: 'failed', blueprint_id: 'audit', listener_id: 'watcher', status: 'failed', updated_at: '2026-08-31T12:00:00Z' },
+      ],
+      [],
+    );
+
+    expect([...result.runIds]).toEqual(['failed']);
+  });
+
   it('retains schedule launch failures until a newer schedule run appears', () => {
     const failedAt = Date.parse('2026-08-31T11:00:00Z');
     const result = automationAttention([

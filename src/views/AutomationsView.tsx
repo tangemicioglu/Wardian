@@ -11,6 +11,7 @@ import { NodeLibrary } from '../features/automations/builder/NodeLibrary';
 import { VariableAssistant } from '../features/automations/builder/VariableAssistant';
 import type { Blueprint, BlueprintNode, NodeTypeDef } from '../features/automations/builder/blueprintTypes';
 import { findNodeType } from '../features/automations/builder/registry';
+import { ListenersPanel } from '../features/automations/monitor/ListenersPanel';
 import { AutomationMonitor } from '../features/automations/monitor/AutomationMonitor';
 import { RunList } from '../features/automations/run/RunList';
 import { AutomationObserveMode } from '../features/automations/run/AutomationObserveMode';
@@ -343,10 +344,17 @@ export function AutomationsView({ theme }: AutomationsViewProps) {
           ) : mode === 'observe' ? (
             <AutomationObserveMode theme={theme} />
           ) : (
-            <AutomationMonitor
-              onOpenRun={(blueprintId, runId) => void openRunForObserve(blueprintId, runId)}
-              onEditSchedule={(schedule) => void openScheduleEditor(schedule)}
-            />
+            <div className="flex h-full min-h-0 flex-col gap-3">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <AutomationMonitor
+                  onOpenRun={(blueprintId, runId) => void openRunForObserve(blueprintId, runId)}
+                  onEditSchedule={(schedule) => void openScheduleEditor(schedule)}
+                />
+              </div>
+              <div className="max-h-[45%] shrink-0 overflow-hidden">
+                <ListenersPanel />
+              </div>
+            </div>
           )}
         </main>
         {drawerOpen && (
