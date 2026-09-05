@@ -27,6 +27,11 @@ pub struct AutomationRunInvocation {
     pub workspace: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_id: Option<String>,
+    /// Listener invoker that fired this run. Additive alongside `schedule_id`
+    /// rather than a shared `invoker_id`, because renaming would invalidate
+    /// every run directory already on disk for no behavioral gain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener_id: Option<String>,
     #[serde(default)]
     pub bindings: HashMap<String, String>,
     #[serde(default)]
@@ -412,9 +417,37 @@ pub fn write_run_invocation_with_schedule_id(
         workspace,
         bindings,
         assignments,
-        schedule_id,
+        InvokerAttribution {
+            schedule_id,
+            listener_id: None,
+        },
         None,
     )
+}
+
+/// Which invoker started a run. Exactly one field is set in practice; the
+/// struct exists so adding a third invoker family does not grow every
+/// invocation-writing signature by another argument.
+#[derive(Debug, Clone, Default)]
+pub struct InvokerAttribution {
+    pub schedule_id: Option<String>,
+    pub listener_id: Option<String>,
+}
+
+impl InvokerAttribution {
+    pub fn schedule(id: impl Into<String>) -> Self {
+        Self {
+            schedule_id: Some(id.into()),
+            listener_id: None,
+        }
+    }
+
+    pub fn listener(id: impl Into<String>) -> Self {
+        Self {
+            schedule_id: None,
+            listener_id: Some(id.into()),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -424,7 +457,7 @@ pub fn write_run_invocation_with_authority(
     workspace: &Path,
     bindings: &HashMap<String, String>,
     assignments: &AutomationAssignments,
-    schedule_id: Option<String>,
+    attribution: InvokerAttribution,
     memory_principal: Option<String>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(run_root)
@@ -433,7 +466,8 @@ pub fn write_run_invocation_with_authority(
         schema: 2,
         provider: provider.to_string(),
         workspace: workspace.to_string_lossy().to_string(),
-        schedule_id,
+        schedule_id: attribution.schedule_id,
+        listener_id: attribution.listener_id,
         bindings: bindings.clone(),
         assignments: assignments.clone(),
         memory_principal,
@@ -716,7 +750,7 @@ pub fn prepare_new_run_with_assignments_and_memory_principal(
         workspace,
         bindings,
         assignments,
-        None,
+        InvokerAttribution::default(),
         memory_principal,
     )?;
     Engine::initialize_with_id(blueprint, run_id.to_string(), input, run_root)
@@ -742,6 +776,34 @@ pub fn prepare_new_scheduled_run_with_assignments(
         bindings,
         assignments,
         Some(schedule_id.to_string()),
+    )?;
+    Engine::initialize_with_id(blueprint, run_id.to_string(), input, run_root)
+        .map_err(|err| err.to_string())
+}
+
+/// Initialize a listener-invoked run, recording which listener fired it so the
+/// monitor can collapse a busy listener's runs the way it collapses a
+/// schedule's.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_new_listener_run(
+    blueprint: &Blueprint,
+    run_id: &str,
+    run_root: &Path,
+    workspace: &Path,
+    default_provider: &str,
+    bindings: &HashMap<String, String>,
+    assignments: &AutomationAssignments,
+    listener_id: &str,
+    input: Value,
+) -> Result<wardian_core::engine::RunState, String> {
+    write_run_invocation_with_authority(
+        run_root,
+        default_provider,
+        workspace,
+        bindings,
+        assignments,
+        InvokerAttribution::listener(listener_id),
+        None,
     )?;
     Engine::initialize_with_id(blueprint, run_id.to_string(), input, run_root)
         .map_err(|err| err.to_string())
@@ -1241,7 +1303,7 @@ edges: []
             std::path::Path::new("/workspace"),
             &bindings,
             &assignments,
-            None,
+            InvokerAttribution::default(),
             Some("agent-1".to_string()),
         )
         .unwrap();
@@ -1267,7 +1329,7 @@ edges: []
             std::path::Path::new("/workspace"),
             &bindings,
             &assignments,
-            None,
+            InvokerAttribution::default(),
             Some("agent-a".to_string()),
         )
         .unwrap();
@@ -1277,7 +1339,7 @@ edges: []
             std::path::Path::new("/workspace"),
             &bindings,
             &assignments,
-            None,
+            InvokerAttribution::default(),
             None,
         )
         .unwrap();

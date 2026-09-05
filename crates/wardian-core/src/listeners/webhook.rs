@@ -216,6 +216,96 @@ pub fn ensure_unique_path(
     }
 }
 
+/// Bind settings for the inbound webhook server.
+///
+/// There is no separate enable flag: an enabled webhook listener *is* the
+/// intent to receive deliveries, and making a user also flip a server switch
+/// only produces a listener that looks broken for a reason nothing surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WebhookGatewayConfig {
+    #[serde(default = "default_gateway_schema")]
+    pub schema: u8,
+    #[serde(default = "default_gateway_host")]
+    pub host: String,
+    #[serde(default = "default_gateway_port")]
+    pub port: u16,
+}
+
+impl Default for WebhookGatewayConfig {
+    fn default() -> Self {
+        Self {
+            schema: default_gateway_schema(),
+            host: default_gateway_host(),
+            port: default_gateway_port(),
+        }
+    }
+}
+
+fn default_gateway_schema() -> u8 {
+    1
+}
+fn default_gateway_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_gateway_port() -> u16 {
+    8787
+}
+
+/// v1 binds loopback only, matching the remote gateway's posture. External
+/// reach is the user's tunnel, which keeps the exposure decision explicit
+/// rather than a config field someone flips without meaning to.
+pub fn is_loopback_host(host: &str) -> bool {
+    matches!(host.trim(), "127.0.0.1" | "localhost" | "::1")
+}
+
+pub fn validate_gateway_config(config: &WebhookGatewayConfig) -> Result<(), String> {
+    if !is_loopback_host(&config.host) {
+        return Err(format!(
+            "webhook gateway must bind to loopback; `{}` is not a loopback host",
+            config.host
+        ));
+    }
+    if config.port == 0 {
+        return Err("webhook gateway port must not be zero".to_string());
+    }
+    Ok(())
+}
+
+/// Read gateway settings, falling back to defaults so a missing file is a
+/// working configuration rather than a disabled feature.
+pub fn load_gateway_config() -> WebhookGatewayConfig {
+    crate::paths::listener_gateway_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|body| serde_json::from_str(&body).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_gateway_config(config: &WebhookGatewayConfig) -> std::io::Result<()> {
+    validate_gateway_config(config)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let path = crate::paths::listener_gateway_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "Wardian home is unavailable")
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string_pretty(config)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// The URL a sender should be pointed at.
+pub fn webhook_url(config: &WebhookGatewayConfig, path_segment: &str) -> String {
+    let host = if config.host.trim() == "::1" {
+        "[::1]".to_string()
+    } else {
+        config.host.trim().to_string()
+    };
+    format!("http://{host}:{}/hooks/{path_segment}", config.port)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +417,26 @@ mod tests {
             );
         }
         assert!(validate_path_segment("github-releases_1").is_ok());
+    }
+
+    #[test]
+    fn a_non_loopback_bind_is_refused() {
+        let mut config = WebhookGatewayConfig::default();
+        assert!(validate_gateway_config(&config).is_ok());
+        config.host = "0.0.0.0".into();
+        assert!(validate_gateway_config(&config)
+            .unwrap_err()
+            .contains("loopback"));
+    }
+
+    #[test]
+    fn an_ipv6_loopback_url_is_bracketed() {
+        let config = WebhookGatewayConfig {
+            host: "::1".into(),
+            port: 9000,
+            ..WebhookGatewayConfig::default()
+        };
+        assert_eq!(webhook_url(&config, "ci"), "http://[::1]:9000/hooks/ci");
     }
 
     #[test]

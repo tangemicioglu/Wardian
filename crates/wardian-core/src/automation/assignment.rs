@@ -15,7 +15,9 @@ pub fn is_known_provider(value: &str) -> bool {
 pub fn default_busy_policy_for(invocation: InvocationKind) -> BusyPolicy {
     match invocation {
         InvocationKind::Manual => BusyPolicy::Fail,
-        InvocationKind::Scheduled => BusyPolicy::Skip,
+        // An unattended invocation has nobody to report a busy agent to, so
+        // skipping is the only policy that does not silently pile up work.
+        InvocationKind::Scheduled | InvocationKind::Listener => BusyPolicy::Skip,
     }
 }
 

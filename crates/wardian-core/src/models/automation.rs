@@ -51,6 +51,8 @@ fn default_busy_policy() -> BusyPolicy {
 pub enum InvocationKind {
     Manual,
     Scheduled,
+    /// Started by a listener invoker reacting to an external event.
+    Listener,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, Clone)]

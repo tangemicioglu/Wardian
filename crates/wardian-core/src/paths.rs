@@ -173,6 +173,12 @@ pub fn schedules_path() -> Option<PathBuf> {
     wardian_home().map(|home| home.join("library").join("schedules.json"))
 }
 
+/// `<wardian-home>/settings/listener-gateway.json` - bind settings for the
+/// inbound webhook listener server.
+pub fn listener_gateway_path() -> Option<PathBuf> {
+    wardian_home().map(|home| home.join("settings").join("listener-gateway.json"))
+}
+
 /// `<wardian-home>/library/listeners.json` - the automation listener index.
 ///
 /// Deliberately free of credentials so it stays safe to print, render, and
