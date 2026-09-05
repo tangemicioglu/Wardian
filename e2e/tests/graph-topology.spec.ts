@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openSurface, surfacePanel } from "../fixtures/workbench";
+import { makeWorkbenchDocument, makeWorkbenchSurface } from "../fixtures/workbenchIpcMock";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -30,6 +31,10 @@ interface PairActivity {
   active_ask: boolean;
 }
 
+const GRAPH_WORKBENCH_DOCUMENT = makeWorkbenchDocument({
+  surfaces: [makeWorkbenchSurface("graph-surface", "graph")],
+});
+
 async function installGraphTopologyIpcMock(
   page: Page,
   topology: {
@@ -40,7 +45,7 @@ async function installGraphTopologyIpcMock(
   agents: MockAgent[],
   pairActivity: PairActivity[] = [],
 ) {
-  await page.addInitScript(({ topologyFixture, agentsFixture, activityFixture }) => {
+  await page.addInitScript(({ topologyFixture, agentsFixture, activityFixture, workbenchDocument }) => {
     let callbackId = 1;
     const callbacks = new Map<number, unknown>();
     const tauriWindow = window as Window & {
@@ -68,6 +73,26 @@ async function installGraphTopologyIpcMock(
       convertFileSrc: (filePath: string) => filePath,
       invoke: async (command: string, args?: Record<string, unknown>) => {
         if (command === "list_agents") return agentsFixture;
+        if (command === "get_workbench_boot_config") return { safe_mode: false };
+        if (command === "load_workbench_state") {
+          return {
+            source: "default",
+            document: workbenchDocument,
+            notice: null,
+            durable_revision: workbenchDocument.revision,
+            durable_token: "graph-test-token",
+          };
+        }
+        if (command === "save_workbench_state") {
+          const proposedRevision = (args?.document as { revision?: number } | undefined)?.revision
+            ?? workbenchDocument.revision;
+          return {
+            outcome: "saved",
+            durable_revision: proposedRevision,
+            durable_token: "graph-test-token",
+            request_id: String(args?.request_id ?? "graph-save-request"),
+          };
+        }
         if (command === "list_agent_classes") {
           return [{ name: "TestClass", description: "Graph test class", is_default: true }];
         }
@@ -118,7 +143,12 @@ async function installGraphTopologyIpcMock(
         return null;
       },
     };
-  }, { topologyFixture: topology, agentsFixture: agents, activityFixture: pairActivity });
+  }, {
+    topologyFixture: topology,
+    agentsFixture: agents,
+    activityFixture: pairActivity,
+    workbenchDocument: GRAPH_WORKBENCH_DOCUMENT,
+  });
 }
 
 async function openGraphView(page: Page) {
@@ -273,6 +303,60 @@ test.describe("Graph Topology", () => {
     // Close the picker without selection
     await pickerInput.press("Escape");
     await expect(picker).toBeHidden();
+  });
+
+  test("streamlines scope and toggles graph labels from the canvas menu", async () => {
+    const agents: MockAgent[] = ["Alpha", "Beta", "Gamma"].map((session_name, index) => ({
+      session_id: `label-test-${index}`,
+      session_name,
+      agent_class: "TestClass",
+      folder: `/test/${session_name.toLowerCase()}`,
+      provider: "claude",
+      is_off: false,
+    }));
+
+    await installGraphTopologyIpcMock(page, {
+      edges: [],
+      ignored_pairs: [],
+      fallback_groups: [],
+    }, agents);
+    await openGraphView(page);
+
+    const graphPanel = surfacePanel(page, "graph");
+    await expect(graphPanel.locator(".graph-scope-label")).toHaveText("All agents");
+    await expect(graphPanel.locator(".graph-scope-count")).toHaveCount(0);
+    await expect(graphPanel.locator(".graph-toolbar").getByText("Shift-drag to connect", { exact: true })).toHaveCount(0);
+    await expect(graphPanel.locator(".graph-onboarding-hint")).toContainText("Shift-drag");
+
+    const canvasShell = graphPanel.locator(".graph-canvas-shell");
+    await expect(canvasShell.locator("canvas").last()).toBeVisible();
+    const canvasBox = await canvasShell.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    await page.mouse.click(
+      canvasBox!.x + canvasBox!.width - 24,
+      canvasBox!.y + canvasBox!.height - 24,
+      { button: "right" },
+    );
+
+    await expect(page.getByRole("menuitem", { name: "Show selected agent names only" })).toBeVisible();
+    const screenshotDir = process.env.WARDIAN_GRAPH_LABEL_SCREENSHOT_DIR;
+    if (screenshotDir) {
+      fs.mkdirSync(screenshotDir, { recursive: true });
+      const screenshotPath = path.join(screenshotDir, "graph-label-display-menu.png");
+      await graphPanel.screenshot({ path: screenshotPath, animations: "disabled" });
+      await test.info().attach("graph-label-display-menu", {
+        path: screenshotPath,
+        contentType: "image/png",
+      });
+    }
+
+    await page.getByRole("menuitem", { name: "Show selected agent names only" }).click();
+    await page.mouse.click(
+      canvasBox!.x + canvasBox!.width - 24,
+      canvasBox!.y + canvasBox!.height - 24,
+      { button: "right" },
+    );
+    await expect(page.getByRole("menuitem", { name: "Show all agent names" })).toBeVisible();
   });
 
   test("neighbors panel shows unmapped badge for ghost edges", async () => {

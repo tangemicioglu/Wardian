@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PanelRightOpen, Plus, RotateCcw, Waypoints, X } from "lucide-react";
+import { Eye, EyeOff, PanelRightOpen, RotateCcw, Waypoints, X } from "lucide-react";
 import type { AgentConfig, AgentTelemetry, CloneMode, TopologySnapshot, PairActivityEntry, PairActivityResult } from "../types";
 import type { AgentInteractions, AgentTeam, Watchlist } from "../layout/watchlist/types";
 import { AgentContextMenu } from "../components/AgentContextMenu";
+import { ContextMenu } from "../components/ContextMenu";
 import { DocsLink } from "../components/DocsLink";
 import { OnboardingHint } from "../components/OnboardingHint";
 import { GraphCanvas } from "../features/graph/GraphCanvas";
@@ -102,6 +103,8 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
   const [contextMenu, setContextMenu] = useState<{ agentId: string; agentIds: string[]; x: number; y: number } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState(initialSurfaceState?.picker_search ?? "");
+  const [showAllLabels, setShowAllLabels] = useState(initialSurfaceState?.show_all_labels ?? true);
+  const [graphContextMenu, setGraphContextMenu] = useState<{ x: number; y: number } | null>(null);
   const onSurfaceStateChangeRef = useRef(props.onSurfaceStateChange);
   onSurfaceStateChangeRef.current = props.onSurfaceStateChange;
   // Layout freeze: node positions are captured once topology data is loaded
@@ -117,8 +120,9 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
       inspector_open: inspectorOpen,
       selected_edge_id: selectedEdgeId,
       picker_search: pickerSearch,
+      show_all_labels: showAllLabels,
     });
-  }, [enabledReasons, inspectedAgentId, inspectorOpen, pickerSearch, selectedEdgeId]);
+  }, [enabledReasons, inspectedAgentId, inspectorOpen, pickerSearch, selectedEdgeId, showAllLabels]);
 
   const rerunLayout = () => {
     frozenLayoutRef.current = null;
@@ -279,8 +283,6 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
       props.offAgentIds.has(inspectedAgent.id),
     ).status
     : null;
-  const filteredCount = props.filteredAgents.length;
-
   const toggleReason = (reason: GraphRelationshipReason) => {
     setEnabledReasons((current) => {
       const next = new Set(current);
@@ -315,13 +317,21 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
     setContextMenu({ agentId, agentIds, x, y });
   };
 
+  const openGraphContextMenu = (x: number, y: number) => {
+    setContextMenu(null);
+    setGraphContextMenu({ x, y });
+  };
+
   return (
     <div
       data-testid="graph-view"
       className={`graph-view ${inspectorOpen ? "graph-view--inspector-open" : "graph-view--inspector-hidden"}`}
       onClick={(event) => {
         event.stopPropagation();
-        if (!isInsideContextMenu(event.target)) setContextMenu(null);
+        if (!isInsideContextMenu(event.target)) {
+          setContextMenu(null);
+          setGraphContextMenu(null);
+        }
       }}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -330,16 +340,10 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
     >
       <div className="graph-toolbar graph-toolbar--stable-centered">
         <div className="graph-scope graph-toolbar-primary">
-          <div className="label-small">Scope</div>
-          <div className="graph-scope-label">{projection.scopeLabel}</div>
-          <div className="graph-scope-count">{filteredCount} agents visible</div>
+          <span className="label-small">Scope</span>
+          <span className="graph-scope-label">{projection.scopeLabel}</span>
         </div>
         <div className="graph-lenses" aria-label="Graph relationship lenses">
-          <div className="graph-shift-drag-hint" title="Shift-drag between agents to create connections">
-            <Plus size={14} strokeWidth={2.2} />
-            <span className="text-muted">Shift-drag to connect</span>
-          </div>
-          <div className="graph-lens-separator" />
           {ALL_REASONS.map((reason) => (
             <button
               key={reason}
@@ -427,6 +431,8 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
               onContextMenu={openContextMenu}
               selectedEdgeId={selectedEdgeId}
               onSelectEdge={selectEdge}
+              onCanvasContextMenu={openGraphContextMenu}
+              showAllLabels={showAllLabels}
               onConnect={(a, b) => {
                 invoke("add_topology_edge", { a, b }).catch((error) => {
                   console.error("add_topology_edge failed", error);
@@ -537,6 +543,18 @@ export const GraphView: React.FC<GraphViewProps> = (props) => {
           onDelete={props.onDelete}
           onDeleteAgents={props.onDeleteAgents}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+      {graphContextMenu && (
+        <ContextMenu
+          x={graphContextMenu.x}
+          y={graphContextMenu.y}
+          items={[{
+            label: showAllLabels ? "Show selected agent names only" : "Show all agent names",
+            icon: showAllLabels ? <EyeOff size={14} /> : <Eye size={14} />,
+            onClick: () => setShowAllLabels((current) => !current),
+          }]}
+          onClose={() => setGraphContextMenu(null)}
         />
       )}
     </div>

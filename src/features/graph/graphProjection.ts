@@ -179,7 +179,7 @@ export function buildAgentGraph(input: BuildAgentGraphInput): AgentGraphProjecti
     edges: buildEdges(visibleAgents, input.teams, input.enabledReasons),
     clusters,
     visibleAgents,
-    scopeLabel: input.activeList?.id === "all" ? "Agent List" : input.activeList?.name ?? "Agent List",
+    scopeLabel: input.activeList?.id === "all" ? "All agents" : input.activeList?.name ?? "All agents",
     commEdges,
   };
 }

@@ -160,6 +160,16 @@ describe("core view surface definitions", () => {
       ok: true,
       state: DEFAULT_GRAPH_SURFACE_STATE,
     });
+    expect(graph.restore_state({
+      enabled_reasons: [],
+      inspected_agent_id: null,
+      inspector_open: true,
+      selected_edge_id: null,
+      picker_search: "",
+    }, 1)).toEqual({
+      ok: true,
+      state: DEFAULT_GRAPH_SURFACE_STATE,
+    });
     expect(graph.restore_state({ unexpected: true }, 1)).toEqual({
       ok: false,
       error: "graph state is malformed",

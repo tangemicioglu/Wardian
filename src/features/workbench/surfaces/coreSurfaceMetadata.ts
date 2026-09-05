@@ -52,6 +52,7 @@ export type GraphSurfaceState = Readonly<{
   inspector_open: boolean;
   selected_edge_id: string | null;
   picker_search: string;
+  show_all_labels: boolean;
 }>;
 export type GardenSurfaceState = Readonly<{ selected_unit_key: string | null }>;
 /**
@@ -100,6 +101,7 @@ export const DEFAULT_GRAPH_SURFACE_STATE: GraphSurfaceState = Object.freeze({
   inspector_open: true,
   selected_edge_id: null,
   picker_search: "",
+  show_all_labels: true,
 });
 export const DEFAULT_GARDEN_SURFACE_STATE: GardenSurfaceState = Object.freeze({
   selected_unit_key: null,
@@ -136,6 +138,7 @@ function restoreGraphState(value: unknown, version: number): SurfaceRestoreResul
     || typeof value.inspector_open !== "boolean"
     || (value.selected_edge_id !== null && typeof value.selected_edge_id !== "string")
     || typeof value.picker_search !== "string"
+    || (value.show_all_labels !== undefined && typeof value.show_all_labels !== "boolean")
   ) return { ok: false, error: "graph state is malformed" };
   return {
     ok: true,
@@ -145,6 +148,9 @@ function restoreGraphState(value: unknown, version: number): SurfaceRestoreResul
       inspector_open: value.inspector_open,
       selected_edge_id: value.selected_edge_id as string | null,
       picker_search: value.picker_search,
+      // Older graph surfaces did not persist label visibility; retain their
+      // existing all-label behavior when restoring them.
+      show_all_labels: value.show_all_labels !== false,
     },
   };
 }

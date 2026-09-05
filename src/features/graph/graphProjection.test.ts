@@ -96,6 +96,7 @@ describe("buildAgentGraph", () => {
       color: "var(--color-wardian-processing)",
       selected: true,
     });
+    expect(graph.scopeLabel).toBe("All agents");
   });
 
   it("uses live off-agent state before stale telemetry or saved config state", () => {
