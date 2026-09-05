@@ -23,8 +23,8 @@ do not duplicate the policy in those files.
    base reproduction before recording a limitation; never report an unrun
    check as passing.
 3. Use Wardian's `autoreview` workflow when it is available to obtain an
-   independent local-agent verdict; otherwise obtain that verdict through
-   Wardian-Reviewer. Address blocking findings and record the verdict and
+   independent local-agent verdict; otherwise obtain that verdict through a
+   reviewer agent. Address blocking findings and record the verdict and
    evidence. Review ends at zero blocking findings; track non-blocking
    follow-ups in a linked issue. If a structured reply is unavailable, inspect
    the reviewer's conversation log for the verdict rather than inferring
