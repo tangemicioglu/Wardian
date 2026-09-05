@@ -151,7 +151,12 @@ export function ListenersPanel() {
 
       {draft ? (
         <div className="wardian-dialog-overlay absolute inset-0 z-20 flex items-start justify-center overflow-auto p-8">
-          <div className="w-full max-w-lg rounded border border-wardian-border bg-[var(--color-wardian-card)] p-3">
+          <div
+            data-testid="listener-editor-dialog"
+            role="dialog"
+            aria-label="Listener editor"
+            className="w-full max-w-lg rounded border border-wardian-border bg-[var(--color-wardian-card)] p-3"
+          >
             <h4 className="mb-2 text-sm font-bold text-[var(--color-wardian-text)]">
               {draft.id ? 'Edit listener' : 'New listener'}
             </h4>
