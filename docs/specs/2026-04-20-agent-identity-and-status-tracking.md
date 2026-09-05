@@ -13,9 +13,14 @@ Wardian currently manages Agent Identity (`session_name`) and Agent Status (`cur
 The UUID (`session_id`) remains the internal primary key and folder identifier (`~/.wardian/agents/<uuid>`). The `session_name` becomes a **globally unique CLI-friendly alias**.
 
 ### 2.1. Naming Constraints
--   **Regex:** `^[a-zA-Z0-9_-]+$` (No whitespace, no special characters).
--   **Uniqueness:** The Rust backend enforces uniqueness upon creation and mutation.
--   **Auto-Generation:** Collisions result in unique suffixes (e.g., `coder-a1b2`).
+-   **Character set:** Names are 1–64 characters, start with a letter or number,
+    and contain only letters, numbers, underscores, or hyphens.
+-   **Reserved forms:** `all`, leading-hyphen names, and UUID-shaped names are
+    rejected so names remain addressable by the CLI.
+-   **Uniqueness:** The Rust backend checks both live and persisted agent names
+    before reserving a name for creation or mutation.
+-   **Auto-Generation:** Blank names use class-based phonetic suffixes (for
+    example, `Coder-alpha` and `Coder-bravo`) and skip persisted collisions.
 
 ### 2.2. Folder Stability
 -   Folder paths remain tied to UUIDs. Renaming an agent is a metadata-only change, ensuring no broken paths or file locks.

@@ -15,6 +15,7 @@ This page documents the current command surface registered in `src-tauri/src/lib
 ## Agents (`commands/agent.rs`)
 
 - `spawn_agent`
+- `get_generated_agent_name`
 - `list_agents`
 - `list_agent_metrics`
 - `kill_agent` (internal compatibility alias for forced agent deletion)

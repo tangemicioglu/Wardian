@@ -20,20 +20,14 @@ interface Props {
 
 export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) => {
   const defaultProvider = useSettingsStore((state) => state.default_provider);
+  const defaultWorkspace = useSettingsStore((state) => state.default_workspace);
+  const shellSettingsLoaded = useSettingsStore((state) => state.shell_settings_loaded);
+  const loadShellSettings = useSettingsStore((state) => state.loadShellSettings);
   const [newSessionName, setNewSessionName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [newAgentClass, setNewAgentClass] = useState("Generalist");
-
-  const validateName = (name: string) => {
-    if (!name.trim()) return null;
-    const re = /^[a-zA-Z0-9_-]+$/;
-    if (!re.test(name)) {
-      return "Names must be alphanumeric, underscores, or hyphens (no spaces).";
-    }
-    return null;
-  };
-
-  const [newFolder, setNewFolder] = useState("");
+  const [generatedName, setGeneratedName] = useState("");
+  const [newFolder, setNewFolder] = useState(defaultWorkspace);
   const [resumeSession, setResumeSession] = useState("");
   const initialProviderConfig: Partial<AgentConfig> = {
     provider: "claude",
@@ -45,6 +39,42 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
   const [providerTouched, setProviderTouched] = useState(false);
   const [isSpawning, setIsSpawning] = useState(false);
   const [folderIsValid, setFolderIsValid] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!shellSettingsLoaded) {
+      void loadShellSettings();
+    }
+  }, [loadShellSettings, shellSettingsLoaded]);
+
+  useEffect(() => {
+    if (defaultWorkspace.trim()) {
+      setNewFolder((current) => current.trim() ? current : defaultWorkspace);
+    }
+  }, [defaultWorkspace]);
+
+  useEffect(() => {
+    if (agentClasses.length === 0 || agentClasses.some((agentClass) => agentClass.name === newAgentClass)) {
+      return;
+    }
+    const fallbackClass = agentClasses.find((agentClass) => agentClass.is_default) ?? agentClasses[0];
+    setNewAgentClass(fallbackClass.name);
+  }, [agentClasses, newAgentClass]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGeneratedName("");
+    invoke<string>("get_generated_agent_name", { agentClass: newAgentClass })
+      .then((name) => {
+        if (!cancelled) setGeneratedName(name);
+      })
+      .catch((error) => {
+        console.error("Failed to generate agent name:", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [newAgentClass]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,20 +143,16 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
 
   const spawnAgent = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const err = validateName(newSessionName);
-    if (err) {
-      setNameError(err);
-      return;
-    }
     if (!selectedProviderAvailable) {
       setProviderNote("Choose an installed provider before spawning an agent.");
       return;
     }
+    setNameError(null);
     setIsSpawning(true);
     try {
       const spawnedAgent = await invoke<AgentConfig>("spawn_agent", {
         req: {
-          sessionName: newSessionName,
+          sessionName: newSessionName || generatedName,
           agentClass: newAgentClass,
           folder: newFolder,
           resumeSession: resumeSession || null,
@@ -149,6 +175,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
       onSpawned(spawnedAgent);
     } catch (error) {
       console.error("Failed to spawn agent:", error);
+      setNameError(String(error));
       alert(`Failed to spawn agent: ${error}`);
     } finally {
       setIsSpawning(false);
@@ -197,11 +224,11 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
             data-testid="spawn-agent-name"
             data-tour-target="spawn-agent-name"
             className={`w-full bg-[var(--color-wardian-input-bg)] border ${nameError ? 'border-wardian-error' : 'border-wardian-light'} rounded px-3 py-2 text-sm text-primary focus:outline-none focus:border-[var(--color-wardian-accent)] transition-colors`}
-            placeholder="e.g. coder-alpha"
+            placeholder={generatedName || "Loading generated name..."}
             value={newSessionName}
             onChange={(e) => {
               setNewSessionName(e.currentTarget.value);
-              setNameError(validateName(e.currentTarget.value));
+              setNameError(null);
             }}
           />
           {nameError && (
@@ -344,7 +371,7 @@ export const SpawnAgentPanel: React.FC<Props> = ({ agentClasses, onSpawned }) =>
           data-testid="spawn-submit"
           data-tour-target="spawn-submit"
           type="submit"
-          disabled={isSpawning || !selectedProviderAvailable || !isUserFacingProviderName(spawnAdvancedConfig.provider)}
+          disabled={isSpawning || !newFolder.trim() || !selectedProviderAvailable || !isUserFacingProviderName(spawnAdvancedConfig.provider)}
           className="w-full mt-2 bg-wardian-success/80 hover:bg-wardian-success/60 disabled:bg-wardian-off/30 disabled:cursor-not-allowed text-[var(--color-wardian-bg)] py-2.5 rounded-lg font-bold text-xs tracking-wide transition-all flex items-center justify-center gap-2 shadow-lg shadow-wardian-success/10"
         >
           {isSpawning ? (

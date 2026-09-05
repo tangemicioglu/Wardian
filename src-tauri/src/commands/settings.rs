@@ -868,6 +868,44 @@ mod settings_path_tests {
     }
 
     #[test]
+    fn save_shell_settings_document_persists_workspace_from_resolved_settings() {
+        let _guard = crate::utils::wardian_test_env_lock();
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        std::env::set_var("WARDIAN_HOME", temp_dir.path());
+        let selected_workspace = temp_dir
+            .path()
+            .join("selected-workspace")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+
+        runtime.block_on(async {
+            let settings = ShellSettings {
+                default_workspace: selected_workspace.clone(),
+                ..Default::default()
+            };
+            let saved = save_shell_settings_for_state(
+                &AppState::new(),
+                ShellSettingsDocument {
+                    schema_version: 2,
+                    settings,
+                    overrides: ShellSettingsOverrides::default(),
+                },
+            )
+            .await
+            .expect("save settings");
+
+            assert_eq!(saved.settings.default_workspace, selected_workspace);
+            let loaded = crate::utils::load_shell_settings_document().expect("load settings");
+            assert_eq!(
+                loaded.overrides.default_workspace.as_deref(),
+                Some(selected_workspace.as_str())
+            );
+            assert_eq!(loaded.settings.default_workspace, selected_workspace);
+        });
+    }
+
+    #[test]
     fn save_shell_settings_disabled_cuts_off_default_agent_provider_source() {
         let _guard = crate::utils::wardian_test_env_lock();
         let temp_dir = tempfile::tempdir().expect("temp dir");

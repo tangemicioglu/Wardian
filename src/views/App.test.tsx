@@ -280,6 +280,8 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
       }
       case "list_provider_readiness":
         return allProvidersReady;
+      case "get_generated_agent_name":
+        return `${args?.agentClass ?? "Generalist"}-alpha`;
       case "spawn_agent": {
         const agent: AgentConfig = {
           session_id: "spawned-agent",
@@ -332,6 +334,7 @@ function setupDefaultMocks(agents: AgentConfig[] = [], classes: AgentClassDefini
           custom_args: null,
           agent_session_persistence: "resume",
           default_provider: "auto",
+          default_workspace: "C:/projects/wardian",
           codex_runtime_policy: {
             sandbox_mode: "workspace-write",
             approval_policy: "on-request",
@@ -2954,7 +2957,7 @@ describe("Spawn Form", () => {
     setupDefaultMocks([], defaultClasses);
     render(<App />);
     await screen.findByText("No Active Instances");
-    expect(screen.getByPlaceholderText("e.g. coder-alpha")).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("Coder-alpha")).toBeInTheDocument();
   });
 
   it("renders workspace path placeholder", async () => {

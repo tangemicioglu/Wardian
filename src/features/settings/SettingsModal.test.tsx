@@ -63,6 +63,7 @@ describe("SettingsModal", () => {
       agent_session_persistence: "resume",
       conversation_logging: "enabled",
       default_provider: "auto",
+      default_workspace: "C:/workspace",
       codex_runtime_policy: {
         sandbox_mode: "workspace-write",
         approval_policy: "on-request",
@@ -322,6 +323,27 @@ describe("SettingsModal", () => {
           schema_version: 2,
           overrides: expect.objectContaining({
             default_provider: "codex",
+          }),
+        }),
+      });
+    });
+  });
+
+  it("shows and saves the default workspace used by new agents", async () => {
+    render(<SettingsModal isOpen onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent Runtime" }));
+    const workspace = screen.getByLabelText("Default workspace");
+    expect(workspace).toHaveValue("C:/workspace");
+
+    fireEvent.change(workspace, { target: { value: "C:/projects/wardian" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Agent Runtime" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("save_shell_settings", {
+        settings: expect.objectContaining({
+          overrides: expect.objectContaining({
+            default_workspace: "C:/projects/wardian",
           }),
         }),
       });
