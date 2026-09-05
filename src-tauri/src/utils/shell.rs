@@ -139,9 +139,7 @@ fn default_default_provider() -> String {
 }
 
 fn default_default_workspace() -> String {
-    std::env::current_dir()
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| ".".to_string())
+    String::new()
 }
 
 fn default_conversation_logging() -> ConversationLoggingSetting {
@@ -293,9 +291,9 @@ fn save_shell_settings_to_path(
     let normalized = normalize_settings(settings.clone());
     validate_shell_settings(&normalized, &list_available_shells())?;
     let mut overrides = shell_overrides_from_settings(&normalized, &ShellSettings::default());
-    // The workspace default is environment-dependent. Keep an explicit value
-    // even when it happens to equal this process's CWD, so a later launch from
-    // another directory cannot silently replace a user's selection.
+    // Keep an explicit value, including an intentional empty value, so a later
+    // launch cannot silently replace the user's selection with an environment
+    // dependent workspace.
     overrides.default_workspace = Some(normalized.default_workspace.clone());
     let document = ShellSettingsDocument {
         schema_version: 2,
@@ -315,10 +313,9 @@ fn save_shell_settings_document_to_path(
 
     let mut normalized_overrides = normalize_shell_overrides(document.overrides.clone());
     if normalized_overrides.default_workspace.is_none() {
-        // The resolved settings are the caller's launch-time snapshot. A
-        // workspace equal to this process's CWD is still an explicit value
-        // from the Settings UI and must not become an environment-dependent
-        // omission in the persisted document.
+        // Preserve the caller's launch-time snapshot, including an intentional
+        // empty value, instead of allowing a missing override to change with
+        // the environment.
         normalized_overrides.default_workspace = Some(normalize_default_workspace(
             &document.settings.default_workspace,
         ));
@@ -624,9 +621,6 @@ fn validate_shell_settings(
     }
     if !DEFAULT_PROVIDER_VALUES.contains(&settings.default_provider.as_str()) {
         return Err("Invalid default provider".to_string());
-    }
-    if settings.default_workspace.trim().is_empty() {
-        return Err("Default workspace cannot be empty".to_string());
     }
     Ok(())
 }
@@ -1428,9 +1422,9 @@ mod tests {
     }
 
     #[test]
-    fn shell_settings_default_workspace_is_non_empty_and_round_trips_as_an_override() {
+    fn shell_settings_default_workspace_is_empty_and_round_trips_as_an_override() {
         let defaults = ShellSettings::default();
-        assert!(!defaults.default_workspace.trim().is_empty());
+        assert!(defaults.default_workspace.trim().is_empty());
 
         let temp_dir = tempdir().expect("temp dir");
         let path = temp_dir.path().join("shell_settings.json");
@@ -1447,12 +1441,10 @@ mod tests {
     }
 
     #[test]
-    fn shell_settings_persist_workspace_when_it_matches_the_current_directory_default() {
+    fn shell_settings_persist_empty_default_and_explicit_workspace() {
         let temp_dir = tempdir().expect("temp dir");
         let path = temp_dir.path().join("shell_settings.json");
         let mut settings = ShellSettings::default();
-        let selected_workspace = settings.default_workspace.clone();
-
         save_shell_settings_to_path(&path, &settings).expect("save settings");
         let document = std::fs::read_to_string(&path).expect("read settings");
         let persisted: PersistedShellSettings =
@@ -1460,7 +1452,7 @@ mod tests {
 
         assert_eq!(
             persisted.overrides.default_workspace.as_deref(),
-            Some(selected_workspace.as_str())
+            Some("")
         );
 
         settings.default_workspace = "C:/projects/wardian".to_string();
