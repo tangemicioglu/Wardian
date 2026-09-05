@@ -10,7 +10,7 @@ Run CLI agents across all your workspaces, keep their sessions and evidence
 visible, and turn successful work into reusable prompts, skills, classes,
 automations, and project context.
 
-[![tests](https://github.com/wardian-app/Wardian/actions/automations/ci.yml/badge.svg)](https://github.com/wardian-app/Wardian/actions/automations/ci.yml)
+[![tests](https://github.com/wardian-app/Wardian/actions/workflows/ci.yml/badge.svg)](https://github.com/wardian-app/Wardian/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/wardian-app/Wardian/branch/main/graph/badge.svg)](https://codecov.io/gh/wardian-app/Wardian)
 [![Release](https://img.shields.io/github/v/release/wardian-app/Wardian?label=release)](https://github.com/wardian-app/Wardian/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/wardian-app/Wardian/total?label=downloads)](https://github.com/wardian-app/Wardian/releases)
