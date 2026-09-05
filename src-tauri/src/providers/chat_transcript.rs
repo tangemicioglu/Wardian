@@ -352,6 +352,11 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
         if let Some(user_request) = extract_tag_block(trimmed, "USER_REQUEST") {
             visible = user_request;
         }
+        // Codex records an image or file prompt twice: once as a provider
+        // response item with this inline transport marker and once as the
+        // canonical event_msg/user_message. Remove the marker before the
+        // shared merge boundary compares the two visible prompts.
+        visible = remove_attachment_transport_markers(&visible);
         visible = visible
             .lines()
             .filter(|line| !is_internal_wardian_probe_line(line))
@@ -365,6 +370,37 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
     }
 
     Some(visible.to_string())
+}
+
+fn remove_attachment_transport_markers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut remainder = text;
+
+    loop {
+        let Some(start) = ["<image ", "<file "]
+            .into_iter()
+            .filter_map(|tag| remainder.find(tag))
+            .min()
+        else {
+            output.push_str(remainder);
+            break;
+        };
+
+        output.push_str(&remainder[..start]);
+        let Some(end_offset) = remainder[start..].find('>') else {
+            output.push_str(&remainder[start..]);
+            break;
+        };
+        let end = start + end_offset + 1;
+        let marker = &remainder[start..end];
+        let marker_lower = marker.to_ascii_lowercase();
+        if !marker_lower.contains(" name=") || !marker_lower.contains(" path=") {
+            output.push_str(marker);
+        }
+        remainder = remainder[end..].trim_start_matches([' ', '\t']);
+    }
+
+    output
 }
 
 fn is_internal_wardian_probe_line(line: &str) -> bool {
@@ -2317,6 +2353,22 @@ mod tests {
             r#"{"type":"response_item","payload":{"type":"message","role":"user","content":"Actual prompt\n<environment_context>\n{\"cwd\":\"D:\\Development\\Wardian\"}\n</environment_context>"}}"#,
         );
         assert_eq!(codex_user.text.as_deref(), Some("Actual prompt"));
+    }
+
+    #[test]
+    fn user_attachment_transport_markers_are_removed_from_visible_messages() {
+        let text = r#"<image name=[Image #1] path="C:\Temp\codex-clipboard.png"> Review this screenshot. [Image #1]"#;
+        assert_eq!(
+            visible_chat_text(&AgentChatRole::User, text).as_deref(),
+            Some("Review this screenshot. [Image #1]")
+        );
+
+        let text =
+            r#"Please inspect this file. <file name=[File #1] path="C:\Temp\notes.txt"> [File #1]"#;
+        assert_eq!(
+            visible_chat_text(&AgentChatRole::User, text).as_deref(),
+            Some("Please inspect this file. [File #1]")
+        );
     }
 
     #[test]

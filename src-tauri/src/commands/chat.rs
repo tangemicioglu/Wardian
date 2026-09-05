@@ -1908,6 +1908,26 @@ Do you want to proceed?
     }
 
     #[test]
+    fn merge_deduplicates_codex_image_prompt_transport_marker() {
+        let provider_events = normalize_chat_lines(
+            "agent-1",
+            "codex",
+            [
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":"<image name=[Image #1] path=\"C:\\Temp\\codex-clipboard.png\"> This is what I see? [Image #1]"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"This is what I see? [Image #1]"}}"#,
+            ],
+        );
+
+        let chat_events = merge_chat_events(Vec::new(), provider_events);
+
+        assert_eq!(chat_events.len(), 1);
+        assert_eq!(
+            chat_events[0].text.as_deref(),
+            Some("This is what I see? [Image #1]")
+        );
+    }
+
+    #[test]
     fn merge_deduplicates_same_message_text_across_distinct_turn_ids() {
         let first = AgentChatEvent {
             id: "agent-1:provider:1".to_string(),
