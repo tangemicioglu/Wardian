@@ -30,6 +30,7 @@ pub mod maintenance;
 pub mod matrix;
 pub mod models;
 pub mod query;
+pub mod recovery;
 pub mod rollup;
 pub mod schema;
 pub mod sources;
@@ -48,6 +49,9 @@ pub use models::{
     ActiveTime, ActivityMethod, BreakdownRow, Cursor, CursorKind, EditFact, EditOp, IntervalFact,
     LimitObservation, ParsedFacts, RollupRow, SourceCarry, SourceKind, TelemetrySummary,
     TokenCounts, TurnFact,
+};
+pub use recovery::{
+    inspect_attribution, repair_attribution, AttributionRepairReport, AttributionStatus,
 };
 pub use schema::{run_telemetry_migrations, TELEMETRY_SCHEMA_VERSION};
 pub use sources::{is_supported, source_for, SourceContext, SourceError, TelemetrySource};

@@ -178,7 +178,10 @@ fn has_expired_raw_telemetry_at(
     .map(|value| value != 0)
 }
 
-fn create_verified_backup(conn: &Connection, backup_path: &Path) -> rusqlite::Result<()> {
+pub(crate) fn create_verified_backup(
+    conn: &Connection,
+    backup_path: &Path,
+) -> rusqlite::Result<()> {
     if backup_path.exists() {
         return verify_backup(backup_path);
     }

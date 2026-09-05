@@ -10,7 +10,7 @@
 
 use crate::telemetry::activity::interval_duration_ms;
 use crate::telemetry::models::{ActivityMethod, IntervalFact};
-use crate::telemetry::store::DirtyBuckets;
+use crate::telemetry::store::{mark_dirty, mark_dirty_span, DirtyBuckets};
 use rusqlite::{params, Connection};
 
 /// Recompute every dirty `(bucket, session)` pair.
@@ -24,6 +24,53 @@ pub(crate) fn recompute_buckets(conn: &Connection, dirty: &DirtyBuckets) -> rusq
         recompute_one(conn, bucket_start, session_id)?;
     }
     Ok(())
+}
+
+/// Rebuild every rollup bucket touched by either the existing derived rows or
+/// the current canonical facts.
+///
+/// Attribution repair cannot know which individual buckets were made stale by
+/// old writes, so it deliberately reconstructs the complete dirty set from
+/// facts and rollups. The operation remains bounded by the stored history and
+/// is idempotent: every selected bucket is deleted and derived again.
+pub(crate) fn rebuild_all_rollups(conn: &Connection) -> rusqlite::Result<usize> {
+    let mut dirty = DirtyBuckets::new();
+
+    let mut rollups =
+        conn.prepare("SELECT bucket_start, session_id FROM telemetry_rollup_hourly")?;
+    for row in rollups.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
+        let (bucket, session): (String, String) = row?;
+        dirty.insert((bucket, session));
+    }
+
+    let mut turns = conn.prepare("SELECT session_id, ended_at FROM telemetry_turns")?;
+    for row in turns.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
+        let (session, ended_at): (String, String) = row?;
+        mark_dirty(&mut dirty, &session, &ended_at);
+    }
+
+    let mut edits = conn.prepare("SELECT session_id, occurred_at FROM telemetry_edits")?;
+    for row in edits.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
+        let (session, occurred_at): (String, String) = row?;
+        mark_dirty(&mut dirty, &session, &occurred_at);
+    }
+
+    let mut activity =
+        conn.prepare("SELECT session_id, started_at, ended_at FROM telemetry_activity")?;
+    for row in activity.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (session, started_at, ended_at) = row?;
+        mark_dirty_span(&mut dirty, &session, &started_at, &ended_at);
+    }
+
+    let count = dirty.len();
+    recompute_buckets(conn, &dirty)?;
+    Ok(count)
 }
 
 fn recompute_one(conn: &Connection, bucket_start: &str, session_id: &str) -> rusqlite::Result<()> {

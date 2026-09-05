@@ -99,7 +99,7 @@ UTF-8. When a command accepts both input and assignments, use files for one or
 both; standard input can supply only one document. Invalid documents return
 `invalid_json` with a recovery hint before execution or configuration changes.
 
-## Telemetry Read Path
+## Telemetry Read and Recovery Paths
 
 Read telemetry without changing the app-owned source cursors:
 
@@ -121,13 +121,59 @@ sources retain event identities for safe overlap rereads. Wardian creates and
 verifies a backup under `<wardian-home>/backups/telemetry`, keeps the two newest
 automatic backups, recomputes affected hourly rollups, removes expired detail
 facts in bounded batches, and checkpoints the WAL. Rate-limit gauges are kept
-to one current observation per provider during ingest. The CLI remains
-read-only. The application associates a verified recovery baseline with each
+to one current observation per provider during ingest. Summary remains
+read-only; attribution recovery is the explicit mutating exception described
+below. The application associates a verified recovery baseline with each
 attempt before preparing the destructive phase. Retries before that phase use
 one stable pending backup path; retries after it starts reuse the pinned
 baseline, resume even if no expired raw row remains, and clean abandoned
 temporary files. A pending baseline is promoted into the two-file rotation
 only after successful completion.
+
+Cross-agent attribution repair is an explicit operator command. First inspect
+the selected database without writing or migrating it:
+
+```bash
+wardian telemetry repair --db <wardian-home>/state.db
+```
+
+PowerShell:
+
+```powershell
+wardian telemetry repair --db '<wardian-home>\state.db'
+```
+
+If the dry run reports foreign facts, stop Wardian, older Wardian binaries,
+and other writers for that home. Then apply the repair with an explicit backup:
+
+```bash
+wardian telemetry repair \
+  --db <wardian-home>/state.db \
+  --backup <wardian-home>/backups/telemetry/attribution-repair.db \
+  --apply
+```
+
+PowerShell:
+
+```powershell
+wardian telemetry repair `
+  --db '<wardian-home>\state.db' `
+  --backup '<wardian-home>\backups\telemetry\attribution-repair.db' `
+  --apply
+```
+
+The command creates the backup with SQLite `VACUUM INTO`, verifies its
+integrity, and atomically renames it into place before changing telemetry
+schema or facts. An existing backup is verified and reused, never overwritten;
+an interrupted temporary file has a `.tmp` suffix and is removed before a
+retry. The repair reattributes only facts whose source owner disagrees with
+the stored session, removes colliding duplicate activity spans, rebuilds
+affected dashboard rollups, and verifies that no foreign or source-less facts
+remain. A second invocation is a no-op for already repaired facts.
+
+The operator must keep the app and all older/offline state writers stopped until
+the command reports success, then restart Wardian so its ingest coordinator
+observes the repaired source ownership.
 
 On startup, a v4-to-v5 schema migration first switches a file-backed database
 from WAL to SQLite's rollback journal and then holds exclusive locking mode

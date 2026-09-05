@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tauri::Manager;
-use wardian_core::telemetry::identity::canonical_path;
+use wardian_core::telemetry::identity::{canonical_path, source_key};
 use wardian_core::telemetry::ingest::{ingest_source, IngestError};
 use wardian_core::telemetry::sources::opencode::sessions_in_directory;
 use wardian_core::telemetry::sources::{is_supported, uses_archive, SourceContext, SourceError};
@@ -297,7 +297,7 @@ impl MachineCatalog {
                     if !shared_paths.contains(&physical) {
                         return true;
                     }
-                    transcript_session_id(path).is_none_or(|id| known.contains(&id))
+                    transcript_session_id(path).is_some_and(|id| known.contains(&id))
                 }));
             }
         }
@@ -514,10 +514,16 @@ pub fn discover_sources_with(
     catalog: &dyn SessionCatalog,
 ) -> Vec<DiscoveredSource> {
     let mut sources = Vec::new();
-    // The opencode database is shared by every opencode agent, and one rollout
-    // can be reachable both through an agent's projected home and through its
-    // recorded session ids. Dedupe on the triple the store keys a source by.
-    let mut seen = HashSet::new();
+    // A Codex/Claude file is one physical source even when several projected
+    // agent homes expose it. The core store intentionally keys those sources
+    // by provider and physical path, so discovery must use the same identity or
+    // each claimant will rewrite the source owner and its facts.
+    //
+    // The opencode database is different: it is shared by every opencode agent,
+    // but the provider session ids are part of the source's read context, so
+    // its key remains agent-scoped.
+    let mut seen: HashMap<String, DiscoveredSource> = HashMap::new();
+    let mut ambiguous = HashSet::new();
 
     // Opencode sessions are assigned to exactly one agent. A session's rows are
     // stored under whichever agent's source read them, so letting two agents in
@@ -574,25 +580,41 @@ pub fn discover_sources_with(
 
         for (path, provider_session_ids) in resolved {
             let path = canonical_path(&path);
-            let key = (
-                agent.session_id.clone(),
-                agent.provider.clone(),
-                path.clone(),
-            );
-            if !seen.insert(key) {
+            let provider_session_ids = if matches!(agent.provider.as_str(), "codex" | "claude") {
+                transcript_session_id(&path).into_iter().collect::<Vec<_>>()
+            } else {
+                provider_session_ids
+            };
+            let key = source_key(&agent.provider, &agent.session_id, &path.to_string_lossy());
+            if ambiguous.contains(&key) {
                 continue;
             }
             let modified_ms = modified_epoch_ms(&path);
-            sources.push(DiscoveredSource {
+            let candidate = DiscoveredSource {
                 session_id: agent.session_id.clone(),
                 provider: agent.provider.clone(),
                 provider_session_ids,
                 path,
                 modified_ms,
-            });
+            };
+            if let Some(previous) = seen.get(&key) {
+                if previous.session_id != candidate.session_id
+                    && matches!(candidate.provider.as_str(), "codex" | "claude")
+                {
+                    // The same physical transcript has been claimed by two
+                    // agents. The catalog failed to prove a unique recorded
+                    // provider-session owner, so drop both claims rather than
+                    // letting roster order decide who receives the history.
+                    seen.remove(&key);
+                    ambiguous.insert(key);
+                }
+                continue;
+            }
+            seen.insert(key, candidate);
         }
     }
 
+    sources.extend(seen.into_values());
     sort_sources(&mut sources);
     sources
 }
@@ -783,7 +805,10 @@ pub fn failure_is_noteworthy(error: &SourceError) -> bool {
 fn is_reportable(error: &IngestError) -> bool {
     match error {
         IngestError::Source(source) => failure_is_noteworthy(source),
-        IngestError::UnsupportedProvider(_) | IngestError::Store(_) => true,
+        IngestError::UnsupportedProvider(_)
+        | IngestError::SourceOwnership { .. }
+        | IngestError::InvalidFacts(_)
+        | IngestError::Store(_) => true,
     }
 }
 
@@ -1225,6 +1250,51 @@ mod tests {
         assert_eq!(
             discover_sources_with(&agents, &StubCatalog::default()).len(),
             1
+        );
+    }
+
+    /// A malformed/shared catalog can expose one physical rollout through two
+    /// projected homes. Discovery must use the same physical source identity
+    /// as the store, so it cannot schedule two ownership writes for that file.
+    struct SharedCodexCatalog;
+
+    impl SessionCatalog for SharedCodexCatalog {
+        fn codex_rollouts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            vec![PathBuf::from(
+                "rollout-2026-09-04T00-00-00-019fef5a-e0ef-7011-bc3d-06581a3dfaac.jsonl",
+            )]
+        }
+
+        fn claude_transcripts(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn pi_sessions(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn archive_turn_files(&self, _agent: &AgentDescriptor) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn opencode_sessions(&self, _agent: &AgentDescriptor) -> Vec<String> {
+            Vec::new()
+        }
+        fn opencode_sessions_in_workspace(&self, _agent: &AgentDescriptor) -> Vec<String> {
+            Vec::new()
+        }
+        fn opencode_database(&self) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_shared_codex_rollout_is_discovered_once_with_its_file_identity() {
+        let agents = vec![
+            agent("agent-a", "codex", None),
+            agent("agent-b", "codex", None),
+        ];
+        let sources = discover_sources_with(&agents, &SharedCodexCatalog);
+        assert!(
+            sources.is_empty(),
+            "an ambiguous shared transcript must not be assigned by roster order"
         );
     }
 

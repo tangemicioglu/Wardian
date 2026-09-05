@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "wardian", version, about = "Wardian command-line interface")]
@@ -679,6 +680,18 @@ pub enum TelemetryCommand {
         /// provider, agent, or model.
         #[arg(long, default_value = "provider")]
         dimension: String,
+    },
+    /// Repair facts attributed to an agent other than their source owner.
+    Repair {
+        /// Explicit state database to inspect or repair.
+        #[arg(long, value_name = "PATH")]
+        db: PathBuf,
+        /// Backup destination required with --apply.
+        #[arg(long, value_name = "PATH", requires = "apply")]
+        backup: Option<PathBuf>,
+        /// Create a verified backup and apply the idempotent repair.
+        #[arg(long)]
+        apply: bool,
     },
 }
 
@@ -1463,7 +1476,19 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_maintenance_is_not_a_cli_command() {
+    fn telemetry_repair_is_explicit_but_retention_is_not_a_cli_command() {
+        let cli =
+            Cli::try_parse_from(["wardian", "telemetry", "repair", "--db", "<state-db>"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Telemetry(TelemetryArgs {
+                command: TelemetryCommand::Repair {
+                    apply: false,
+                    backup: None,
+                    ..
+                }
+            })
+        ));
         assert!(Cli::try_parse_from([
             "wardian",
             "telemetry",
