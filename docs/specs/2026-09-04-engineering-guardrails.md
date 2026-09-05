@@ -8,6 +8,14 @@ This follow-up starts from merged CLI audit commit `69d9ce54` on
 `refactor/engineering-guardrails`. Engineering fixes should leave executable
 prevention and task-local guidance, not additional AGENTS.md rules.
 
+At the user's explicit request, this PR also establishes a Wardian-only
+publication completion contract in AGENTS.md, with the procedure in
+[Pull Request Delivery](../developer/pull-requests.md). Implementation tasks
+authorize commit, push, and issue-linked PR delivery unless explicitly
+local-only. Zero-blocker review is by local agents; GitHub reviewer requests
+are prohibited. This scoped authority contract does not move the engineering
+practice catalog into AGENTS.md or change shared skills/class instructions.
+
 The bounded implementation addresses verification infrastructure that agents
 copy: Rust test synchronization, ambient provider-log inputs, and the local CI
 runner. It does not redesign production ingestion, IPC contracts, or lifecycle
