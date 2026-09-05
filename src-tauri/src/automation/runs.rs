@@ -781,32 +781,43 @@ pub fn prepare_new_scheduled_run_with_assignments(
         .map_err(|err| err.to_string())
 }
 
+/// Everything a listener-invoked run needs to initialize, grouped so the
+/// signature stays readable rather than growing another positional argument
+/// each time an invoker family gains a field.
+pub struct ListenerRunSetup<'a> {
+    pub blueprint: &'a Blueprint,
+    pub run_id: &'a str,
+    pub run_root: &'a Path,
+    pub workspace: &'a Path,
+    pub default_provider: &'a str,
+    pub bindings: &'a HashMap<String, String>,
+    pub assignments: &'a AutomationAssignments,
+    pub listener_id: &'a str,
+}
+
 /// Initialize a listener-invoked run, recording which listener fired it so the
 /// monitor can collapse a busy listener's runs the way it collapses a
 /// schedule's.
-#[allow(clippy::too_many_arguments)]
 pub fn prepare_new_listener_run(
-    blueprint: &Blueprint,
-    run_id: &str,
-    run_root: &Path,
-    workspace: &Path,
-    default_provider: &str,
-    bindings: &HashMap<String, String>,
-    assignments: &AutomationAssignments,
-    listener_id: &str,
+    setup: ListenerRunSetup<'_>,
     input: Value,
 ) -> Result<wardian_core::engine::RunState, String> {
     write_run_invocation_with_authority(
-        run_root,
-        default_provider,
-        workspace,
-        bindings,
-        assignments,
-        InvokerAttribution::listener(listener_id),
+        setup.run_root,
+        setup.default_provider,
+        setup.workspace,
+        setup.bindings,
+        setup.assignments,
+        InvokerAttribution::listener(setup.listener_id),
         None,
     )?;
-    Engine::initialize_with_id(blueprint, run_id.to_string(), input, run_root)
-        .map_err(|err| err.to_string())
+    Engine::initialize_with_id(
+        setup.blueprint,
+        setup.run_id.to_string(),
+        input,
+        setup.run_root,
+    )
+    .map_err(|err| err.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]

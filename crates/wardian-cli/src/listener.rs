@@ -6,6 +6,10 @@
 //! do, so the two surfaces cannot drift into accepting different configs.
 
 use crate::args::{AutomationListenerCommand, ListenerCommonArgs};
+use crate::automation_invoker::{
+    parse_automation_bindings, parse_automation_exec_input, validate_schedule_blueprint,
+    validate_schedule_provider,
+};
 use crate::errors::{CliError, ExitCode};
 use crate::json_input;
 use crate::render_json;
@@ -78,19 +82,15 @@ struct CommonContext {
     enabled: bool,
 }
 
-fn resolve_common(
-    common: &ListenerCommonArgs,
-    parse_input: impl Fn(Option<&str>) -> Result<serde_json::Value, CliError>,
-    parse_bindings: impl Fn(&[String]) -> Result<std::collections::HashMap<String, String>, CliError>,
-) -> Result<CommonContext, CliError> {
-    let input = parse_input(common.input.as_deref())?;
+fn resolve_common(common: &ListenerCommonArgs) -> Result<CommonContext, CliError> {
+    let input = parse_automation_exec_input(common.input.as_deref())?;
     let mut assignments: AutomationAssignments = common
         .assignments
         .as_deref()
         .map(|raw| json_input::parse(raw, "--assignments"))
         .transpose()?
         .unwrap_or_default();
-    let legacy = parse_bindings(&common.bind)?;
+    let legacy = parse_automation_bindings(&common.bind)?;
     assignments = wardian_core::automation::assignment::normalize_assignments(
         Some(assignments),
         &legacy,
@@ -198,13 +198,7 @@ fn mutate_one(
     result.ok_or_else(|| not_found(id))
 }
 
-pub fn render(
-    command: AutomationListenerCommand,
-    parse_input: impl Fn(Option<&str>) -> Result<serde_json::Value, CliError>,
-    parse_bindings: impl Fn(&[String]) -> Result<std::collections::HashMap<String, String>, CliError>,
-    validate_blueprint: impl Fn(&str) -> Result<(), CliError>,
-    validate_provider: impl Fn(Option<&str>) -> Result<(), CliError>,
-) -> Result<String, CliError> {
+pub fn render(command: AutomationListenerCommand) -> Result<String, CliError> {
     use AutomationListenerCommand as C;
 
     match command {
@@ -231,9 +225,9 @@ pub fn render(
             debounce_ms,
             common,
         } => {
-            validate_blueprint(&blueprint)?;
-            validate_provider(common.provider.as_deref())?;
-            let context = resolve_common(&common, parse_input, parse_bindings)?;
+            validate_schedule_blueprint(&blueprint)?;
+            validate_schedule_provider(common.provider.as_deref())?;
+            let context = resolve_common(&common)?;
             let trigger = ListenerTrigger::FileWatch(FileWatchTrigger {
                 path,
                 recursive,
@@ -256,8 +250,8 @@ pub fn render(
             max_body_bytes,
             common,
         } => {
-            validate_blueprint(&blueprint)?;
-            validate_provider(common.provider.as_deref())?;
+            validate_schedule_blueprint(&blueprint)?;
+            validate_schedule_provider(common.provider.as_deref())?;
             let auth = match auth.to_ascii_lowercase().as_str() {
                 "token" => WebhookAuth::Token,
                 "hmac" | "hmac_sha256" | "hmac-sha256" => WebhookAuth::HmacSha256,
@@ -267,7 +261,7 @@ pub fn render(
                     )))
                 }
             };
-            let context = resolve_common(&common, parse_input, parse_bindings)?;
+            let context = resolve_common(&common)?;
             let trigger = ListenerTrigger::Webhook(WebhookTrigger {
                 path_segment: path,
                 auth,
@@ -308,8 +302,8 @@ pub fn render(
             max_body_bytes,
             common,
         } => {
-            validate_blueprint(&blueprint)?;
-            validate_provider(common.provider.as_deref())?;
+            validate_schedule_blueprint(&blueprint)?;
+            validate_schedule_provider(common.provider.as_deref())?;
             let method = match method.to_ascii_lowercase().as_str() {
                 "get" => PollMethod::Get,
                 "head" => PollMethod::Head,
@@ -330,7 +324,7 @@ pub fn render(
                     )))
                 }
             };
-            let context = resolve_common(&common, parse_input, parse_bindings)?;
+            let context = resolve_common(&common)?;
             let trigger = ListenerTrigger::WebPoll(WebPollTrigger {
                 url,
                 interval_seconds: interval.unwrap_or(300).max(MIN_POLL_INTERVAL_SECONDS),

@@ -332,14 +332,16 @@ async fn launch(
     .await;
 
     let run_state = match runs::prepare_new_listener_run(
-        &resolved.blueprint,
-        &resolved.run_id,
-        &resolved.run_root,
-        &resolved.workspace,
-        &resolved.provider,
-        &resolved.bindings,
-        &resolved.assignments,
-        &listener.id,
+        runs::ListenerRunSetup {
+            blueprint: &resolved.blueprint,
+            run_id: &resolved.run_id,
+            run_root: &resolved.run_root,
+            workspace: &resolved.workspace,
+            default_provider: &resolved.provider,
+            bindings: &resolved.bindings,
+            assignments: &resolved.assignments,
+            listener_id: &listener.id,
+        },
         resolved.input.clone(),
     ) {
         Ok(run_state) => run_state,
