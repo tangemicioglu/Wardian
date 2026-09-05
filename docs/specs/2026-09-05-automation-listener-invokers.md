@@ -1,6 +1,6 @@
 # Automation Listener Invokers (file, webhook, web poll)
 
-- **Status:** Proposed
+- **Status:** Implemented
 - **Date:** 2026-09-05
 - **Issues:** #22 (diverse trigger conditions), #60 (external webhook trigger)
 - **Builds on:** [Trigger / Invoker Foundation](./2026-05-30-workflow-invoker-foundation.md), [Schedule Invoker](./2026-05-30-workflow-schedule-invoker.md)
@@ -33,7 +33,10 @@ Two structural problems block simply adding three more families:
    independently do resolve-blueprint → validate → resolve provider/workspace →
    normalize assignments → build agent catalog → prepare run → drive run → emit
    Inbox update. That is ~120 lines duplicated twice. Three more copies makes
-   five, and a fix to one silently misses four.
+   five, and a fix to one silently misses four. This change stops the growth at
+   two by giving the three new variants one shared path; porting the two
+   existing families onto it is deliberately left as its own change (see
+   Consequences).
 2. **Family proliferation.** Each family currently costs a JSON file, a core
    module, an app module, a CLI subcommand tree, a Tauri command set, a Zustand
    store, and an editor. Three more families multiply a fixed cost by three for
@@ -59,7 +62,7 @@ crates/wardian-core/src/listeners/       (pure: no Tauri, no net, no watching)
         ^
 src-tauri/src/automation/listener/       (effects)
   mod.rs        supervisor: reconcile desired config -> live arming
-  launch.rs     the shared invoker launch path (session_close ported onto it)
+  launch.rs     the shared invoker launch path for all three variants
   file.rs       notify watcher, debounce accumulator, self-trigger containment
   poll.rs       reqwest polling on the scheduler tick cadence
   webhook.rs    axum listener server, auth, delivery -> run
@@ -91,7 +94,7 @@ pub struct AutomationListener {
     pub input: serde_json::Value,
     pub bindings: HashMap<String, String>,
     pub assignments: AutomationAssignments,
-    pub overlap: OverlapPolicy,           // skip | coalesce | parallel
+    pub overlap: Option<OverlapPolicy>,    // unset resolves per variant
     pub runtime: ListenerRuntime,         // app-owned, see below
 }
 
@@ -355,8 +358,9 @@ user's tunnel (`cloudflared`, `ngrok`, `tailscale funnel`), which the docs show.
 
 - **Positive**: one family absorbs three trigger types; a fourth is an enum
   variant rather than a seventh subsystem.
-- **Positive**: the shared launch path removes an existing duplication between
-  `schedule.rs` and `session_close.rs` instead of adding a third and fourth copy.
+- **Positive**: one shared launch path serves all three new variants, so the
+  duplication stops at two copies (`schedule.rs` and `session_close.rs`) instead
+  of growing to five.
 - **Positive**: poll is the variant that answers "tell me when they release a
   new version", which inbound webhooks structurally cannot do for a repository
   the user does not administer.
@@ -372,6 +376,12 @@ user's tunnel (`cloudflared`, `ngrok`, `tailscale funnel`), which the docs show.
   differently under restart.
 - **Negative**: `invocation.json` now carries two attribution fields where one
   generalized field would be cleaner, a debt paid for on-disk compatibility.
+- **Negative**: `schedule.rs` and `session_close.rs` are **not** ported onto the
+  shared launch path in this change. Only the deterministic-run claim is
+  extracted and shared. `session_close.rs` carries a memory-principal authority
+  boundary the listener path does not, and folding an authority boundary into a
+  shared path inside an already-large change is how authority bugs ship;
+  porting both belongs in its own reviewable change.
 
 ## Load-bearing assumption
 

@@ -24,6 +24,7 @@ The UI invokes these functions via `invoke("command_name", { args })`.
 - **`automation_approve`**: Grants or rejects a paused approval node.
 - **`automation_cancel`**: Requests cancellation for a live run.
 - **`schedule_*`**: Manages persisted schedule invokers for automation blueprints.
+- **`listener_*`**: Manages persisted listener invokers - file watch, inbound webhook, and web poll.
 
 Old automation system commands such as `run_automation`, `stop_all_triggers`,
 `pause_all_triggers`, and `resume_all_triggers` are compatibility history only.
@@ -273,6 +274,19 @@ Pushed in real-time as the Automation Engine executes nodes.
   "error": "..."
 }
 ```
+
+### `listeners-updated`
+
+Emitted whenever a listener's configuration or runtime state changes: a fire, a
+run completing, an arming result, or a refused delivery. Signals the UI to
+refresh via `listener_list`.
+
+Payload is empty; the UI re-reads rather than trusting a pushed delta.
+
+Note that the supervisor does **not** re-arm on this event. Arming is gated on a
+fingerprint of the listener *configuration* only, so the runtime write-back that
+follows every fire is invisible to it. Without that split, a listener would tear
+down and rebuild its own watcher each time it fired.
 
 ### `agents-updated`
 

@@ -586,6 +586,24 @@ Current automation commands:
 - `schedule_remove`
 - `schedule_run_now`
 
+## Automation listeners (`commands/listener.rs`)
+
+- `listener_list`
+- `listener_save`
+- `listener_delete`
+- `listener_set_enabled`
+- `listener_set_webhook_secret`
+- `listener_set_poll_headers`
+- `listener_gateway_config`
+- `listener_gateway_save`
+
+`listener_save` preserves the stored `runtime` block rather than taking it from
+the caller, so a UI round-trip cannot reset a poll fingerprint or clear an
+auto-disable reason as a side effect of renaming. `listener_set_enabled` with
+`enabled: true` clears `runtime.disabled_reason`, which is the only way back
+from the rate ceiling. `listener_set_webhook_secret` returns the secret once;
+nothing else ever reads it back.
+
 Old automation system command names such as `run_automation`, `list_automations`,
 `list_scheduled_runs`, and `create_scheduled_run` belong to the retired JSON
 automation system. Do not add new frontend behavior against those names.

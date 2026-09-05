@@ -65,24 +65,36 @@ User-visible timing rules:
 - `Daily` and `Weekly` wait for the next matching wall-clock time
 - `One-Time` runs once at the specified datetime and then disappears after completion
 
-## Future Event Invocations
+## Listener Invocations
 
-File watching and webhook-style launches are future invoker integrations. They
-must supply the same `input`, `bindings`, provider, and workspace boundary as a
-manual or scheduled invocation; they are not additional trigger node types.
+Use a listener when an external event should start the automation. Listeners are
+invokers, not blueprint nodes: the event source lives at the invoker boundary
+and supplies the same `input`, `bindings`, provider, and workspace contract a
+manual or scheduled invocation does.
 
-Planned behavior:
+Three kinds ship today:
 
-- an event produces a normal durable automation run with its event payload
+- **File change** - a matching file under a watched path was created, modified,
+  or removed.
+- **Inbound webhook** - an authenticated HTTP request arrived at `/hooks/<path>`.
+  Use this for a system you administer.
+- **Web poll** - a watched URL's response changed. Use this for a system you do
+  not administer, such as a release feed for a project you merely depend on.
+
+Behavior:
+
+- an event produces a normal durable automation run carrying its payload
 - listener lifecycle belongs to the invoker, not the blueprint graph
+- a burst of file events collapses into one run
+- a retried webhook delivery resolves to the run it already created
+- file and webhook events that occur while Wardian is closed are lost; only a
+  poll detects a change that happened during downtime
 
-Use listener triggers for:
-
-- file-change automation
-- event-driven automations that should keep watching for input
-
-Do not model an event source as a fake trigger node. Keep the event-source
+Do not model an event source as a trigger node. Keep the event-source
 implementation at the invoker boundary.
+
+See [Listeners](./listeners.md) for setup, payload fields, overlap policy, and
+diagnosis.
 
 ## Launch Surface Differences
 
@@ -96,10 +108,12 @@ The trigger type matters more than the button you clicked, but the surface still
 
 - want one run right now: use **Manual Trigger**
 - want repeated or delayed runs: create a **schedule** for the blueprint
-- want an event-driven run: use an event invoker when that integration is available
+- want a run when a file changes, a system posts to you, or a web resource
+  changes: create a **listener**
 
 ## Related References
 
 - [Scheduled Runs](./scheduled-runs.md)
+- [Listeners](./listeners.md)
 - [Agent Assignment](./agent-assignment.md)
 - [Automation Engine Architecture](../developer/automation-engine.md)

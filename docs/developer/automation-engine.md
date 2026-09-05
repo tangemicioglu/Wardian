@@ -47,6 +47,39 @@ by `schedule_create`, `schedule_update`, `schedule_list`, `schedule_pause`,
 schedules require an existing workspace; `schedule_update` changes a schedule
 in place and preserves its identity and execution history.
 
+Listeners are persisted invokers stored in `library/listeners.json` and managed
+by `listener_list`, `listener_save`, `listener_delete`, `listener_set_enabled`,
+`listener_set_webhook_secret`, `listener_set_poll_headers`,
+`listener_gateway_config`, and `listener_gateway_save`. One record holds a
+tagged `trigger` enum with three variants - `file_watch`, `webhook`, and
+`web_poll` - so a fourth event source costs a variant rather than another
+invoker family.
+
+Three properties of the listener design are load-bearing:
+
+- **Runtime state is separated from configuration.** Everything the app writes
+  lives under `runtime`; the user owns the rest. `enabled` therefore has exactly
+  one writer, and the rate ceiling records `runtime.disabled_reason` instead of
+  flipping it.
+- **Arming is gated on a configuration fingerprint.** Each fire writes `runtime`
+  back to the same file, so keying re-arm on file change alone would make a
+  listener disarm its own watcher by working.
+- **Run identity comes from the event.** A deterministic run id derived from
+  `(listener_id, event_identity)` plus a claim lock makes a retried webhook
+  delivery, a replayed file burst, and a repeated poll fingerprint resolve to
+  the run that already exists.
+
+Credentials live in `library/listener-secrets.json`, separate from the
+inspectable listener config. HMAC verification needs the raw secret, so the file
+split - not hashing - is what keeps `listeners.json` safe to print and render.
+
+Runs carry `listener_id` in `invocation.json` beside `schedule_id`. The two are
+additive rather than one generalized `invoker_id`, because renaming would
+invalidate every run directory already on disk.
+
+Design record: [Automation Listener Invokers](https://github.com/wardian-app/Wardian/blob/main/docs/specs/2026-09-05-automation-listener-invokers.md)
+(repository-internal; excluded from the public docs build).
+
 ### Registry
 
 During execution the engine keeps a registry of run data:
