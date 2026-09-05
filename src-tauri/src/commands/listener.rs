@@ -58,26 +58,30 @@ pub async fn listener_save(
         .ok_or_else(|| format!("automation blueprint not found: {}", listener.blueprint_id))?;
     listeners::validate_listener(&listener)?;
 
-    let existing = listeners::load_listeners();
-    if let ListenerTrigger::Webhook(trigger) = &listener.trigger {
-        webhook_rules::ensure_unique_path(&existing, &listener.id, &trigger.path_segment)?;
-    }
-    if let Some(previous) = existing.iter().find(|item| item.id == listener.id) {
-        listener.runtime = previous.runtime.clone();
-    }
-
-    let saved = listener.clone();
-    listeners::mutate_listeners(|stored| {
-        match stored.iter_mut().find(|item| item.id == saved.id) {
-            Some(existing) => *existing = saved.clone(),
-            None => stored.push(saved.clone()),
+    // The uniqueness check and the runtime carry-over both run inside the lock.
+    // Reading runtime outside it and writing the whole record back would lose
+    // any fire, arming result, or poll fingerprint that landed in between,
+    // silently resetting durable pacing and rate-ceiling state.
+    let candidate = listener.clone();
+    let saved = listeners::mutate_listeners(|stored| {
+        if let ListenerTrigger::Webhook(trigger) = &candidate.trigger {
+            webhook_rules::ensure_unique_path(stored, &candidate.id, &trigger.path_segment)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::AlreadyExists, error))?;
         }
-        Ok(())
+        let mut record = candidate.clone();
+        match stored.iter_mut().find(|item| item.id == record.id) {
+            Some(existing) => {
+                record.runtime = existing.runtime.clone();
+                *existing = record.clone();
+            }
+            None => stored.push(record.clone()),
+        }
+        Ok(record)
     })
     .map_err(|error| error.to_string())?;
 
     crate::automation::listener::reconcile(&app).await;
-    Ok(view(listener))
+    Ok(view(saved))
 }
 
 #[tauri::command]

@@ -41,12 +41,18 @@ pub enum FireOutcome {
     Started(String),
     /// The same event already has a run; a retry is not a second run.
     AlreadyClaimed,
-    /// `skip` overlap, with a run already active.
+    /// `skip` overlap, with a run already active. The event was deliberately
+    /// dropped by policy, not lost.
     Skipped,
-    /// `coalesce` overlap; this fire replaced any earlier pending one.
+    /// `coalesce` overlap; this fire replaced any earlier pending one. It is
+    /// held in memory only, so it is not durable.
     Coalesced,
     /// The rate ceiling tripped and the listener auto-disabled.
     RateLimited,
+    /// The fire could not become a run: an unresolvable blueprint, a claim that
+    /// could not be taken, or a run that could not be prepared. Kept distinct
+    /// from `Skipped` so a caller cannot report a failure as an accepted event.
+    Failed(String),
 }
 
 /// Deterministic run id for one listener event.
@@ -107,6 +113,28 @@ pub fn claim_deterministic_run(
 pub struct ListenerActivity {
     active: HashMap<String, usize>,
     pending: HashMap<String, ListenerFire>,
+}
+
+/// Holds one in-flight slot and releases it when dropped.
+///
+/// The release has to survive an aborted or panicking run task. Releasing only
+/// on the success path leaks the slot forever, which permanently wedges a
+/// `skip` listener and strands a `coalesce` listener's pending fire.
+pub struct SlotGuard {
+    app: AppHandle,
+    listener_id: String,
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        let app = self.app.clone();
+        let listener_id = std::mem::take(&mut self.listener_id);
+        // Drop cannot await, so the release runs as its own task. Unwinding
+        // from a panic and an abort-driven drop both reach here.
+        tauri::async_runtime::spawn(async move {
+            release(&app, &listener_id).await;
+        });
+    }
 }
 
 impl ListenerActivity {
@@ -225,13 +253,12 @@ pub async fn fire(app: AppHandle, listener: AutomationListener, fire: ListenerFi
         }
         activity.enter(&listener.id);
     }
+    let guard = SlotGuard {
+        app: app.clone(),
+        listener_id: listener.id.clone(),
+    };
 
-    let outcome = launch(&app, &listener, &fire).await;
-
-    // A fire that never became a run must not hold the slot.
-    if !matches!(outcome, FireOutcome::Started(_)) {
-        release(&app, &listener.id).await;
-    }
+    let outcome = launch(&app, &listener, &fire, guard).await;
     emit_listeners_updated(&app);
     outcome
 }
@@ -269,10 +296,13 @@ fn spawn_fire(app: AppHandle, listener: AutomationListener, pending: ListenerFir
     tauri::async_runtime::spawn(future);
 }
 
+/// Take `guard` by value so every early return drops it and frees the slot,
+/// and so the started-run path can hand it to the task that owns the run.
 async fn launch(
     app: &AppHandle,
     listener: &AutomationListener,
     fire: &ListenerFire,
+    guard: SlotGuard,
 ) -> FireOutcome {
     let now = now_ms();
 
@@ -302,7 +332,7 @@ async fn launch(
                     "[automation] listener could not write failed run artifact: {error}"
                 )),
             }
-            return FireOutcome::Skipped;
+            return FireOutcome::Failed(message);
         }
     };
 
@@ -317,7 +347,7 @@ async fn launch(
         }
         Err(error) => {
             mark_error(&listener.id, &error);
-            return FireOutcome::Skipped;
+            return FireOutcome::Failed(error);
         }
     };
 
@@ -348,7 +378,7 @@ async fn launch(
         Err(error) => {
             drop(claim);
             mark_error(&listener.id, &error);
-            return FireOutcome::Skipped;
+            return FireOutcome::Failed(error);
         }
     };
     drop(claim);
@@ -387,7 +417,9 @@ async fn launch(
             }
         }
         runs::emit_automation_inbox_update(&app_for_emit, &blueprint_for_inbox, &run_root);
-        release(&app_for_emit, &listener_id).await;
+        // Dropping the guard here releases the slot and starts any coalesced
+        // fire, on the success path and on an abort or panic alike.
+        drop(guard);
         emit_listeners_updated(&app_for_emit);
     });
 
@@ -820,6 +852,45 @@ edges:
         assert_eq!(released.event_identity, "second");
         assert!(!activity.is_active("a"));
         assert!(activity.leave("a").is_none());
+    }
+
+    #[test]
+    fn a_slot_taken_for_a_run_is_recovered_when_the_run_task_never_completes() {
+        // Models what `SlotGuard::drop` does: a task that is aborted or panics
+        // after taking a slot must still release it. Leaking it here would
+        // permanently wedge a `skip` listener and strand a `coalesce`
+        // listener's pending fire for the lifetime of the app.
+        let mut activity = ListenerActivity::default();
+        activity.enter("a");
+        activity.pending.insert(
+            "a".to_string(),
+            ListenerFire {
+                listener_id: "a".into(),
+                event_identity: "queued-behind-the-lost-run".into(),
+                payload: Map::new(),
+            },
+        );
+
+        let recovered = activity
+            .leave("a")
+            .expect("the coalesced fire must be handed back, not stranded");
+        assert_eq!(recovered.event_identity, "queued-behind-the-lost-run");
+        assert!(
+            !activity.is_active("a"),
+            "the listener must be able to fire again"
+        );
+    }
+
+    #[test]
+    fn a_launch_failure_is_distinguishable_from_a_policy_skip() {
+        // The webhook handler maps these to different status codes, so
+        // collapsing them would make Wardian acknowledge a delivery that never
+        // became a run.
+        assert_ne!(
+            FireOutcome::Failed("blueprint missing".into()),
+            FireOutcome::Skipped
+        );
+        assert_ne!(FireOutcome::Coalesced, FireOutcome::Skipped);
     }
 
     #[test]

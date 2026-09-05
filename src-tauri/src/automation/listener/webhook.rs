@@ -23,17 +23,43 @@ use wardian_core::listeners::{
     MAX_WEBHOOK_MAX_BODY_BYTES,
 };
 
-/// Header names never copied into a run payload.
+/// Substrings that mark a header as credential-bearing.
+const CREDENTIAL_MARKERS: &[&str] = &[
+    "auth",
+    "signature",
+    "token",
+    "secret",
+    "credential",
+    "password",
+    "cookie",
+    "-key",
+    "apikey",
+    "bearer",
+];
+
+/// Whether a header must be kept out of a run payload.
 ///
 /// The payload becomes `trigger.output` and therefore reaches an agent prompt
-/// and a durable run log; copying the signature or bearer token there would
-/// publish the listener's own secret.
-fn is_credential_header(name: &str) -> bool {
+/// and a durable run log, so publishing a signature or bearer token there would
+/// leak the listener's own secret.
+///
+/// `configured_signature` is the header this listener actually authenticates
+/// with. A name-shape heuristic cannot be trusted to cover it, because a sender
+/// may use `X-Webhook-Auth` or any other name, so the configured carrier is
+/// removed by exact match regardless of what it is called.
+fn is_credential_header(name: &str, configured_signature: Option<&str>) -> bool {
     let lower = name.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "authorization" | "cookie" | "proxy-authorization"
-    ) || ["signature", "token", "secret", "-key", "password"]
+    if configured_signature
+        .map(str::trim)
+        .filter(|configured| !configured.is_empty())
+        .is_some_and(|configured| configured.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
+    if lower == webhook_rules::DEFAULT_SIGNATURE_HEADER || lower == webhook_rules::TOKEN_HEADER {
+        return true;
+    }
+    CREDENTIAL_MARKERS
         .iter()
         .any(|marker| lower.contains(marker))
 }
@@ -56,6 +82,7 @@ fn header_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
 
 fn payload(
     listener: &AutomationListener,
+    trigger: &WebhookTrigger,
     delivery_id: &str,
     headers: &[(String, String)],
     body: &[u8],
@@ -66,9 +93,10 @@ fn payload(
     map.insert("trigger_type".into(), Value::String("webhook".into()));
     map.insert("delivery_id".into(), Value::String(delivery_id.to_string()));
 
+    let signature_header = trigger.signature_header.as_deref();
     let safe_headers: Map<String, Value> = headers
         .iter()
-        .filter(|(name, _)| !is_credential_header(name))
+        .filter(|(name, _)| !is_credential_header(name, signature_header))
         .map(|(name, value)| (name.to_ascii_lowercase(), Value::String(value.clone())))
         .collect();
     map.insert("headers".into(), Value::Object(safe_headers));
@@ -152,7 +180,7 @@ async fn receive(
     let fire = ListenerFire {
         listener_id: listener.id.clone(),
         event_identity: delivery_id.clone(),
-        payload: payload(&listener, &delivery_id, &pairs, &body),
+        payload: payload(&listener, &trigger, &delivery_id, &pairs, &body),
     };
 
     // Awaited rather than spawned: the response means "durably claimed", so it
@@ -161,24 +189,36 @@ async fn receive(
     // and guarantee a timeout-and-retry.
     let outcome = launch::fire(app.clone(), listener, fire).await;
 
+    // `202 Accepted` is reserved for a delivery that produced a durable run, so
+    // the code never promises processing that will not happen. A retry landing
+    // on an already-claimed delivery is one of those: answering with an error
+    // would drive an infinite retry for a request Wardian handled correctly.
+    //
+    // Overlap outcomes get `200 OK` instead. The delivery was received and then
+    // deliberately dropped or superseded by the listener's own policy, so a
+    // retry would be pointless, but claiming durable acceptance would be false.
+    // A launch failure is Wardian's fault, so it is reported as retryable.
     let status = match outcome {
-        // A retry landing on an already-claimed delivery is still an accepted
-        // delivery; answering with an error would drive an infinite retry for
-        // a request Wardian handled correctly.
-        FireOutcome::Started(_)
-        | FireOutcome::AlreadyClaimed
-        | FireOutcome::Skipped
-        | FireOutcome::Coalesced => StatusCode::ACCEPTED,
+        FireOutcome::Started(_) | FireOutcome::AlreadyClaimed => StatusCode::ACCEPTED,
+        FireOutcome::Skipped | FireOutcome::Coalesced => StatusCode::OK,
         FireOutcome::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        FireOutcome::Failed(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let described = match &outcome {
         FireOutcome::Started(run_id) => {
-            serde_json::json!({ "outcome": "started", "run_id": run_id })
+            serde_json::json!({ "outcome": "started", "durable": true, "run_id": run_id })
         }
-        FireOutcome::AlreadyClaimed => serde_json::json!({ "outcome": "already_accepted" }),
-        FireOutcome::Skipped => serde_json::json!({ "outcome": "skipped" }),
-        FireOutcome::Coalesced => serde_json::json!({ "outcome": "coalesced" }),
-        FireOutcome::RateLimited => serde_json::json!({ "outcome": "rate_limited" }),
+        FireOutcome::AlreadyClaimed => {
+            serde_json::json!({ "outcome": "already_accepted", "durable": true })
+        }
+        FireOutcome::Skipped => serde_json::json!({ "outcome": "skipped", "durable": false }),
+        FireOutcome::Coalesced => serde_json::json!({ "outcome": "coalesced", "durable": false }),
+        FireOutcome::RateLimited => {
+            serde_json::json!({ "outcome": "rate_limited", "durable": false })
+        }
+        // The reason stays out of the response: an authenticated sender still
+        // does not need Wardian's internal failure detail.
+        FireOutcome::Failed(_) => serde_json::json!({ "outcome": "failed", "durable": false }),
     };
     (status, Json(described))
 }
@@ -267,6 +307,15 @@ mod tests {
         }
     }
 
+    fn webhook_trigger(signature_header: Option<&str>) -> WebhookTrigger {
+        WebhookTrigger {
+            path_segment: "ci".into(),
+            auth: WebhookAuth::HmacSha256,
+            signature_header: signature_header.map(str::to_string),
+            max_body_bytes: DEFAULT_WEBHOOK_MAX_BODY_BYTES,
+        }
+    }
+
     #[test]
     fn credential_headers_never_reach_the_run_payload() {
         let headers = vec![
@@ -276,20 +325,39 @@ mod tests {
                 "sha256=deadbeef".to_string(),
             ),
             ("Authorization".to_string(), "Bearer hunter2".to_string()),
+            ("Proxy-Authorization".to_string(), "Basic abc".to_string()),
+            (
+                "X-Forwarded-Authorization".to_string(),
+                "Basic abc".to_string(),
+            ),
             ("X-Wardian-Token".to_string(), "s3cret".to_string()),
             ("X-Api-Key".to_string(), "abc".to_string()),
+            ("X-ApiKey".to_string(), "abc".to_string()),
+            ("X-Credential".to_string(), "abc".to_string()),
             ("Cookie".to_string(), "session=1".to_string()),
+            ("Set-Cookie".to_string(), "session=1".to_string()),
         ];
-        let map = payload(&listener(), "delivery-1", &headers, b"{}");
+        let map = payload(
+            &listener(),
+            &webhook_trigger(None),
+            "delivery-1",
+            &headers,
+            b"{}",
+        );
         let carried = map["headers"].as_object().expect("headers object");
 
         assert!(carried.contains_key("x-github-event"));
         for leaked in [
             "x-hub-signature-256",
             "authorization",
+            "proxy-authorization",
+            "x-forwarded-authorization",
             "x-wardian-token",
             "x-api-key",
+            "x-apikey",
+            "x-credential",
             "cookie",
+            "set-cookie",
         ] {
             assert!(
                 !carried.contains_key(leaked),
@@ -299,9 +367,49 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_signature_header_is_removed_because_it_is_the_configured_carrier() {
+        // `X-Delivery-Proof` matches no name-shape heuristic, so only knowing
+        // which header this listener authenticates with keeps its value out of
+        // the payload.
+        let trigger = webhook_trigger(Some("X-Delivery-Proof"));
+        let headers = vec![
+            (
+                "X-Delivery-Proof".to_string(),
+                "sha256=deadbeef".to_string(),
+            ),
+            ("X-GitHub-Event".to_string(), "release".to_string()),
+        ];
+        let map = payload(&listener(), &trigger, "delivery-1", &headers, b"{}");
+        let carried = map["headers"].as_object().expect("headers object");
+
+        assert!(!carried.contains_key("x-delivery-proof"));
+        assert!(carried.contains_key("x-github-event"));
+    }
+
+    #[test]
+    fn the_default_signature_header_is_removed_even_when_none_is_configured() {
+        let headers = vec![(
+            "X-Hub-Signature-256".to_string(),
+            "sha256=deadbeef".to_string(),
+        )];
+        let map = payload(
+            &listener(),
+            &webhook_trigger(None),
+            "delivery-1",
+            &headers,
+            b"{}",
+        );
+        assert!(map["headers"]
+            .as_object()
+            .expect("headers object")
+            .is_empty());
+    }
+
+    #[test]
     fn a_json_body_is_parsed_and_the_raw_text_is_kept_beside_it() {
         let map = payload(
             &listener(),
+            &webhook_trigger(None),
             "delivery-1",
             &[],
             br#"{"action":"published","number":7}"#,
@@ -316,14 +424,26 @@ mod tests {
 
     #[test]
     fn a_non_json_body_leaves_the_parsed_field_null_without_losing_the_text() {
-        let map = payload(&listener(), "delivery-1", &[], b"plain text hook");
+        let map = payload(
+            &listener(),
+            &webhook_trigger(None),
+            "delivery-1",
+            &[],
+            b"plain text hook",
+        );
         assert_eq!(map["body"], Value::Null);
         assert_eq!(map["body_text"], "plain text hook");
     }
 
     #[test]
     fn a_binary_body_reports_neither_parsed_nor_text() {
-        let map = payload(&listener(), "delivery-1", &[], &[0xff, 0xfe, 0x00]);
+        let map = payload(
+            &listener(),
+            &webhook_trigger(None),
+            "delivery-1",
+            &[],
+            &[0xff, 0xfe, 0x00],
+        );
         assert_eq!(map["body"], Value::Null);
         assert_eq!(map["body_text"], Value::Null);
     }
@@ -345,11 +465,19 @@ mod tests {
             "x-wardian-token",
             "X-Api-Key",
             "X-Secret-Thing",
+            "X-Webhook-Auth",
+            "X-Credential",
         ] {
-            assert!(is_credential_header(name), "{name} should be filtered");
+            assert!(
+                is_credential_header(name, None),
+                "{name} should be filtered"
+            );
         }
         for name in ["X-GitHub-Event", "Content-Type", "User-Agent"] {
-            assert!(!is_credential_header(name), "{name} should be carried");
+            assert!(
+                !is_credential_header(name, None),
+                "{name} should be carried"
+            );
         }
     }
 }

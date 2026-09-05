@@ -163,9 +163,22 @@ and cannot show it again; generate a new one to rotate.
 - **Token** — the sender presents the secret in `X-Wardian-Token` or as
   `Authorization: Bearer <secret>`.
 
-Wardian answers `202 Accepted` once the run is durably recorded, before it
+Wardian answers **`202 Accepted`** once the run is durably recorded, before it
 finishes. A retried delivery carrying the same delivery id resolves to the run
-that already exists rather than starting a second one.
+that already exists rather than starting a second one, and also gets `202`.
+
+Other outcomes are reported honestly rather than all being called accepted:
+
+| Status | Meaning | Should the sender retry? |
+| --- | --- | --- |
+| `202` | a durable run exists for this delivery | no |
+| `200` | received, then dropped or superseded by the overlap policy | no |
+| `429` | the rate ceiling tripped and the listener auto-disabled | not until you re-enable it |
+| `401` / `413` | the credential did not verify, or the body was too large | not without fixing it |
+| `500` | Wardian could not turn the delivery into a run | yes |
+
+Every response carries a `durable` field saying whether a run outlives the
+request.
 
 To receive deliveries from outside this machine, expose the loopback port with a
 tunnel you control (`cloudflared`, `ngrok`, `tailscale funnel`). Point the

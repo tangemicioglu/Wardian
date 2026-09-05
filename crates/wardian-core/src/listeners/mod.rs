@@ -368,14 +368,36 @@ pub fn mutate_listeners<T>(
         .truncate(false)
         .open(path.with_extension("lock"))?;
     FileExt::lock_exclusive(&lock)?;
-    let mut listeners = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|body| serde_json::from_str::<ListenerFile>(&body).ok())
-        .map(|file| file.listeners)
-        .unwrap_or_default();
+    let mut listeners = read_for_mutation(&path)?;
     let result = mutate(&mut listeners)?;
     write_listeners(&path, &listeners)?;
     Ok(result)
+}
+
+/// Read the current listener set for a read-modify-write, failing closed on a
+/// file that exists but cannot be parsed.
+///
+/// Treating a malformed file as an empty set would be catastrophic here rather
+/// than merely lossy: the caller writes the result back, so a single runtime
+/// update - a fire, an arming result, a rejection - would replace every
+/// configured listener with nothing. A missing file is still an empty set,
+/// because that is a fresh install rather than damage.
+fn read_for_mutation(path: &std::path::Path) -> std::io::Result<Vec<AutomationListener>> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => serde_json::from_str::<ListenerFile>(&body)
+            .map(|file| file.listeners)
+            .map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "refusing to overwrite malformed {}: {error}",
+                        path.display()
+                    ),
+                )
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
 }
 
 fn write_listeners(
@@ -579,6 +601,41 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_write_refuses_to_overwrite_a_malformed_config() {
+        let _home = TestHome::new();
+        let path = crate::paths::listeners_path().expect("path");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("library dir");
+        std::fs::write(&path, "{ not json").expect("seed damage");
+
+        // A fire, an arming result, or a rejection all reach this mutator. If
+        // it treated a malformed file as an empty set it would write that back
+        // and destroy every configured listener.
+        let error = mutate_listeners(|stored| {
+            stored.clear();
+            Ok(())
+        })
+        .expect_err("a malformed config must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "{ not json",
+            "the damaged file must be left exactly as it was"
+        );
+    }
+
+    #[test]
+    fn a_missing_config_is_still_an_empty_set_rather_than_an_error() {
+        let _home = TestHome::new();
+        mutate_listeners(|stored| {
+            stored.push(listener("a", file_trigger("/tmp/watched")));
+            Ok(())
+        })
+        .expect("a fresh install writes its first listener");
+        assert_eq!(load_listeners().len(), 1);
+    }
+
+    #[test]
     fn runtime_write_back_does_not_change_the_arming_fingerprint() {
         let mut listeners = vec![listener("file", file_trigger("/tmp/watched"))];
         let before = arming_fingerprint(&listeners);
@@ -636,6 +693,44 @@ mod tests {
             ..hook
         };
         assert_eq!(explicit.effective_overlap(), OverlapPolicy::Coalesce);
+    }
+
+    #[test]
+    fn a_config_replacement_preserves_runtime_written_after_the_caller_read_it() {
+        // Models what `listener_save` does. The editor holds a snapshot from
+        // before the user started typing; a fire can land in between. Taking
+        // runtime from the locked current record rather than from that snapshot
+        // is what keeps the poll fingerprint, rate-ceiling window, and arming
+        // state from being reset by an unrelated rename.
+        let _home = TestHome::new();
+        save_listeners(&[listener("a", file_trigger("/tmp/watched"))]).expect("seed");
+        let stale_snapshot = load_listeners().remove(0);
+
+        mutate_listeners(|stored| {
+            stored[0].runtime.fire_count = 7;
+            stored[0].runtime.poll_fingerprint = Some("etag:current".into());
+            Ok(())
+        })
+        .expect("a fire lands while the editor is open");
+
+        mutate_listeners(|stored| {
+            let mut record = stale_snapshot.clone();
+            record.name = "renamed".into();
+            if let Some(existing) = stored.iter_mut().find(|item| item.id == record.id) {
+                record.runtime = existing.runtime.clone();
+                *existing = record;
+            }
+            Ok(())
+        })
+        .expect("save");
+
+        let saved = load_listeners().remove(0);
+        assert_eq!(saved.name, "renamed", "the config edit applies");
+        assert_eq!(saved.runtime.fire_count, 7, "the fire is not rolled back");
+        assert_eq!(
+            saved.runtime.poll_fingerprint.as_deref(),
+            Some("etag:current")
+        );
     }
 
     #[test]

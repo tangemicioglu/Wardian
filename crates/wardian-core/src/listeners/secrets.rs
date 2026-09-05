@@ -48,6 +48,28 @@ fn read_store(path: &std::path::Path) -> SecretStore {
         .unwrap_or_default()
 }
 
+/// Read the secret store for a read-modify-write, failing closed on a file that
+/// exists but cannot be parsed.
+///
+/// The caller writes the result back, so defaulting a malformed file to an
+/// empty store would delete every listener's credentials as a side effect of an
+/// unrelated update.
+fn read_store_for_mutation(path: &std::path::Path) -> std::io::Result<SecretStore> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => serde_json::from_str(&body).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "refusing to overwrite malformed {}: {error}",
+                    path.display()
+                ),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SecretStore::new()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Serialize the whole read-modify-write, matching the listener config's lock
 /// discipline so a CLI and app write cannot lose each other's change.
 pub fn mutate_secrets<T>(
@@ -66,7 +88,7 @@ pub fn mutate_secrets<T>(
         .truncate(false)
         .open(path.with_extension("lock"))?;
     FileExt::lock_exclusive(&lock)?;
-    let mut store = read_store(&path);
+    let mut store = read_store_for_mutation(&path)?;
     let result = mutate(&mut store)?;
     write_store(&path, &store)?;
     Ok(result)
@@ -208,6 +230,24 @@ mod tests {
         assert!(
             !config.contains("s3cret"),
             "the listener config must stay safe to display"
+        );
+    }
+
+    #[test]
+    fn a_malformed_secret_store_is_never_overwritten() {
+        let _home = TestHome::new();
+        let path = crate::paths::listener_secrets_path().expect("path");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("library dir");
+        std::fs::write(&path, "{ not json").expect("seed damage");
+
+        // Pruning runs on every reconcile, so defaulting a damaged file to an
+        // empty store would delete every listener's credentials as a side
+        // effect of an unrelated update.
+        let error = prune_secrets(&[]).expect_err("a malformed store must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "{ not json"
         );
     }
 

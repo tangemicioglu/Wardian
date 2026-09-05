@@ -286,6 +286,16 @@ delivery also gets `202`, not a conflict, because from the sender's side the
 delivery *was* accepted — returning an error there would drive an infinite
 retry loop for a request Wardian handled correctly.
 
+`202` is therefore reserved for outcomes that produced a durable run, and the
+other outcomes are distinguished rather than folded into it. An overlap-skipped
+or coalesced delivery gets `200`: it was received and then deliberately dropped
+or superseded by the listener'''s own policy, so a retry would be pointless, but
+calling it accepted would claim a durability that does not exist. A launch
+failure — an unresolvable blueprint, an unclaimable run, a preparation error —
+gets `500`, because it is Wardian'''s fault and is worth retrying. This forces
+the code to keep a policy skip and a launch failure as distinct outcomes rather
+than one `Skipped` variant, which is what made the original mapping wrong.
+
 ### Fingerprinting (web poll)
 
 `fingerprint` selects what counts as a change:
