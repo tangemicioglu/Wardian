@@ -30,6 +30,7 @@ In practice, you usually move through automations in this order:
 - **[Automation Samples](./samples.md)**: Start from editable, privacy-safe templates for common automation patterns.
 - **[Triggers](./triggers.md)**: Understand manual runs, scheduled invocations, and live listeners.
 - **[Scheduled Runs](./scheduled-runs.md)**: Manage scheduled task instances, pause/resume, run now, and deletion.
+- **[Listeners](./listeners.md)**: Start a run from a file change, an inbound webhook, or a change to a watched web resource.
 - **[Node Reference](./node-reference.md)**: Reference every current automation node type and its user-visible behavior.
 - **[Agent Assignment](./agent-assignment.md)**: Learn how roles, direct agent selection, and the run modal work.
 - **[Troubleshooting](./troubleshooting.md)**: Diagnose the most common automation problems quickly.

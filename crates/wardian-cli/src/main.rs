@@ -1,5 +1,6 @@
 mod args;
 mod artifact;
+mod automation_invoker;
 mod automation_replay;
 mod browser;
 mod disk;
@@ -8,6 +9,7 @@ mod graph;
 mod inbox;
 mod json_input;
 mod library;
+mod listener;
 mod live;
 mod memory;
 mod output;
@@ -637,6 +639,7 @@ fn handle_automation(args: AutomationArgs) -> Result<String, CliError> {
         }
         AutomationCommand::Schedule(command) => render_automation_schedule(*command),
         AutomationCommand::SessionClose(command) => render_automation_session_close(*command),
+        AutomationCommand::Listener(command) => listener::render(*command),
     }
 }
 
@@ -836,8 +839,8 @@ fn render_automation_exec_with_live_launcher(
     bind: &[String],
     live_launcher: impl FnOnce(live::AutomationRunRequest) -> std::io::Result<AutomationRunResponse>,
 ) -> Result<String, CliError> {
-    let input = parse_automation_exec_input(input)?;
-    let bindings = parse_automation_bindings(bind)?;
+    let input = automation_invoker::parse_automation_exec_input(input)?;
+    let bindings = automation_invoker::parse_automation_bindings(bind)?;
     match AutomationExecMode::parse(executor)? {
         AutomationExecMode::Live => {
             let response = live_launcher(live::AutomationRunRequest {
@@ -900,33 +903,6 @@ fn render_automation_exec_mock(path: &str, input: serde_json::Value) -> Result<S
     serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))
-}
-
-fn parse_automation_exec_input(input: Option<&str>) -> Result<serde_json::Value, CliError> {
-    let Some(raw) = input else {
-        return Ok(serde_json::json!({}));
-    };
-    json_input::parse(raw, "--input")
-}
-
-fn parse_automation_bindings(bind: &[String]) -> Result<HashMap<String, String>, CliError> {
-    let mut bindings = HashMap::new();
-    for entry in bind {
-        let Some((name, provider)) = entry.split_once('=') else {
-            return Err(CliError::generic(format!(
-                "invalid --bind `{entry}`; expected name=provider"
-            )));
-        };
-        let name = name.trim();
-        let provider = provider.trim();
-        if name.is_empty() || provider.is_empty() {
-            return Err(CliError::generic(format!(
-                "invalid --bind `{entry}`; expected non-empty name=provider"
-            )));
-        }
-        bindings.insert(name.to_string(), provider.to_string());
-    }
-    Ok(bindings)
 }
 
 fn render_automation_runs() -> Result<String, CliError> {
@@ -1035,11 +1011,11 @@ fn render_automation_schedule(command: AutomationScheduleCommand) -> Result<Stri
             if name.trim().is_empty() {
                 return Err(CliError::generic("schedule name must not be empty"));
             }
-            validate_schedule_provider(provider.as_deref())?;
-            let _blueprint = validate_schedule_blueprint(&blueprint)?;
+            automation_invoker::validate_schedule_provider(provider.as_deref())?;
+            let _blueprint = automation_invoker::validate_schedule_blueprint(&blueprint)?;
             let schedule = build_schedule_definition(&cadence, None)?;
             let workspace = resolve_schedule_workspace(&workspace)?;
-            let input = parse_automation_exec_input(input.as_deref())?;
+            let input = automation_invoker::parse_automation_exec_input(input.as_deref())?;
             let (bindings, assignments) =
                 parse_schedule_assignments(&bind, assignments.as_deref(), None)?;
             let now = current_epoch_ms();
@@ -1093,7 +1069,7 @@ fn render_automation_schedule(command: AutomationScheduleCommand) -> Result<Stri
                 .ok_or_else(|| CliError::generic(format!("schedule not found: {id}")))?;
 
             let blueprint_id = blueprint.unwrap_or_else(|| schedule.blueprint_id.clone());
-            let _blueprint = validate_schedule_blueprint(&blueprint_id)?;
+            let _blueprint = automation_invoker::validate_schedule_blueprint(&blueprint_id)?;
             let schedule_changed =
                 schedule_definition_args_set(&cadence) || cadence.repeat_every.is_some();
             let end_changed = cadence.end.is_some()
@@ -1122,7 +1098,7 @@ fn render_automation_schedule(command: AutomationScheduleCommand) -> Result<Stri
             } else {
                 None
             };
-            validate_schedule_provider(provider.as_deref())?;
+            automation_invoker::validate_schedule_provider(provider.as_deref())?;
             let next_workspace = match workspace {
                 Some(workspace) => Some(resolve_schedule_workspace(&workspace)?),
                 None => schedule
@@ -1138,7 +1114,7 @@ fn render_automation_schedule(command: AutomationScheduleCommand) -> Result<Stri
             )?;
             let next_input = input
                 .as_deref()
-                .map(|value| parse_automation_exec_input(Some(value)))
+                .map(|value| automation_invoker::parse_automation_exec_input(Some(value)))
                 .transpose()?;
             let now = current_epoch_ms();
             let was_paused = schedule.is_paused;
@@ -1252,9 +1228,9 @@ fn render_automation_session_close(
             enable,
             require_archive,
         } => {
-            validate_schedule_blueprint(&blueprint)?;
-            validate_schedule_provider(provider.as_deref())?;
-            let input = parse_automation_exec_input(input.as_deref())?;
+            automation_invoker::validate_schedule_blueprint(&blueprint)?;
+            automation_invoker::validate_schedule_provider(provider.as_deref())?;
+            let input = automation_invoker::parse_automation_exec_input(input.as_deref())?;
             let assignments: AutomationAssignments = assignments
                 .as_deref()
                 .map(|raw| json_input::parse(raw, "--assignments"))
@@ -1510,39 +1486,6 @@ fn resolve_schedule_workspace(value: &str) -> Result<String, CliError> {
         .map_err(CliError::generic)
 }
 
-fn validate_schedule_provider(provider: Option<&str>) -> Result<(), CliError> {
-    if let Some(provider) = provider {
-        if !wardian_core::automation::assignment::is_known_provider(provider) {
-            return Err(CliError::generic(format!(
-                "unsupported provider `{provider}`"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_schedule_blueprint(
-    blueprint_id: &str,
-) -> Result<wardian_core::automation::Blueprint, CliError> {
-    let path = wardian_core::automation::resolve_blueprint_path(blueprint_id).ok_or_else(|| {
-        CliError::generic(format!(
-            "blueprint not found in library/automations: {blueprint_id}"
-        ))
-    })?;
-    let blueprint = wardian_core::automation::parse_file(&path).map_err(|error| {
-        CliError::generic(format!("could not parse blueprint {blueprint_id}: {error}"))
-    })?;
-    let report = wardian_core::automation::validate(&blueprint);
-    if !report.is_valid() {
-        let diagnostics = serde_json::to_string(&report.diagnostics)
-            .map_err(|error| CliError::generic(error.to_string()))?;
-        return Err(CliError::generic(format!(
-            "blueprint {blueprint_id} is invalid: {diagnostics}"
-        )));
-    }
-    Ok(blueprint)
-}
-
 fn parse_schedule_assignments(
     bind: &[String],
     typed_json: Option<&str>,
@@ -1556,7 +1499,7 @@ fn parse_schedule_assignments(
         return Ok((bindings, assignments));
     }
 
-    let explicit_bindings = parse_automation_bindings(bind)?;
+    let explicit_bindings = automation_invoker::parse_automation_bindings(bind)?;
     let typed = typed_json
         .map(|raw| json_input::parse::<AutomationAssignments>(raw, "--assignments"))
         .transpose()?;
@@ -1603,7 +1546,7 @@ fn current_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn render_json(body: serde_json::Value) -> Result<String, CliError> {
+pub(crate) fn render_json(body: serde_json::Value) -> Result<String, CliError> {
     serde_json::to_string(&body)
         .map(|json| format!("{json}\n"))
         .map_err(|e| CliError::generic(e.to_string()))

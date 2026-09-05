@@ -381,15 +381,20 @@ fn run_summary_from_state(
         RunStatus::Running | RunStatus::AwaitingApproval | RunStatus::Failed => None,
     };
     let blueprint_path = blueprint_path.map(|path| path.to_string_lossy().to_string());
-    let schedule_id = runs::read_run_invocation(dir)
-        .ok()
-        .flatten()
-        .and_then(|invocation| invocation.schedule_id);
+    let invocation = runs::read_run_invocation(dir).ok().flatten();
+    let schedule_id = invocation
+        .as_ref()
+        .and_then(|invocation| invocation.schedule_id.clone());
+    // Carried alongside `schedule_id` so the monitor can collapse a busy
+    // listener's runs the way it already collapses a schedule's; without it a
+    // file listener would flood the run list.
+    let listener_id = invocation.and_then(|invocation| invocation.listener_id);
 
     serde_json::json!({
         "run_id": state.run_id,
         "blueprint_id": state.blueprint_id,
         "schedule_id": schedule_id,
+        "listener_id": listener_id,
         "status": state.status,
         "node_count": state.nodes.len(),
         "failure": state.failure,

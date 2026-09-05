@@ -785,6 +785,131 @@ pub enum AutomationCommand {
     /// Manage generic conversation-boundary automation invokers.
     #[command(subcommand)]
     SessionClose(Box<AutomationSessionCloseCommand>),
+    /// Manage event listeners: file changes, inbound webhooks, and web polls.
+    #[command(subcommand)]
+    Listener(Box<AutomationListenerCommand>),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AutomationListenerCommand {
+    /// List persisted listeners with their arming and last-fire state.
+    List,
+    /// Show one listener, including its webhook URL when it has one.
+    Show { id: String },
+    /// Watch a filesystem path and fire when matching files change.
+    Watch {
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long)]
+        name: String,
+        /// Absolute directory or file to watch.
+        #[arg(long)]
+        path: String,
+        /// Watch subdirectories too.
+        #[arg(long)]
+        recursive: bool,
+        /// Glob a change must match, repeatable: --pattern '**/*.rs'.
+        #[arg(long)]
+        pattern: Vec<String>,
+        /// Glob to exclude, repeatable; merged over the built-in ignores.
+        #[arg(long)]
+        ignore: Vec<String>,
+        /// Change kind to react to, repeatable: created, modified, removed.
+        #[arg(long)]
+        event: Vec<String>,
+        /// Milliseconds of quiet that close an event burst.
+        #[arg(long)]
+        debounce_ms: Option<u32>,
+        #[command(flatten)]
+        common: ListenerCommonArgs,
+    },
+    /// Receive inbound HTTP deliveries at /hooks/<path>.
+    Hook {
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long)]
+        name: String,
+        /// URL path segment; the listener answers at /hooks/<path>.
+        #[arg(long)]
+        path: String,
+        /// Credential style: token or hmac.
+        #[arg(long, default_value = "hmac")]
+        auth: String,
+        /// Header carrying the HMAC signature; defaults to X-Hub-Signature-256.
+        #[arg(long)]
+        signature_header: Option<String>,
+        /// Shared secret. Omit to have one generated and printed once.
+        #[arg(long)]
+        secret: Option<String>,
+        /// Largest accepted request body in bytes.
+        #[arg(long)]
+        max_body_bytes: Option<u32>,
+        #[command(flatten)]
+        common: ListenerCommonArgs,
+    },
+    /// Poll a URL and fire when the watched resource changes.
+    Poll {
+        #[arg(long)]
+        blueprint: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        url: String,
+        /// Seconds between polls; minimum 30.
+        #[arg(long)]
+        interval: Option<u32>,
+        /// Request method: get or head.
+        #[arg(long, default_value = "get")]
+        method: String,
+        /// What counts as a change: etag, body, json, or regex.
+        #[arg(long, default_value = "etag")]
+        fingerprint: String,
+        /// RFC 6901 pointer for --fingerprint json, e.g. /0/tag_name.
+        #[arg(long)]
+        json_pointer: Option<String>,
+        /// Pattern for --fingerprint regex; the first capture group is used.
+        #[arg(long)]
+        regex: Option<String>,
+        /// Non-secret request header, repeatable: --header 'Accept: application/json'.
+        #[arg(long)]
+        header: Vec<String>,
+        /// Largest response body read, in bytes.
+        #[arg(long)]
+        max_body_bytes: Option<u32>,
+        #[command(flatten)]
+        common: ListenerCommonArgs,
+    },
+    /// Enable a listener, clearing any auto-disable reason.
+    Enable { id: String },
+    /// Disable a listener without deleting its configuration.
+    Disable { id: String },
+    /// Remove a listener and its stored credentials.
+    Remove { id: String },
+}
+
+/// Invocation context every listener shares with the schedule invoker.
+#[derive(Debug, Args, Clone)]
+pub struct ListenerCommonArgs {
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// Existing directory used as the run workspace.
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Run input as a JSON object, @file, or - for piped UTF-8 JSON.
+    #[arg(long)]
+    pub input: Option<String>,
+    /// Role/class -> provider binding, repeatable: --bind role=provider.
+    #[arg(long)]
+    pub bind: Vec<String>,
+    /// Role assignments keyed by role name: JSON object, @file, or - for stdin.
+    #[arg(long, alias = "assignment")]
+    pub assignments: Option<String>,
+    /// Behavior when the listener fires while its own run is active.
+    #[arg(long, value_parser = ["skip", "coalesce", "parallel"])]
+    pub overlap: Option<String>,
+    /// Create the listener enabled. Listeners are otherwise created disabled.
+    #[arg(long)]
+    pub enable: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1914,6 +2039,138 @@ mod tests {
                 ref conversation_id,
             } if conversation_id == "conv-1"
         ));
+    }
+
+    #[test]
+    fn parses_listener_watch_with_patterns_and_overlap() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "automation",
+            "listener",
+            "watch",
+            "--blueprint",
+            "audit",
+            "--name",
+            "Source audit",
+            "--path",
+            "/work/repo",
+            "--recursive",
+            "--pattern",
+            "**/*.rs",
+            "--pattern",
+            "**/*.toml",
+            "--ignore",
+            "**/generated/**",
+            "--event",
+            "modified",
+            "--debounce-ms",
+            "1500",
+            "--overlap",
+            "coalesce",
+            "--enable",
+        ])
+        .unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
+        };
+        let AutomationCommand::Listener(command) = args.command else {
+            panic!("expected Listener")
+        };
+        match *command {
+            AutomationListenerCommand::Watch {
+                blueprint,
+                path,
+                recursive,
+                pattern,
+                ignore,
+                event,
+                debounce_ms,
+                common,
+                ..
+            } => {
+                assert_eq!(blueprint, "audit");
+                assert_eq!(path, "/work/repo");
+                assert!(recursive);
+                assert_eq!(pattern, vec!["**/*.rs", "**/*.toml"]);
+                assert_eq!(ignore, vec!["**/generated/**"]);
+                assert_eq!(event, vec!["modified"]);
+                assert_eq!(debounce_ms, Some(1500));
+                assert_eq!(common.overlap.as_deref(), Some("coalesce"));
+                assert!(common.enable);
+            }
+            other => panic!("expected Watch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn listeners_are_created_disabled_unless_enable_is_passed() {
+        let cli = Cli::try_parse_from([
+            "wardian",
+            "automation",
+            "listener",
+            "poll",
+            "--blueprint",
+            "audit",
+            "--name",
+            "Release watch",
+            "--url",
+            "https://example.invalid/releases",
+            "--fingerprint",
+            "json",
+            "--json-pointer",
+            "/0/tag_name",
+            "--interval",
+            "600",
+        ])
+        .unwrap();
+        let Command::Automation(args) = cli.command else {
+            panic!("expected Automation")
+        };
+        let AutomationCommand::Listener(command) = args.command else {
+            panic!("expected Listener")
+        };
+        match *command {
+            AutomationListenerCommand::Poll {
+                url,
+                interval,
+                fingerprint,
+                json_pointer,
+                common,
+                ..
+            } => {
+                assert_eq!(url, "https://example.invalid/releases");
+                assert_eq!(interval, Some(600));
+                assert_eq!(fingerprint, "json");
+                assert_eq!(json_pointer.as_deref(), Some("/0/tag_name"));
+                assert!(
+                    !common.enable,
+                    "a listener must not start watching just because it was created"
+                );
+            }
+            other => panic!("expected Poll, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_overlap_policy_is_refused_at_parse_time() {
+        let result = Cli::try_parse_from([
+            "wardian",
+            "automation",
+            "listener",
+            "hook",
+            "--blueprint",
+            "audit",
+            "--name",
+            "CI",
+            "--path",
+            "ci",
+            "--overlap",
+            "queue",
+        ]);
+        assert!(
+            result.is_err(),
+            "`queue` is not one of the listener policies"
+        );
     }
 
     #[test]

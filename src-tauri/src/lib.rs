@@ -384,6 +384,7 @@ pub fn run() {
                     eprintln!("Failed to reconcile headless agents: {}", e);
                 }
                 crate::automation::schedule::start_scheduler(app_handle.clone()).await;
+                crate::automation::listener::start(app_handle.clone()).await;
 
                 if let Some(app_dir) = manager::get_wardian_home() {
                     let state_path = app_dir.join("settings/state.json");
@@ -875,6 +876,14 @@ pub fn run() {
             commands::automation::schedule_create,
             commands::automation::schedule_update,
             commands::automation::schedule_list,
+            commands::listener::listener_list,
+            commands::listener::listener_save,
+            commands::listener::listener_delete,
+            commands::listener::listener_set_enabled,
+            commands::listener::listener_set_webhook_secret,
+            commands::listener::listener_set_poll_headers,
+            commands::listener::listener_gateway_config,
+            commands::listener::listener_gateway_save,
             commands::automation::session_close_invoker_list,
             commands::automation::session_close_invoker_save,
             commands::automation::session_close_invoker_delete,

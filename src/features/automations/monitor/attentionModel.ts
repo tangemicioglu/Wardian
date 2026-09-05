@@ -2,6 +2,7 @@ export interface AutomationAttentionRun {
   run_id: string;
   blueprint_id: string;
   schedule_id?: string | null;
+  listener_id?: string | null;
   status: 'running' | 'awaiting_approval' | 'completed' | 'failed';
   started_at?: string | null;
   updated_at?: string | null;
@@ -51,10 +52,13 @@ export function automationAttention(
     if (!currentBlueprint || isNewer(run, currentBlueprint)) {
       newestByBlueprint.set(run.blueprint_id, run);
     }
-    if (run.schedule_id) {
-      const currentSchedule = newestBySchedule.get(run.schedule_id);
-      if (!currentSchedule || isNewer(run, currentSchedule)) {
-        newestBySchedule.set(run.schedule_id, run);
+    // A listener attributes its runs the same way a schedule does, so both
+    // collapse to newest-per-invoker rather than listing every fire.
+    const invokerId = run.schedule_id ?? run.listener_id;
+    if (invokerId) {
+      const currentInvoker = newestBySchedule.get(invokerId);
+      if (!currentInvoker || isNewer(run, currentInvoker)) {
+        newestBySchedule.set(invokerId, run);
       }
     }
   }
