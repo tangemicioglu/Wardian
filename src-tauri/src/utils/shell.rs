@@ -1450,10 +1450,7 @@ mod tests {
         let persisted: PersistedShellSettings =
             serde_json::from_str(&document).expect("parse persisted settings");
 
-        assert_eq!(
-            persisted.overrides.default_workspace.as_deref(),
-            Some("")
-        );
+        assert_eq!(persisted.overrides.default_workspace.as_deref(), Some(""));
 
         settings.default_workspace = "C:/projects/wardian".to_string();
         let explicit_path = temp_dir.path().join("explicit-shell-settings.json");
