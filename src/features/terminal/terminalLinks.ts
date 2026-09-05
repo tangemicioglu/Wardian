@@ -549,9 +549,35 @@ export function installTerminalLinkProvider(term: Terminal, options: TerminalLin
     };
   }
 
-  return term.registerLinkProvider({
+  // Keep URL detection synchronous. A mixed URL/file provider used to wait on
+  // filesystem validation before reporting a link, which makes plain URLs
+  // unreliable in provider TUIs and during a busy terminal render.
+  const urlProvider = term.registerLinkProvider({
+    provideLinks(bufferLineNumber, callback) {
+      const line = readWrappedTerminalLine(term, bufferLineNumber);
+      const links = line
+        ? findTerminalLinks(line.text, options.getBasePath?.())
+          .filter((link) => link.kind === "url")
+          .map<ILink>((link) => ({
+            range: terminalLinkRange(line, link),
+            text: link.text,
+            decorations: {
+              pointerCursor: true,
+              underline: true,
+            },
+            activate: () => {
+              openTerminalDetectedLink(link, options);
+            },
+          }))
+        : [];
+      callback(links.length > 0 ? links : undefined);
+    },
+  });
+
+  const fileProvider = term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
       getTerminalLinksForBufferLine(term, bufferLineNumber, options)
+        .then((links) => links.filter((link) => link.kind === "file"))
         .then((links) => links.map<ILink>((link) => ({
           range: link.range,
           text: link.text,
@@ -572,4 +598,11 @@ export function installTerminalLinkProvider(term: Terminal, options: TerminalLin
         });
     },
   });
+
+  return {
+    dispose() {
+      urlProvider.dispose();
+      fileProvider.dispose();
+    },
+  };
 }

@@ -103,6 +103,44 @@ describe("findTerminalLinks", () => {
 });
 
 describe("installTerminalLinkProvider", () => {
+  it("reports ordinary URLs synchronously through the first provider", () => {
+    const openUrl = vi.fn(async () => {});
+    const text = "https://wardian.org/docs";
+    let callbackCalled = false;
+    type TestLink = { text: string; activate: (...args: unknown[]) => void };
+    let links: TestLink[] | undefined;
+    const term = {
+      registerLinkProvider: vi.fn((provider: { provideLinks: (line: number, callback: (links: TestLink[] | undefined) => void) => void }) => {
+        if (!links) {
+          provider.provideLinks(1, (nextLinks: TestLink[] | undefined) => {
+            callbackCalled = true;
+            links = nextLinks;
+          });
+        }
+        return { dispose: vi.fn() };
+      }),
+      buffer: {
+        active: {
+          getLine: () => ({ translateToString: () => text }),
+        },
+      },
+    } as unknown as Parameters<typeof installTerminalLinkProvider>[0];
+
+    installTerminalLinkProvider(term, {
+      getExternalEditor: () => ({
+        external_editor: "system",
+        external_editor_custom_executable: null,
+      }),
+      openUrl,
+    });
+
+    expect(callbackCalled).toBe(true);
+    links?.[0].activate(new MouseEvent("click"), links[0].text);
+
+    expect(links?.[0].text).toBe(text);
+    expect(openUrl).toHaveBeenCalledWith(text);
+  });
+
   it("opens file links through the configured external editor", async () => {
     const openFile = vi.fn(async () => {});
     const openUrl = vi.fn(async () => {});
@@ -148,7 +186,7 @@ describe("installTerminalLinkProvider", () => {
     let provider:
       | { provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }
       | null = null;
-    const getLine = vi.fn(() => ({ translateToString: () => "https://wardian.org/docs" }));
+    const getLine = vi.fn(() => ({ translateToString: () => "src/App.tsx:12" }));
     const term = {
       registerLinkProvider: vi.fn((nextProvider) => {
         provider = nextProvider;
@@ -168,6 +206,7 @@ describe("installTerminalLinkProvider", () => {
       }),
       openFile: vi.fn(async () => {}),
       openUrl: vi.fn(async () => {}),
+      validateFile: vi.fn(async () => true),
     });
 
     const links = await new Promise<any[] | undefined>((resolve) => {
@@ -177,19 +216,17 @@ describe("installTerminalLinkProvider", () => {
     expect(getLine).toHaveBeenCalledWith(6);
     expect(links?.[0].range).toEqual({
       start: { x: 1, y: 7 },
-      end: { x: "https://wardian.org/docs".length, y: 7 },
+      end: { x: "src/App.tsx:12".length, y: 7 },
     });
   });
 
-  it("opens URL links through the URL opener", async () => {
+  it("opens URL links through the URL opener", () => {
     const openFile = vi.fn(async () => {});
     const openUrl = vi.fn(async () => {});
-    let provider:
-      | { provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }
-      | null = null;
+    const providers: Array<{ provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }> = [];
     const term = {
       registerLinkProvider: vi.fn((nextProvider) => {
-        provider = nextProvider;
+        providers.push(nextProvider);
         return { dispose: vi.fn() };
       }),
       buffer: {
@@ -208,8 +245,9 @@ describe("installTerminalLinkProvider", () => {
       openUrl,
     });
 
-    const links = await new Promise<any[] | undefined>((resolve) => {
-      provider?.provideLinks(1, resolve);
+    let links: any[] | undefined;
+    providers[0].provideLinks(1, (nextLinks) => {
+      links = nextLinks;
     });
     links?.[0].activate(new MouseEvent("click"), links[0].text);
 
@@ -249,9 +287,7 @@ describe("installTerminalLinkProvider", () => {
 
   it("opens URLs that wrap across physical terminal rows", async () => {
     const openUrl = vi.fn(async () => {});
-    let provider:
-      | { provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }
-      | null = null;
+    const providers: Array<{ provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }> = [];
     const rows = [
       { isWrapped: false, translateToString: (trimRight?: boolean) => trimRight ? "prefix https://wardi" : "prefix https://wardi" },
       { isWrapped: true, translateToString: (trimRight?: boolean) => trimRight ? "an.org/docs suffix" : "an.org/docs suffix" },
@@ -259,7 +295,7 @@ describe("installTerminalLinkProvider", () => {
     const term = {
       cols: 20,
       registerLinkProvider: vi.fn((nextProvider) => {
-        provider = nextProvider;
+        providers.push(nextProvider);
         return { dispose: vi.fn() };
       }),
       buffer: {
@@ -279,10 +315,10 @@ describe("installTerminalLinkProvider", () => {
     });
 
     const firstRowLinks = await new Promise<any[] | undefined>((resolve) => {
-      provider?.provideLinks(1, resolve);
+      providers[0].provideLinks(1, resolve);
     });
     const secondRowLinks = await new Promise<any[] | undefined>((resolve) => {
-      provider?.provideLinks(2, resolve);
+      providers[0].provideLinks(2, resolve);
     });
 
     expect(firstRowLinks?.[0]).toMatchObject({
@@ -304,9 +340,7 @@ describe("installTerminalLinkProvider", () => {
 
   it("opens URLs that provider TUIs hard-wrap onto indented continuation rows", async () => {
     const openUrl = vi.fn(async () => {});
-    let provider:
-      | { provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }
-      | null = null;
+    const providers: Array<{ provideLinks: (line: number, callback: (links: any[] | undefined) => void) => void }> = [];
     const rows = [
       { isWrapped: false, translateToString: () => "› Terminal link smoke https://wardian.org/terminal-link-" },
       { isWrapped: false, translateToString: () => "  validation/123/wrapped-segment-wrapped-" },
@@ -315,7 +349,7 @@ describe("installTerminalLinkProvider", () => {
     const term = {
       cols: 80,
       registerLinkProvider: vi.fn((nextProvider) => {
-        provider = nextProvider;
+        providers.push(nextProvider);
         return { dispose: vi.fn() };
       }),
       buffer: {
@@ -335,7 +369,7 @@ describe("installTerminalLinkProvider", () => {
     });
 
     const links = await new Promise<any[] | undefined>((resolve) => {
-      provider?.provideLinks(2, resolve);
+      providers[0].provideLinks(2, resolve);
     });
 
     expect(links?.[0]).toMatchObject({
