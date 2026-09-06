@@ -44,3 +44,4 @@ Use this index when implementing or debugging Wardian internals.
 - [Screenshot Documentation](./screenshot-documentation.md)
 - [Core Feature Screenshot Capture Plan](./screenshot-capture-plan.md)
 - [README Demo Capture](./readme-demo-capture.md)
+- [Site Media Capture](./site-media.md)

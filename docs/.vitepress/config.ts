@@ -128,6 +128,7 @@ export default defineConfig({
             { text: "Docs Maintenance", link: "/developer/docs-maintenance" },
             { text: "Theming", link: "/developer/theming" },
             { text: "Screenshot Documentation", link: "/developer/screenshot-documentation" },
+            { text: "Site Media Capture", link: "/developer/site-media" },
           ],
         },
       ],

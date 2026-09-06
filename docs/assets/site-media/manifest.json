@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-09-06T07:37:26.135Z",
+  "app_version": "0.6.0",
+  "clips": [
+    {
+      "id": "hero",
+      "mp4": "hero.mp4",
+      "webm": "hero.webm",
+      "poster": "hero.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 9948,
+      "bytes_mp4": 190610
+    },
+    {
+      "id": "graph",
+      "mp4": "graph.mp4",
+      "webm": "graph.webm",
+      "poster": "graph.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8487,
+      "bytes_mp4": 115273
+    },
+    {
+      "id": "inbox",
+      "mp4": "inbox.mp4",
+      "webm": "inbox.webm",
+      "poster": "inbox.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8236,
+      "bytes_mp4": 179426
+    },
+    {
+      "id": "workflows",
+      "mp4": "workflows.mp4",
+      "webm": "workflows.webm",
+      "poster": "workflows.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 9390,
+      "bytes_mp4": 128459
+    },
+    {
+      "id": "dashboard",
+      "mp4": "dashboard.mp4",
+      "webm": "dashboard.webm",
+      "poster": "dashboard.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 7808,
+      "bytes_mp4": 209315
+    },
+    {
+      "id": "markdown-truth",
+      "mp4": "markdown-truth.mp4",
+      "webm": "markdown-truth.webm",
+      "poster": "markdown-truth.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 9822,
+      "bytes_mp4": 172556
+    },
+    {
+      "id": "classes",
+      "mp4": "classes.mp4",
+      "webm": "classes.webm",
+      "poster": "classes.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8591,
+      "bytes_mp4": 106481
+    },
+    {
+      "id": "garden",
+      "mp4": "garden.mp4",
+      "webm": "garden.webm",
+      "poster": "garden.png",
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 7961,
+      "bytes_mp4": 117984
+    }
+  ]
+}

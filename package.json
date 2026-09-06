@@ -38,6 +38,7 @@
     "docs:check-llms": "node scripts/verify-llms-txt.mjs",
     "docs:preview": "vitepress preview docs",
     "docs:screenshots": "node scripts/capture-doc-screenshots.mjs",
+    "site:media": "node scripts/capture-site-media.mjs",
     "docs:demo-gif": "node scripts/capture-readme-demo-real.mjs",
     "docs:demo-gif:real": "node scripts/capture-readme-demo-real.mjs",
     "perf:workbench": "node scripts/measure-workbench-performance.mjs",
