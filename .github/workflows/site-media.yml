@@ -1,0 +1,122 @@
+name: site media
+
+# Regenerates the feature-site clips and offers them to the site repository.
+#
+# The site went four releases without a refresh because updating it meant a
+# human copying files between two repositories by hand. This runs the capture
+# on every published release and opens the copy as a pull request instead.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Capture and publish site media
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Capture site media
+        run: npm run site:media
+
+      # Uploaded unconditionally, so the pipeline is useful before the
+      # cross-repository token exists: a maintainer can download the bundle and
+      # copy it across by hand exactly as before, without this workflow being a
+      # dead end.
+      - name: Upload media bundle
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: site-media
+          path: docs/assets/site-media/
+          if-no-files-found: error
+
+      - name: Check for the cross-repository token
+        id: token
+        env:
+          WARDIAN_SITE_PAT: ${{ secrets.WARDIAN_SITE_PAT }}
+        run: |
+          if [ -z "${WARDIAN_SITE_PAT}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Site media not published::The media bundle was captured and uploaded as the 'site-media' artifact, but no pull request was opened. Opening one requires a token with write access to the site repository. Create a fine-grained personal access token scoped to wardian-app/wardian.org with Contents and Pull requests write permission, then add it to this repository as the WARDIAN_SITE_PAT secret and re-run this workflow."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the site repository
+        if: steps.token.outputs.present == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: wardian-app/wardian.org
+          token: ${{ secrets.WARDIAN_SITE_PAT }}
+          path: site
+          fetch-depth: 0
+
+      - name: Copy the media into the site
+        if: steps.token.outputs.present == 'true'
+        run: |
+          mkdir -p site/assets/media
+          rm -f site/assets/media/*.mp4 site/assets/media/*.webm site/assets/media/*.png
+          cp docs/assets/site-media/* site/assets/media/
+
+      - name: Open the refresh pull request
+        if: steps.token.outputs.present == 'true'
+        working-directory: site
+        env:
+          GH_TOKEN: ${{ secrets.WARDIAN_SITE_PAT }}
+          SOURCE_REF: ${{ github.event.release.tag_name || github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$(git status --porcelain assets/media)" ]; then
+            echo "Site media is already current; nothing to open."
+            exit 0
+          fi
+
+          BRANCH="chore/site-media-${SOURCE_REF}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add assets/media
+          git commit -m "chore(media): refresh feature clips from ${SOURCE_REF}"
+          git push --force-with-lease origin "$BRANCH"
+
+          cat > /tmp/pr-body.md <<'EOF'
+          Regenerated feature-site clips from the Wardian repository.
+
+          Produced by `npm run site:media`, which records the real app against
+          the deterministic documentation fixtures. Filenames and dimensions are
+          unchanged, so no markup edits should be needed.
+
+          `manifest.json` lists every clip with its duration and byte size.
+          EOF
+          printf '\nSource ref: `%s`\n' "$SOURCE_REF" >> /tmp/pr-body.md
+
+          gh pr create \
+            --repo wardian-app/wardian.org \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore(media): refresh feature clips from ${SOURCE_REF}" \
+            --body-file /tmp/pr-body.md
