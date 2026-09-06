@@ -2170,6 +2170,52 @@ fn provider_user_message_does_not_duplicate_delivered_input_prompt() {
 }
 
 #[test]
+fn claude_native_delivery_envelope_merges_with_delivered_input_prompt() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let mut context = archive_context("session-one");
+    context.provider = "claude".to_string();
+    context.provider_source_key = Some("claude:session:session-one".to_string());
+
+    archive
+        .append_delivered_input_with_context(context.clone(), "Review this patch", None)
+        .expect("append delivered input");
+    let provider_events = normalize_chat_lines(
+        "agent-1",
+        "claude",
+        [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\nReview this patch"}}"#,
+        ],
+    );
+    let provider_event_id = provider_events[0].id.clone();
+
+    archive
+        .append_chat_events_with_context(context, &provider_events)
+        .expect("append provider event");
+
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].text.as_deref(), Some("Review this patch"));
+    assert_eq!(records[0].event_refs.len(), 2);
+    assert!(records[0]
+        .event_refs
+        .iter()
+        .any(|event_ref| event_ref.starts_with("generated:")));
+    assert!(records[0]
+        .event_refs
+        .iter()
+        .any(|event_ref| event_ref == &provider_event_id));
+}
+
+#[test]
 fn repeated_same_text_delivered_inputs_are_not_ambiguously_merged() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();

@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::manager::{self, opencode::opencode_database_path};
 use crate::providers::antigravity::AntigravityProvider;
-use crate::providers::chat_transcript::{normalize_chat_lines, visible_chat_text};
+use crate::providers::chat_transcript::{
+    normalize_chat_lines, visible_chat_text, visible_chat_text_for_provider,
+};
 use crate::providers::pi::PiProvider;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -1089,7 +1091,7 @@ fn normalize_chat_event_visible_text(event: &mut AgentChatEvent) {
     let (Some(role), Some(text)) = (event.role.as_ref(), event.text.as_deref()) else {
         return;
     };
-    event.text = visible_chat_text(role, text);
+    event.text = visible_chat_text_for_provider(&event.provider, role, text);
 }
 
 fn should_collapse_provider_message_duplicate(

@@ -349,7 +349,7 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
     }
 
     if *role == AgentChatRole::User {
-        if let Some(user_request) = extract_tag_block(trimmed, "USER_REQUEST") {
+        if let Some(user_request) = extract_tag_block(&visible, "USER_REQUEST") {
             visible = user_request;
         }
         // Codex records an image or file prompt twice: once as a provider
@@ -370,6 +370,63 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
     }
 
     Some(visible.to_string())
+}
+
+/// Applies provider-specific transport cleanup before common visible-text
+/// normalization. The provider argument keeps transport markers scoped to the
+/// adapter that emits them.
+pub fn visible_chat_text_for_provider(
+    provider: &str,
+    role: &AgentChatRole,
+    text: &str,
+) -> Option<String> {
+    let text = if provider.eq_ignore_ascii_case("claude") && *role == AgentChatRole::User {
+        remove_wardian_delivery_envelope(text)
+    } else {
+        text.to_string()
+    };
+    visible_chat_text(role, &text)
+}
+
+fn remove_wardian_delivery_envelope(text: &str) -> String {
+    let Some((header, body)) = text.split_once('\n') else {
+        return text.to_string();
+    };
+    let Some(header_fields) = header.strip_prefix("[Wardian ") else {
+        return text.to_string();
+    };
+    let Some(close_bracket) = header_fields.find(']') else {
+        return text.to_string();
+    };
+
+    let required_fields = &header_fields[..close_bracket];
+    let optional_fields = header_fields[close_bracket + 1..].trim();
+    let mut fields = required_fields.split_whitespace();
+    let required_keys = ["message_id", "interaction_id", "generation", "target"];
+    let has_required_fields = required_keys.iter().all(|expected_key| {
+        let Some(field) = fields.next() else {
+            return false;
+        };
+        let Some((key, value)) = field.split_once('=') else {
+            return false;
+        };
+        key == *expected_key && !value.is_empty()
+    }) && fields.next().is_none();
+    if !has_required_fields {
+        return text.to_string();
+    }
+
+    let has_invalid_optional_field = optional_fields.split_whitespace().any(|field| {
+        let Some((key, value)) = field.split_once('=') else {
+            return true;
+        };
+        !matches!(key, "sender" | "reply_to" | "deadline") || value.is_empty()
+    });
+    if has_invalid_optional_field {
+        return text.to_string();
+    }
+
+    body.to_string()
 }
 
 fn remove_attachment_transport_markers(text: &str) -> String {
@@ -1677,7 +1734,7 @@ fn message_event_with_metadata(
     turn_id: Option<String>,
     metadata: Value,
 ) -> Option<AgentChatEvent> {
-    let text = visible_chat_text(&role, &text)?;
+    let text = visible_chat_text_for_provider(provider, &role, &text)?;
     Some(event(
         session_id,
         provider,
@@ -2281,6 +2338,18 @@ mod tests {
             8
         )
         .is_none());
+    }
+
+    #[test]
+    fn claude_native_delivery_envelope_is_hidden_from_user_messages() {
+        let message = one(
+            "claude",
+            r#"{"type":"user","session_id":"claude-1","message":{"role":"user","content":"[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1] sender=agent-2 reply_to=parent-1 deadline=2026-09-05T12:00:00Z\nReview this patch"}}"#,
+        );
+
+        assert_eq!(message.kind, AgentChatEventKind::Message);
+        assert_eq!(message.role, Some(AgentChatRole::User));
+        assert_eq!(message.text.as_deref(), Some("Review this patch"));
     }
 
     #[test]
