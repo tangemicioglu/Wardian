@@ -388,6 +388,23 @@ pub fn visible_chat_text_for_provider(
     visible_chat_text(role, &text)
 }
 
+/// Returns the visible text produced before provider-specific transport cleanup
+/// when that cleanup changed a Claude user message. Callers use this only to
+/// recognize event IDs written by older versions of the provider-log loader.
+pub fn legacy_visible_chat_text_for_provider(
+    provider: &str,
+    role: &AgentChatRole,
+    text: &str,
+) -> Option<String> {
+    if !provider.eq_ignore_ascii_case("claude") || *role != AgentChatRole::User {
+        return None;
+    }
+    let cleaned = remove_wardian_delivery_envelope(text);
+    (cleaned != text)
+        .then(|| visible_chat_text(role, text))
+        .flatten()
+}
+
 fn remove_wardian_delivery_envelope(text: &str) -> String {
     let Some((header, body)) = text.split_once('\n') else {
         return text.to_string();

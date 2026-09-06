@@ -409,9 +409,14 @@ impl ConversationArchiveState {
             if capture_state.should_skip_event(event, provider_source_key.as_deref()) {
                 continue;
             }
-            if !seen_event_ids.insert(event.id.clone()) {
+            let event_ids = event_identity_ids(event);
+            if event_ids
+                .iter()
+                .any(|event_id| seen_event_ids.contains(*event_id))
+            {
                 continue;
             }
+            seen_event_ids.extend(event_ids.into_iter().map(ToString::to_string));
             if let Some(record_index) =
                 matching_delivered_input_record_index(&existing_records, event)
             {
@@ -823,4 +828,16 @@ impl ConversationArchiveState {
         self.active_conversation_id(agent_id)
             .expect("active conversation lock")
     }
+}
+
+fn event_identity_ids(event: &AgentChatEvent) -> Vec<&str> {
+    let mut ids = vec![event.id.as_str()];
+    if let Some(aliases) = event
+        .metadata
+        .get("legacy_event_ids")
+        .and_then(serde_json::Value::as_array)
+    {
+        ids.extend(aliases.iter().filter_map(serde_json::Value::as_str));
+    }
+    ids
 }
