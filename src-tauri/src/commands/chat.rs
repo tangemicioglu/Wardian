@@ -1138,10 +1138,15 @@ fn is_cross_source_archive_duplicate(
     archived_event_ids: &HashSet<String>,
     live_event_ids: &HashSet<String>,
 ) -> bool {
+    let event_ids = event_identity_ids(event);
     if event_is_archived(event) {
-        live_event_ids.contains(&event.id)
+        event_ids
+            .iter()
+            .any(|event_id| live_event_ids.contains(*event_id))
     } else {
-        archived_event_ids.contains(&event.id)
+        event_ids
+            .iter()
+            .any(|event_id| archived_event_ids.contains(*event_id))
     }
 }
 
@@ -1150,10 +1155,11 @@ fn remember_archive_event_id(
     archived_event_ids: &mut HashSet<String>,
     live_event_ids: &mut HashSet<String>,
 ) {
+    let event_ids = event_identity_ids(event);
     if event_is_archived(event) {
-        archived_event_ids.insert(event.id.clone());
+        archived_event_ids.extend(event_ids.into_iter().map(ToString::to_string));
     } else {
-        live_event_ids.insert(event.id.clone());
+        live_event_ids.extend(event_ids.into_iter().map(ToString::to_string));
     }
 }
 
@@ -1163,6 +1169,18 @@ fn event_is_archived(event: &AgentChatEvent) -> bool {
         .get("conversation_archive_id")
         .and_then(|value| value.as_str())
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn event_identity_ids(event: &AgentChatEvent) -> Vec<&str> {
+    let mut ids = vec![event.id.as_str()];
+    if let Some(aliases) = event
+        .metadata
+        .get("legacy_event_ids")
+        .and_then(serde_json::Value::as_array)
+    {
+        ids.extend(aliases.iter().filter_map(serde_json::Value::as_str));
+    }
+    ids
 }
 
 /// Normalizes archived records written before provider adapters learned to
@@ -2244,6 +2262,72 @@ Do you want to proceed?
                 "agent-1:provider:assistant",
             ]
         );
+    }
+
+    #[test]
+    fn merge_deduplicates_claude_aliases_for_non_message_events() {
+        let archived_tool = AgentChatEvent {
+            id: "agent-1:legacy:tool".to_string(),
+            session_id: "agent-1".to_string(),
+            provider: "claude".to_string(),
+            kind: AgentChatEventKind::ToolCall,
+            role: None,
+            text: None,
+            title: Some("shell_command".to_string()),
+            status: None,
+            turn_id: Some("tool-1".to_string()),
+            source: Some("claude_log".to_string()),
+            command: Some("npm test".to_string()),
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: None,
+            sequence: Some(1),
+            metadata: serde_json::json!({"conversation_archive_id": "conversation-one"}),
+        };
+        let mut archived_result = archived_tool.clone();
+        archived_result.id = "agent-1:legacy:result".to_string();
+        archived_result.kind = AgentChatEventKind::ToolResult;
+        archived_result.text = Some("passed".to_string());
+        archived_result.command = None;
+        archived_result.source = Some("claude_tool_result".to_string());
+        archived_result.sequence = Some(2);
+        let mut archived_status = archived_tool.clone();
+        archived_status.id = "agent-1:legacy:status".to_string();
+        archived_status.kind = AgentChatEventKind::Status;
+        archived_status.title = Some("processing".to_string());
+        archived_status.status = Some(AgentChatStatus::Processing);
+        archived_status.text = Some("Working".to_string());
+        archived_status.turn_id = None;
+        archived_status.command = None;
+        archived_status.source = Some("claude_status".to_string());
+        archived_status.sequence = Some(3);
+
+        let archived_events = vec![archived_tool, archived_result, archived_status];
+        let live_events = archived_events
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, mut event)| {
+                let legacy_id = event.id.clone();
+                event.id = format!("agent-1:raw:{index}");
+                event.metadata = serde_json::json!({"legacy_event_ids": [legacy_id]});
+                event
+            })
+            .collect();
+
+        let chat_events = merge_chat_events(live_events, archived_events);
+
+        assert_eq!(chat_events.len(), 3);
+        assert!(chat_events
+            .iter()
+            .all(|event| event.metadata.get("conversation_archive_id").is_some()));
+        assert!(chat_events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::ToolCall));
+        assert!(chat_events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::Status));
     }
 
     #[test]
