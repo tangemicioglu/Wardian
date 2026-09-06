@@ -22,6 +22,7 @@ import {
   installTauriDocsMock,
   libraryIndex,
   queueItems,
+  workbenchDocument,
 } from "./lib/docs-app-mock.mjs";
 import {
   NAVIGATION_TIMEOUT_MS,
@@ -57,7 +58,16 @@ const serverTarget = resolveDevServerTarget({
 });
 const baseUrl = serverTarget.baseUrl;
 
-const VIDEO_SIZE = { width: 1600, height: 1000 };
+/**
+ * Capture size, chosen from how large the clip actually renders.
+ *
+ * The site shows a clip at roughly 1100-1250 CSS pixels. A 1600px capture was
+ * therefore displayed at 0.32-0.40x, which turns 12px interface labels into
+ * four or five pixels and makes every clip unreadable. Recording near the
+ * display width keeps interface text close to 1:1 instead of destroying it in
+ * the downscale.
+ */
+const VIDEO_SIZE = { width: 1280, height: 800 };
 
 /** Contract: every clip is 6-12 seconds and every mp4 is under 900 KB. */
 const MIN_CLIP_MS = 6_000;
@@ -81,7 +91,6 @@ const REQUIRED_CLIPS = [
   "graph",
   "ask-reply",
   "workflows",
-  "thought-telemetry",
   "dashboard",
   "markdown-truth",
   "classes",
@@ -129,12 +138,28 @@ const CLIP_DISMISSED_HINT_IDS = [
   "automation-authoring:v1",
 ];
 
+/**
+ * The left configuration pane is collapsed for every clip.
+ *
+ * No section is about it, and open it costs roughly a fifth of the frame to a
+ * form nobody is being asked to look at — which in a clip shown at around a
+ * thousand pixels is a fifth of the legibility budget. Collapsed, the surface
+ * under discussion relayouts to fill the width. The icon rail stays, so the
+ * app still reads as itself.
+ */
 function withClipDefaults(mock) {
+  const fixtures = { ...mock.fixtures };
+  const shell = { ...workbenchDocument.shell, left_sidebar_collapsed: true };
   return {
     ...mock,
     fixtures: {
       dismissedOnboardingHintIds: CLIP_DISMISSED_HINT_IDS,
-      ...mock.fixtures,
+      ...fixtures,
+      workbenchDocument: {
+        ...workbenchDocument,
+        ...(fixtures.workbenchDocument ?? {}),
+        shell: { ...shell, ...(fixtures.workbenchDocument?.shell ?? {}) },
+      },
     },
   };
 }
@@ -494,34 +519,6 @@ const CLIPS = [
     },
   },
   {
-    id: "thought-telemetry",
-    mock: {},
-    async prepare(page) {
-      await page.locator('[data-testid="agent-watchlist"]').waitFor({ timeout: 15_000 });
-    },
-    async run(page) {
-      const thoughts = [
-        ["docs-codex", "Reading the capture manifest"],
-        ["docs-reviewer", "Diffing the regenerated stills"],
-        ["docs-codex", "Encoding clip 3 of 8"],
-        ["docs-reviewer", "No blocking findings"],
-      ];
-      for (const [sessionId, content] of thoughts) {
-        await emit(page, "agent-json-event", {
-          session_id: sessionId,
-          data: { type: "progress", content },
-        });
-        await wait(1_700);
-      }
-      await emit(page, "agent-metrics", [
-        { session_id: "docs-codex", cpu_usage: 26.4, memory_mb: 468, uptime_seconds: 980, query_count: 9, init_timestamp: "2026-05-12T10:05:00.000Z", current_status: "Processing...", log_path: null },
-        { session_id: "docs-reviewer", cpu_usage: 3.1, memory_mb: 232, uptime_seconds: 1400, query_count: 5, init_timestamp: "2026-05-12T09:58:00.000Z", current_status: "Idle", log_path: null },
-        { session_id: "docs-designer", cpu_usage: 0.4, memory_mb: 198, uptime_seconds: 700, query_count: 2, init_timestamp: "2026-05-12T10:12:00.000Z", current_status: "Off", log_path: null },
-      ]);
-      await wait(1_600);
-    },
-  },
-  {
     id: "dashboard",
     mock: {},
     async prepare(page) {
@@ -652,25 +649,29 @@ function transcode(id, rawPath, startOffsetMs, posterAtMs = 0) {
   const mp4 = path.join(stageDir, `${id}.mp4`);
   const webm = path.join(stageDir, `${id}.webm`);
   const poster = path.join(stageDir, `${id}.png`);
-  const scale = `scale=${VIDEO_SIZE.width}:${VIDEO_SIZE.height}:flags=lanczos`;
+  const chain = `scale=${VIDEO_SIZE.width}:${VIDEO_SIZE.height}:flags=lanczos`;
 
   runFfmpeg(
     ["-y", "-ss", seek, "-i", rawPath, "-an", "-c:v", "libx264", "-profile:v", "high",
-      "-pix_fmt", "yuv420p", "-crf", "30", "-preset", "slower", "-movflags", "+faststart",
-      "-vf", `fps=24,${scale}`, mp4],
+      // CRF 30 was chosen before anyone looked at a frame. Interface text is
+      // high-frequency detail and is the first thing a high CRF destroys, and
+      // the clips were using a tenth of the size budget, so there was no
+      // reason to be economical.
+      "-pix_fmt", "yuv420p", "-crf", "21", "-preset", "slower", "-movflags", "+faststart",
+      "-vf", `fps=24,${chain}`, mp4],
     `${id}.mp4`,
   );
   runFfmpeg(
-    ["-y", "-ss", seek, "-i", rawPath, "-an", "-c:v", "libvpx-vp9", "-crf", "38", "-b:v", "0",
-      "-row-mt", "1", "-vf", `fps=24,${scale}`, webm],
+    ["-y", "-ss", seek, "-i", rawPath, "-an", "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0",
+      "-row-mt", "1", "-vf", `fps=24,${chain}`, webm],
     `${id}.webm`,
   );
   runFfmpeg(
-    ["-y", "-ss", posterSeek, "-i", rawPath, "-frames:v", "1", "-vf", scale, poster],
+    ["-y", "-ss", posterSeek, "-i", rawPath, "-frames:v", "1", "-vf", chain, poster],
     `${id}.png`,
   );
 
-  return { mp4, webm, poster };
+  return { mp4, webm, poster, width: VIDEO_SIZE.width, height: VIDEO_SIZE.height };
 }
 
 // ---------------------------------------------------------------------------
@@ -747,8 +748,8 @@ async function recordClip(browser, clip) {
     mp4: `${clip.id}.mp4`,
     webm: `${clip.id}.webm`,
     poster: `${clip.id}.png`,
-    width: VIDEO_SIZE.width,
-    height: VIDEO_SIZE.height,
+    width: files.width,
+    height: files.height,
     duration_ms: durationMs,
     bytes_mp4: bytesMp4,
   };

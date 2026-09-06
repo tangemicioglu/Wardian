@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-06T05:37:32.275Z",
+  "generated_at": "2026-09-06T06:32:09.861Z",
   "app_version": "0.6.0",
   "clips": [
     {
@@ -7,90 +7,80 @@
       "mp4": "hero.mp4",
       "webm": "hero.webm",
       "poster": "hero.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 10000,
-      "bytes_mp4": 99459
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 9892,
+      "bytes_mp4": 194653
     },
     {
       "id": "graph",
       "mp4": "graph.mp4",
       "webm": "graph.webm",
       "poster": "graph.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 8695,
-      "bytes_mp4": 61221
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8618,
+      "bytes_mp4": 110091
     },
     {
       "id": "ask-reply",
       "mp4": "ask-reply.mp4",
       "webm": "ask-reply.webm",
       "poster": "ask-reply.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 8240,
-      "bytes_mp4": 70094
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8247,
+      "bytes_mp4": 176053
     },
     {
       "id": "workflows",
       "mp4": "workflows.mp4",
       "webm": "workflows.webm",
       "poster": "workflows.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 9394,
-      "bytes_mp4": 68174
-    },
-    {
-      "id": "thought-telemetry",
-      "mp4": "thought-telemetry.mp4",
-      "webm": "thought-telemetry.webm",
-      "poster": "thought-telemetry.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 9337,
-      "bytes_mp4": 72427
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 9427,
+      "bytes_mp4": 127929
     },
     {
       "id": "dashboard",
       "mp4": "dashboard.mp4",
       "webm": "dashboard.webm",
       "poster": "dashboard.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 7846,
-      "bytes_mp4": 102394
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 7824,
+      "bytes_mp4": 207803
     },
     {
       "id": "markdown-truth",
       "mp4": "markdown-truth.mp4",
       "webm": "markdown-truth.webm",
       "poster": "markdown-truth.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 8808,
-      "bytes_mp4": 72772
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8767,
+      "bytes_mp4": 168198
     },
     {
       "id": "classes",
       "mp4": "classes.mp4",
       "webm": "classes.webm",
       "poster": "classes.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 8599,
-      "bytes_mp4": 59512
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8573,
+      "bytes_mp4": 115616
     },
     {
       "id": "garden",
       "mp4": "garden.mp4",
       "webm": "garden.webm",
       "poster": "garden.png",
-      "width": 1600,
-      "height": 1000,
-      "duration_ms": 8023,
-      "bytes_mp4": 62697
+      "width": 1280,
+      "height": 800,
+      "duration_ms": 8081,
+      "bytes_mp4": 136026
     }
   ]
 }
