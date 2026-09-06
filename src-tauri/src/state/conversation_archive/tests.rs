@@ -2270,6 +2270,69 @@ fn claude_native_delivery_envelope_alias_deduplicates_pre_fix_provider_event() {
 }
 
 #[test]
+fn claude_provider_aliases_deduplicate_unchanged_event_kinds() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let mut context = archive_context("session-one");
+    context.provider = "claude".to_string();
+    context.provider_source_key = Some("claude:session:session-one".to_string());
+    let provider_events = normalize_chat_lines(
+        "agent-1",
+        "claude",
+        [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"An ordinary request"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":"An ordinary answer"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}}"#,
+            r#"{"type":"result","subtype":"success","result":"completed"}"#,
+        ],
+    );
+    assert_eq!(provider_events.len(), 4);
+
+    let pre_fix_events = provider_events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let mut event = event.clone();
+            event.id = format!("agent-1:provider_log:pre-fix-{index}");
+            event
+        })
+        .collect::<Vec<_>>();
+    archive
+        .append_chat_events_with_context(context.clone(), &pre_fix_events)
+        .expect("append pre-fix provider events");
+
+    let replayed_events = provider_events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let mut event = event.clone();
+            event.id = format!("agent-1:provider_log:raw-line-{index}");
+            event.metadata["legacy_event_ids"] =
+                serde_json::json!([format!("agent-1:provider_log:pre-fix-{index}")]);
+            event
+        })
+        .collect::<Vec<_>>();
+    archive
+        .append_chat_events_with_context(context, &replayed_events)
+        .expect("append replayed provider events");
+
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+
+    assert_eq!(records.len(), 3);
+    assert!(records.iter().all(|record| record.event_refs.len() == 1));
+    assert!(records
+        .iter()
+        .all(|record| { record.event_refs[0].starts_with("agent-1:provider_log:pre-fix-") }));
+}
+
+#[test]
 fn repeated_same_text_delivered_inputs_are_not_ambiguously_merged() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();
@@ -2616,6 +2679,49 @@ fn disabled_capture_state_skips_observed_events_without_timestamps_when_reenable
     assert!(texts.contains(&"Before disabled."));
     assert!(!texts.contains(&"While disabled."));
     assert!(texts.contains(&"After re-enabled."));
+}
+
+#[test]
+fn disabled_capture_state_skips_a_post_upgrade_claude_alias() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let mut context = archive_context("session-one");
+    context.provider = "claude".to_string();
+    context.provider_source_key = Some("claude:session:session-one".to_string());
+    let provider_events = normalize_chat_lines(
+        "agent-1",
+        "claude",
+        [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"Discarded request"}}"#,
+        ],
+    );
+    let legacy_event_id = "agent-1:provider_log:pre-fix-discarded";
+    let mut pre_fix_event = provider_events[0].clone();
+    pre_fix_event.id = legacy_event_id.to_string();
+    archive
+        .discard_agent_with_context(context.clone(), &[pre_fix_event])
+        .expect("discard pre-fix event");
+
+    let mut upgraded_event = provider_events[0].clone();
+    upgraded_event.id = "agent-1:provider_log:raw-line-discarded".to_string();
+    upgraded_event.metadata["legacy_event_ids"] = serde_json::json!([legacy_event_id]);
+    let capture_state = super::storage::read_capture_state("agent-1").expect("read capture state");
+    assert!(
+        capture_state.should_skip_event(&upgraded_event, context.provider_source_key.as_deref())
+    );
+    archive
+        .append_chat_events_with_context(context, &[upgraded_event])
+        .expect("append post-upgrade event");
+
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+    assert!(records.is_empty());
 }
 
 #[test]

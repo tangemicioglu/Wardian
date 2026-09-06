@@ -586,20 +586,16 @@ fn load_provider_log_chat_events(
                     .and_then(|sequence| sequence.checked_sub(1))
                     .and_then(|index| lines.get(index as usize))
                     .copied();
-                let legacy_id = raw_line.and_then(|raw_line| {
-                    claude_legacy_provider_log_event_id(&event, path, raw_line)
-                });
-                event.id = stable_provider_log_event_id_from_raw_line(
-                    &event,
-                    path,
-                    raw_line.unwrap_or_default(),
-                );
-                if let Some(legacy_id) = legacy_id {
-                    set_metadata(
-                        &mut event.metadata,
-                        "legacy_event_ids",
-                        serde_json::json!([legacy_id]),
-                    );
+                if let Some(raw_line) = raw_line {
+                    let legacy_id = claude_legacy_provider_log_event_id(&event, path, raw_line);
+                    event.id = stable_provider_log_event_id_from_raw_line(&event, path, raw_line);
+                    if event.id != legacy_id {
+                        set_metadata(
+                            &mut event.metadata,
+                            "legacy_event_ids",
+                            serde_json::json!([legacy_id]),
+                        );
+                    }
                 }
             } else {
                 event.id = stable_provider_log_event_id(&event, path);
@@ -613,13 +609,19 @@ fn claude_legacy_provider_log_event_id(
     event: &AgentChatEvent,
     path: &Path,
     raw_line: &str,
-) -> Option<String> {
-    let current_text = event.text.as_deref()?;
-    let parsed = serde_json::from_str::<serde_json::Value>(raw_line).ok()?;
-    let legacy_text = find_legacy_claude_user_text(&parsed, current_text)?;
+) -> String {
     let mut legacy_event = event.clone();
-    legacy_event.text = Some(legacy_text);
-    Some(stable_provider_log_event_id(&legacy_event, path))
+    if event.role.as_ref() == Some(&AgentChatRole::User) {
+        if let (Some(current_text), Ok(parsed)) = (
+            event.text.as_deref(),
+            serde_json::from_str::<serde_json::Value>(raw_line),
+        ) {
+            if let Some(legacy_text) = find_legacy_claude_user_text(&parsed, current_text) {
+                legacy_event.text = Some(legacy_text);
+            }
+        }
+    }
+    stable_provider_log_event_id(&legacy_event, path)
 }
 
 fn find_legacy_claude_user_text(value: &serde_json::Value, current_text: &str) -> Option<String> {
@@ -1852,6 +1854,32 @@ Do you want to proceed?
             second_event.metadata["legacy_event_ids"][0].as_str(),
             Some(legacy_id)
         );
+    }
+
+    #[test]
+    fn claude_provider_log_ids_keep_aliases_for_unchanged_event_kinds() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log_path = temp.path().join("claude.jsonl");
+        let lines = [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"An ordinary request"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":"An ordinary answer"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}}"#,
+            r#"{"type":"result","subtype":"success","result":"completed"}"#,
+        ];
+        std::fs::write(&log_path, format!("{}\n", lines.join("\n"))).expect("write log");
+
+        let events = load_provider_log_chat_events("agent-1", "claude", Some(&log_path), &[]);
+
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|event| event.metadata["legacy_event_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.len() == 1 && ids[0].as_str() != Some(event.id.as_str()))));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::Status));
     }
 
     #[test]

@@ -105,11 +105,16 @@ struct ConversationCaptureEventScope {
 
 impl ConversationCaptureState {
     fn should_skip_event(&self, event: &AgentChatEvent, provider_source_key: Option<&str>) -> bool {
-        let legacy_unscoped_match =
-            provider_source_key.is_none() && self.skip_event_ids.iter().any(|id| id == &event.id);
+        let event_ids = event_identity_ids(event);
+        let legacy_unscoped_match = provider_source_key.is_none()
+            && event_ids
+                .iter()
+                .any(|event_id| self.skip_event_ids.iter().any(|id| id == event_id));
         let scoped_match = self.skip_event_scopes.iter().any(|scope| {
             scope.provider_source_key.as_deref() == provider_source_key
-                && (scope.event_ids.iter().any(|id| id == &event.id)
+                && (event_ids
+                    .iter()
+                    .any(|event_id| scope.event_ids.iter().any(|id| id == event_id))
                     || scope
                         .skip_events_at_or_before
                         .as_deref()
@@ -781,8 +786,10 @@ impl ConversationArchiveState {
             scope.skip_events_at_or_before = Some(cutoff);
             let mut seen = scope.event_ids.iter().cloned().collect::<HashSet<_>>();
             for event in events {
-                if !event.id.trim().is_empty() && seen.insert(event.id.clone()) {
-                    scope.event_ids.push(event.id.clone());
+                for event_id in event_identity_ids(event) {
+                    if !event_id.trim().is_empty() && seen.insert(event_id.to_string()) {
+                        scope.event_ids.push(event_id.to_string());
+                    }
                 }
             }
         } else {
@@ -793,8 +800,10 @@ impl ConversationArchiveState {
                 .cloned()
                 .collect::<HashSet<_>>();
             for event in events {
-                if !event.id.trim().is_empty() && seen.insert(event.id.clone()) {
-                    capture_state.skip_event_ids.push(event.id.clone());
+                for event_id in event_identity_ids(event) {
+                    if !event_id.trim().is_empty() && seen.insert(event_id.to_string()) {
+                        capture_state.skip_event_ids.push(event_id.to_string());
+                    }
                 }
             }
         }
