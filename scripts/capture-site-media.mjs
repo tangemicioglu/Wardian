@@ -89,7 +89,7 @@ const SETTLE_MS = 2_500;
 const REQUIRED_CLIPS = [
   "hero",
   "graph",
-  "ask-reply",
+  "inbox",
   "workflows",
   "dashboard",
   "markdown-truth",
@@ -205,7 +205,7 @@ const pairActivity = {
  * The point of the section is that a handoff between agents leaves a record:
  * an ask that is still awaiting a reply, and the same exchange once answered.
  */
-const askReplyQueueItems = [
+const inboxQueueItems = [
   {
     id: "docs-ask-pending",
     type: "action_needed",
@@ -479,8 +479,8 @@ const CLIPS = [
     },
   },
   {
-    id: "ask-reply",
-    mock: { fixtures: { queueItems: askReplyQueueItems } },
+    id: "inbox",
+    mock: { fixtures: { queueItems: inboxQueueItems } },
     async prepare(page) {
       await openSurface(page, "inbox");
       await wait(1_800);
