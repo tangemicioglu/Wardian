@@ -2270,6 +2270,51 @@ fn claude_native_delivery_envelope_alias_deduplicates_pre_fix_provider_event() {
 }
 
 #[test]
+fn claude_nested_delivery_alias_deduplicates_pre_fix_provider_event() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let mut context = archive_context("session-one");
+    context.provider = "claude".to_string();
+    context.provider_source_key = Some("claude:session:session-one".to_string());
+    let provider_events = normalize_chat_lines(
+        "agent-1",
+        "claude",
+        [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\n<environment_context>\n<USER_REQUEST>\nReview this patch\n</USER_REQUEST>\n</environment_context>\nVisible tail"}}"#,
+        ],
+    );
+    assert_eq!(provider_events[0].text.as_deref(), Some("Visible tail"));
+
+    let legacy_event_id = "agent-1:provider_log:pre-fix-nested-envelope";
+    let mut pre_fix_event = provider_events[0].clone();
+    pre_fix_event.id = legacy_event_id.to_string();
+    pre_fix_event.text = Some("Review this patch".to_string());
+    archive
+        .append_chat_events_with_context(context.clone(), &[pre_fix_event])
+        .expect("append pre-fix nested provider event");
+
+    let mut replayed_event = provider_events[0].clone();
+    replayed_event.id = "agent-1:provider_log:raw-line-nested".to_string();
+    replayed_event.metadata["legacy_event_ids"] = serde_json::json!([legacy_event_id]);
+    archive
+        .append_chat_events_with_context(context, &[replayed_event])
+        .expect("append replayed nested provider event");
+
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].text.as_deref(), Some("Review this patch"));
+    assert_eq!(records[0].event_refs, vec![legacy_event_id]);
+}
+
+#[test]
 fn claude_provider_aliases_deduplicate_unchanged_event_kinds() {
     let (_guard, _temp) = isolated_home();
     let archive = ConversationArchiveState::default();
@@ -2692,12 +2737,14 @@ fn disabled_capture_state_skips_a_post_upgrade_claude_alias() {
         "agent-1",
         "claude",
         [
-            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"Discarded request"}}"#,
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\n<environment_context>\n<USER_REQUEST>\nDiscarded request\n</USER_REQUEST>\n</environment_context>\nVisible tail"}}"#,
         ],
     );
+    assert_eq!(provider_events[0].text.as_deref(), Some("Visible tail"));
     let legacy_event_id = "agent-1:provider_log:pre-fix-discarded";
     let mut pre_fix_event = provider_events[0].clone();
     pre_fix_event.id = legacy_event_id.to_string();
+    pre_fix_event.text = Some("Discarded request".to_string());
     archive
         .discard_agent_with_context(context.clone(), &[pre_fix_event])
         .expect("discard pre-fix event");

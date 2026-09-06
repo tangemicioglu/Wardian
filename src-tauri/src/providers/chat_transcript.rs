@@ -329,6 +329,14 @@ fn normalize_pi(
 }
 
 pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
+    visible_chat_text_impl(role, text, false)
+}
+
+fn visible_chat_text_impl(
+    role: &AgentChatRole,
+    text: &str,
+    extract_user_request_from_original_text: bool,
+) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
@@ -349,7 +357,12 @@ pub fn visible_chat_text(role: &AgentChatRole, text: &str) -> Option<String> {
     }
 
     if *role == AgentChatRole::User {
-        if let Some(user_request) = extract_tag_block(&visible, "USER_REQUEST") {
+        let user_request_source = if extract_user_request_from_original_text {
+            trimmed
+        } else {
+            visible.as_str()
+        };
+        if let Some(user_request) = extract_tag_block(user_request_source, "USER_REQUEST") {
             visible = user_request;
         }
         // Codex records an image or file prompt twice: once as a provider
@@ -388,9 +401,9 @@ pub fn visible_chat_text_for_provider(
     visible_chat_text(role, &text)
 }
 
-/// Returns the visible text produced before provider-specific transport cleanup
-/// when that cleanup changed a Claude user message. Callers use this only to
-/// recognize event IDs written by older versions of the provider-log loader.
+/// Returns the visible text produced by the pre-provider-normalization
+/// algorithm when cleanup changed a Claude user message. Callers use this only
+/// to recognize event IDs written by older versions of the provider-log loader.
 pub fn legacy_visible_chat_text_for_provider(
     provider: &str,
     role: &AgentChatRole,
@@ -401,7 +414,7 @@ pub fn legacy_visible_chat_text_for_provider(
     }
     let cleaned = remove_wardian_delivery_envelope(text);
     (cleaned != text)
-        .then(|| visible_chat_text(role, text))
+        .then(|| visible_chat_text_impl(role, text, true))
         .flatten()
 }
 
@@ -2367,6 +2380,26 @@ mod tests {
         assert_eq!(message.kind, AgentChatEventKind::Message);
         assert_eq!(message.role, Some(AgentChatRole::User));
         assert_eq!(message.text.as_deref(), Some("Review this patch"));
+    }
+
+    #[test]
+    fn claude_legacy_delivery_alias_preserves_nested_user_request_order() {
+        let content = "[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\n<environment_context>\n<USER_REQUEST>\nReview this patch\n</USER_REQUEST>\n</environment_context>\nVisible tail";
+        let message = one(
+            "claude",
+            &serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": content}
+            })
+            .to_string(),
+        );
+
+        assert_eq!(message.text.as_deref(), Some("Visible tail"));
+        assert_eq!(
+            legacy_visible_chat_text_for_provider("claude", &AgentChatRole::User, content)
+                .as_deref(),
+            Some("Review this patch")
+        );
     }
 
     #[test]
