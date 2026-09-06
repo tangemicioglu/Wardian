@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::manager::{self, opencode::opencode_database_path};
 use crate::providers::antigravity::AntigravityProvider;
-use crate::providers::chat_transcript::{normalize_chat_lines, visible_chat_text};
+use crate::providers::chat_transcript::{
+    legacy_visible_chat_text_for_provider, normalize_chat_lines, visible_chat_text,
+    visible_chat_text_for_provider,
+};
 use crate::providers::pi::PiProvider;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -566,7 +569,8 @@ fn load_provider_log_chat_events(
         return Vec::new();
     };
 
-    normalize_chat_lines(session_id, provider, content.lines())
+    let lines = content.lines().collect::<Vec<_>>();
+    normalize_chat_lines(session_id, provider, lines.iter())
         .into_iter()
         .map(|mut event| {
             set_metadata(&mut event.metadata, "provider_log", true);
@@ -576,10 +580,92 @@ fn load_provider_log_chat_events(
                 "log_path",
                 path.to_string_lossy().to_string(),
             );
-            event.id = stable_provider_log_event_id(&event, path);
+            if provider.eq_ignore_ascii_case("claude") {
+                let raw_line = event
+                    .sequence
+                    .and_then(|sequence| sequence.checked_sub(1))
+                    .and_then(|index| lines.get(index as usize))
+                    .copied();
+                if let Some(raw_line) = raw_line {
+                    let legacy_id = claude_legacy_provider_log_event_id(&event, path, raw_line);
+                    event.id = stable_provider_log_event_id_from_raw_line(&event, path, raw_line);
+                    if event.id != legacy_id {
+                        set_metadata(
+                            &mut event.metadata,
+                            "legacy_event_ids",
+                            serde_json::json!([legacy_id]),
+                        );
+                    }
+                }
+            } else {
+                event.id = stable_provider_log_event_id(&event, path);
+            }
             event
         })
         .collect()
+}
+
+fn claude_legacy_provider_log_event_id(
+    event: &AgentChatEvent,
+    path: &Path,
+    raw_line: &str,
+) -> String {
+    let mut legacy_event = event.clone();
+    if event.role.as_ref() == Some(&AgentChatRole::User) {
+        if let (Some(current_text), Ok(parsed)) = (
+            event.text.as_deref(),
+            serde_json::from_str::<serde_json::Value>(raw_line),
+        ) {
+            if let Some(legacy_text) = find_legacy_claude_user_text(&parsed, current_text) {
+                legacy_event.text = Some(legacy_text);
+            }
+        }
+    }
+    stable_provider_log_event_id(&legacy_event, path)
+}
+
+fn find_legacy_claude_user_text(value: &serde_json::Value, current_text: &str) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let legacy_text =
+                legacy_visible_chat_text_for_provider("claude", &AgentChatRole::User, text)?;
+            (visible_chat_text_for_provider("claude", &AgentChatRole::User, text).as_deref()
+                == Some(current_text))
+            .then_some(legacy_text)
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_legacy_claude_user_text(value, current_text)),
+        serde_json::Value::Object(values) => values
+            .values()
+            .find_map(|value| find_legacy_claude_user_text(value, current_text)),
+        _ => None,
+    }
+}
+
+fn stable_provider_log_event_id_from_raw_line(
+    event: &AgentChatEvent,
+    path: &Path,
+    raw_line: &str,
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(event.session_id.as_bytes());
+    hash.update(b"\0");
+    hash.update(event.provider.as_bytes());
+    hash.update(b"\0");
+    hash.update(path.to_string_lossy().as_bytes());
+    hash.update(b"\0");
+    hash.update(format!("{:?}", event.kind).as_bytes());
+    hash.update(b"\0");
+    hash.update(format!("{:?}", event.role).as_bytes());
+    hash.update(b"\0");
+    hash.update(raw_line.trim().as_bytes());
+    hash.update(b"\0");
+    format!(
+        "{}:provider_log:{}",
+        event.session_id,
+        hex_prefix(hash.finalize().as_slice(), 16)
+    )
 }
 
 fn load_antigravity_database_chat_events(
@@ -1052,10 +1138,15 @@ fn is_cross_source_archive_duplicate(
     archived_event_ids: &HashSet<String>,
     live_event_ids: &HashSet<String>,
 ) -> bool {
+    let event_ids = event_identity_ids(event);
     if event_is_archived(event) {
-        live_event_ids.contains(&event.id)
+        event_ids
+            .iter()
+            .any(|event_id| live_event_ids.contains(*event_id))
     } else {
-        archived_event_ids.contains(&event.id)
+        event_ids
+            .iter()
+            .any(|event_id| archived_event_ids.contains(*event_id))
     }
 }
 
@@ -1064,10 +1155,11 @@ fn remember_archive_event_id(
     archived_event_ids: &mut HashSet<String>,
     live_event_ids: &mut HashSet<String>,
 ) {
+    let event_ids = event_identity_ids(event);
     if event_is_archived(event) {
-        archived_event_ids.insert(event.id.clone());
+        archived_event_ids.extend(event_ids.into_iter().map(ToString::to_string));
     } else {
-        live_event_ids.insert(event.id.clone());
+        live_event_ids.extend(event_ids.into_iter().map(ToString::to_string));
     }
 }
 
@@ -1077,6 +1169,18 @@ fn event_is_archived(event: &AgentChatEvent) -> bool {
         .get("conversation_archive_id")
         .and_then(|value| value.as_str())
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn event_identity_ids(event: &AgentChatEvent) -> Vec<&str> {
+    let mut ids = vec![event.id.as_str()];
+    if let Some(aliases) = event
+        .metadata
+        .get("legacy_event_ids")
+        .and_then(serde_json::Value::as_array)
+    {
+        ids.extend(aliases.iter().filter_map(serde_json::Value::as_str));
+    }
+    ids
 }
 
 /// Normalizes archived records written before provider adapters learned to
@@ -1089,7 +1193,7 @@ fn normalize_chat_event_visible_text(event: &mut AgentChatEvent) {
     let (Some(role), Some(text)) = (event.role.as_ref(), event.text.as_deref()) else {
         return;
     };
-    event.text = visible_chat_text(role, text);
+    event.text = visible_chat_text_for_provider(&event.provider, role, text);
 }
 
 fn should_collapse_provider_message_duplicate(
@@ -1726,6 +1830,77 @@ Do you want to proceed?
     }
 
     #[test]
+    fn claude_provider_log_ids_use_raw_lines_and_keep_legacy_aliases() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log_path = temp.path().join("claude.jsonl");
+        let line = r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\nReview this patch"}}"#;
+        std::fs::write(&log_path, format!("{line}\n")).expect("write first log");
+
+        let first = load_provider_log_chat_events("agent-1", "claude", Some(&log_path), &[]);
+        let first_event = first.first().expect("Claude user event");
+        let first_id = first_event.id.clone();
+        let legacy_id = first_event
+            .metadata
+            .get("legacy_event_ids")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|ids| ids.first())
+            .and_then(serde_json::Value::as_str)
+            .expect("legacy event ID alias");
+
+        let mut legacy_event = first_event.clone();
+        legacy_event.text = Some(
+            "[Wardian message_id=msg-1 interaction_id=ask-1 generation=7 target=agent-1]\nReview this patch"
+                .to_string(),
+        );
+        assert_eq!(
+            legacy_id,
+            stable_provider_log_event_id(&legacy_event, &log_path)
+        );
+        assert_ne!(first_id, legacy_id);
+        assert_eq!(first_event.text.as_deref(), Some("Review this patch"));
+
+        let earlier_line = r#"{"type":"user","uuid":"request-0","message":{"role":"user","content":"Earlier request"}}"#;
+        std::fs::write(&log_path, format!("{earlier_line}\n{line}\n")).expect("write shifted log");
+        let second = load_provider_log_chat_events("agent-1", "claude", Some(&log_path), &[]);
+        let second_event = second
+            .iter()
+            .find(|event| event.text.as_deref() == Some("Review this patch"))
+            .expect("shifted Claude user event");
+
+        assert_eq!(second_event.id, first_id);
+        assert_eq!(
+            second_event.metadata["legacy_event_ids"][0].as_str(),
+            Some(legacy_id)
+        );
+    }
+
+    #[test]
+    fn claude_provider_log_ids_keep_aliases_for_unchanged_event_kinds() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log_path = temp.path().join("claude.jsonl");
+        let lines = [
+            r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"An ordinary request"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":"An ordinary answer"}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}}"#,
+            r#"{"type":"result","subtype":"success","result":"completed"}"#,
+        ];
+        std::fs::write(&log_path, format!("{}\n", lines.join("\n"))).expect("write log");
+
+        let events = load_provider_log_chat_events("agent-1", "claude", Some(&log_path), &[]);
+
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().all(|event| event.metadata["legacy_event_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.len() == 1 && ids[0].as_str() != Some(event.id.as_str()))));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::ToolCall));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::Status));
+    }
+
+    #[test]
     fn provider_log_transcript_suppresses_watch_terminal_fallback() {
         let provider_events = vec![AgentChatEvent {
             id: "agent-1:provider:1".to_string(),
@@ -2087,6 +2262,72 @@ Do you want to proceed?
                 "agent-1:provider:assistant",
             ]
         );
+    }
+
+    #[test]
+    fn merge_deduplicates_claude_aliases_for_non_message_events() {
+        let archived_tool = AgentChatEvent {
+            id: "agent-1:legacy:tool".to_string(),
+            session_id: "agent-1".to_string(),
+            provider: "claude".to_string(),
+            kind: AgentChatEventKind::ToolCall,
+            role: None,
+            text: None,
+            title: Some("shell_command".to_string()),
+            status: None,
+            turn_id: Some("tool-1".to_string()),
+            source: Some("claude_log".to_string()),
+            command: Some("npm test".to_string()),
+            exit_code: None,
+            path: None,
+            language: None,
+            created_at: None,
+            sequence: Some(1),
+            metadata: serde_json::json!({"conversation_archive_id": "conversation-one"}),
+        };
+        let mut archived_result = archived_tool.clone();
+        archived_result.id = "agent-1:legacy:result".to_string();
+        archived_result.kind = AgentChatEventKind::ToolResult;
+        archived_result.text = Some("passed".to_string());
+        archived_result.command = None;
+        archived_result.source = Some("claude_tool_result".to_string());
+        archived_result.sequence = Some(2);
+        let mut archived_status = archived_tool.clone();
+        archived_status.id = "agent-1:legacy:status".to_string();
+        archived_status.kind = AgentChatEventKind::Status;
+        archived_status.title = Some("processing".to_string());
+        archived_status.status = Some(AgentChatStatus::Processing);
+        archived_status.text = Some("Working".to_string());
+        archived_status.turn_id = None;
+        archived_status.command = None;
+        archived_status.source = Some("claude_status".to_string());
+        archived_status.sequence = Some(3);
+
+        let archived_events = vec![archived_tool, archived_result, archived_status];
+        let live_events = archived_events
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, mut event)| {
+                let legacy_id = event.id.clone();
+                event.id = format!("agent-1:raw:{index}");
+                event.metadata = serde_json::json!({"legacy_event_ids": [legacy_id]});
+                event
+            })
+            .collect();
+
+        let chat_events = merge_chat_events(live_events, archived_events);
+
+        assert_eq!(chat_events.len(), 3);
+        assert!(chat_events
+            .iter()
+            .all(|event| event.metadata.get("conversation_archive_id").is_some()));
+        assert!(chat_events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::ToolCall));
+        assert!(chat_events
+            .iter()
+            .any(|event| event.kind == AgentChatEventKind::Status));
     }
 
     #[test]
