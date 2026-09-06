@@ -280,6 +280,31 @@ export const terminalLinkOutput = {
 
 export const repoRoot = "<absolute-workspace-path>";
 
+/**
+ * The Explorer re-roots on selection: an agent's workspace when one is
+ * selected, the Wardian home when none is. Both roots are seeded here because
+ * the Markdown-as-Truth clip needs the second one — it has to reach the very
+ * prompt file the Library just rendered, and that file lives under the Wardian
+ * home, not inside any agent's workspace.
+ */
+export const wardianHome = "<wardian-home>";
+
+/** The Library entry and the file behind it, so the two views cannot drift. */
+export const reviewChecklistPath = "library/prompts/review/checklist.md";
+export const reviewChecklistBody = [
+  "---",
+  "name: Review Checklist",
+  "tags: [review, quality]",
+  "starred: true",
+  "---",
+  "",
+  "Review the current branch and return findings first.",
+  "",
+  "- State the defect before the fix.",
+  "- Mark every finding blocking or non-blocking.",
+  "- Stop at zero blocking findings.",
+].join("\n");
+
 export const directoryTree = {
   [repoRoot]: [
     { name: "docs", path: `${repoRoot}/docs`, is_dir: true, extension: null },
@@ -303,6 +328,25 @@ export const directoryTree = {
   [`${repoRoot}/src`]: [
     { name: "views", path: `${repoRoot}/src/views`, is_dir: true, extension: null },
     { name: "features", path: `${repoRoot}/src/features`, is_dir: true, extension: null },
+  ],
+  [wardianHome]: [
+    { name: "agents", path: `${wardianHome}/agents`, is_dir: true, extension: null },
+    { name: "classes", path: `${wardianHome}/classes`, is_dir: true, extension: null },
+    { name: "library", path: `${wardianHome}/library`, is_dir: true, extension: null },
+    { name: "settings.json", path: `${wardianHome}/settings.json`, is_dir: false, extension: "json" },
+  ],
+  [`${wardianHome}/library`]: [
+    { name: "automations", path: `${wardianHome}/library/automations`, is_dir: true, extension: null },
+    { name: "classes", path: `${wardianHome}/library/classes`, is_dir: true, extension: null },
+    { name: "prompts", path: `${wardianHome}/library/prompts`, is_dir: true, extension: null },
+    { name: "skills", path: `${wardianHome}/library/skills`, is_dir: true, extension: null },
+  ],
+  [`${wardianHome}/library/prompts`]: [
+    { name: "automation", path: `${wardianHome}/library/prompts/automation`, is_dir: true, extension: null },
+    { name: "review", path: `${wardianHome}/library/prompts/review`, is_dir: true, extension: null },
+  ],
+  [`${wardianHome}/library/prompts/review`]: [
+    { name: "checklist.md", path: `${wardianHome}/${reviewChecklistPath}`, is_dir: false, extension: "md" },
   ],
 };
 
@@ -483,7 +527,8 @@ export async function installTauriDocsMock(page, options = {}) {
   const fixtures = {
     agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix,
     terminalOutput: options.terminalOutput ?? terminalOutput,
-    libraryTree, libraryIndex, automations, queueItems, repoRoot,
+    libraryTree, libraryIndex, automations, queueItems, repoRoot, wardianHome,
+    reviewChecklistPath, reviewChecklistBody,
     directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds,
     workbenchDocument, providerModelCatalog, generatedAgentNames,
     providerReadiness,
@@ -491,7 +536,7 @@ export async function installTauriDocsMock(page, options = {}) {
   };
   const commandResults = options.commandResults ?? {};
   await page.addInitScript(({ fixtures, commandResults }) => {
-    const { agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput, libraryTree, libraryIndex, automations, queueItems, repoRoot, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument, providerModelCatalog, generatedAgentNames, providerReadiness } = fixtures;
+    const { agents, agentClasses, telemetry, telemetryFleet, telemetryMatrix, terminalOutput, libraryTree, libraryIndex, automations, queueItems, repoRoot, wardianHome, reviewChecklistPath, reviewChecklistBody, directoryTree, gitStatus, gitHistory, dismissedOnboardingHintIds, workbenchDocument, providerModelCatalog, generatedAgentNames, providerReadiness } = fixtures;
     const fixedNow = 1778590800000;
     const RealDate = Date;
 
@@ -646,7 +691,12 @@ export async function installTauriDocsMock(page, options = {}) {
         if (command === "telemetry_refresh") return { sources: 3, advanced: 0, turns: 0, edits: 0, intervals: 0, buckets_recomputed: 0, unavailable: 0, failures: [] };
         if (command === "load_dashboard_prefs") return null;
         if (command === "save_dashboard_prefs") return null;
-        if (command === "get_explorer_root") return repoRoot;
+        // The real Explorer roots at the selected agent's workspace, and at the
+        // Wardian home when nothing is selected. Returning one root for both
+        // cases left the file view unable to reach Wardian's own state.
+        if (command === "get_explorer_root") {
+          return args && args.sessionId ? repoRoot : wardianHome;
+        }
         // `DirectoryTreeResult`, not a bare array. The command was paginated and
         // this mock kept returning the old shape, so `result.nodes` was
         // undefined and the Explorer crashed into the error boundary the moment
@@ -659,6 +709,11 @@ export async function installTauriDocsMock(page, options = {}) {
           };
         }
         if (command === "read_file_preview") {
+          // The Library entry and the file on disk have to show the same
+          // bytes, because that identity is the claim the clip is making.
+          if (String(args.path || "").endsWith(reviewChecklistPath)) {
+            return reviewChecklistBody;
+          }
           return `# ${String(args.path || "").split("/").pop()}\n\nDocumentation preview content for the seeded screenshot workspace.\n`;
         }
         if (command === "git_status") return gitStatus;

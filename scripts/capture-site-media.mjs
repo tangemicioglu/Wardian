@@ -340,6 +340,93 @@ const classesLibraryIndex = {
   },
 };
 
+/**
+ * A Library with something in every section, for the Markdown-as-Truth clip.
+ *
+ * The section names four kinds of file. The default fixture holds one prompt
+ * and nothing else, so the rail showed four empty sections next to a sentence
+ * claiming all four are files — the claim and the screen disagreed.
+ */
+const populatedLibraryIndex = {
+  ...libraryIndex,
+  sections: {
+    ...libraryIndex.sections,
+    skills: {
+      stubbed: false,
+      tree: {
+        path: "",
+        name: "Root",
+        children: [
+          {
+            kind: "skill",
+            name: "Root Cause Analysis",
+            path: "root-cause-analysis/SKILL.md",
+            entry_ref: "skills/root-cause-analysis/SKILL.md",
+            description: "Trace a failure to the change that caused it.",
+            tags: ["method"],
+            is_starred: false,
+            deployment_count: 3,
+            error: null,
+          },
+          {
+            kind: "skill",
+            name: "Pull Request",
+            path: "pull-request/SKILL.md",
+            entry_ref: "skills/pull-request/SKILL.md",
+            description: "Conventions and checks for opening a PR.",
+            tags: ["artifact"],
+            is_starred: true,
+            deployment_count: 5,
+            error: null,
+          },
+        ],
+      },
+    },
+    prompts: {
+      stubbed: false,
+      tree: {
+        path: "",
+        name: "Root",
+        children: [
+          ...libraryIndex.sections.prompts.tree.children,
+          {
+            kind: "prompt",
+            name: "Automation Plan",
+            path: "automation/plan.md",
+            entry_ref: "prompts/automation/plan.md",
+            description: "Break a task into bounded agent steps.",
+            tags: ["automation"],
+            is_starred: false,
+            deployment_count: 0,
+            error: null,
+          },
+        ],
+      },
+    },
+    classes: classesLibraryIndex.sections.classes,
+    automations: {
+      stubbed: false,
+      tree: {
+        path: "",
+        name: "Root",
+        children: [
+          {
+            kind: "automation",
+            name: "Docs Screenshot Refresh",
+            path: "docs-screenshot-refresh.json",
+            entry_ref: "automations/docs-screenshot-refresh.json",
+            description: "Recapture the guide screenshots and verify them.",
+            tags: ["docs"],
+            is_starred: false,
+            deployment_count: 1,
+            error: null,
+          },
+        ],
+      },
+    },
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Page helpers.
 // ---------------------------------------------------------------------------
@@ -363,13 +450,6 @@ async function pushPty(page, sessionId, chunk) {
   await page.evaluate(
     ([id, text]) => window.__WARDIAN_DOCS_PUSH_PTY?.(id, text),
     [sessionId, chunk],
-  );
-}
-
-async function emit(page, event, payload) {
-  await page.evaluate(
-    ([name, body]) => window.__WARDIAN_DOCS_EMIT?.(name, body),
-    [event, payload],
   );
 }
 
@@ -539,13 +619,17 @@ const CLIPS = [
   },
   {
     id: "markdown-truth",
-    mock: {},
+    mock: { fixtures: { libraryIndex: populatedLibraryIndex } },
+    // The section claims the Library and the file tree are two views of one
+    // directory, so the clip has to end on the same file it started from.
+    // Deliberately no agent selection: the Explorer roots at an agent's
+    // workspace when one is selected and at the Wardian home when none is, and
+    // only the second root contains the Library's own files.
+    //
+    // The poster is the frame where both halves are on screen at once, not the
+    // opening one — a still of the Library alone shows none of the claim.
+    posterAtMs: 8_600,
     async prepare(page) {
-      // The Explorer resolves its root from the selected agent, and selection
-      // has to happen while the grid is still on top — once the Library
-      // surface covers it the card is in the DOM but not clickable.
-      await page.locator('[data-testid="agent-grid"]').waitFor({ timeout: 15_000 });
-      await selectAgent(page, "docs-codex");
       await openSurface(page, "library");
       await page.getByTestId("library-section-prompts").click();
       await wait(1_000);
@@ -555,10 +639,16 @@ const CLIPS = [
       await wait(2_800);
       await page.locator('[data-testid="sidebar-tab-explorer"]').click();
       await wait(1_200);
-      await page.getByText("docs", { exact: true }).click();
-      await wait(900);
-      await page.getByText("guide", { exact: true }).click();
-      await wait(2_800);
+      const explorer = page.locator('[data-testid="explorer-panel"]');
+      for (const folder of ["library", "prompts", "review"]) {
+        await explorer.getByText(folder, { exact: true }).click();
+        await wait(900);
+      }
+      // Selecting the row highlights it, which is where the eye should land.
+      // Opening it would need the whole Files resource protocol, and the point
+      // is already made by the name sitting in the tree.
+      await explorer.getByText("checklist.md", { exact: true }).click();
+      await wait(2_000);
     },
   },
   {

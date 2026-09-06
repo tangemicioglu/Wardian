@@ -97,9 +97,15 @@ Both captures drive the same seeded app through
 which holds the in-browser Tauri IPC mock and every fixture. They live in one
 place so the two captures cannot show different data for the same surface.
 
-The fixtures are deterministic and public-safe: workspace paths are the
-`<absolute-workspace-path>` placeholder and the agents are invented. Never point
-a capture at a real workspace — the repository and the site are both public.
+The fixtures are deterministic and public-safe: paths are the
+`<absolute-workspace-path>` and `<wardian-home>` placeholders and the agents are
+invented. Never point a capture at a real workspace — the repository and the
+site are both public.
+
+The Explorer re-roots on selection the way the app does: an agent's workspace
+when one is selected, the Wardian home when none is. A clip that needs to reach
+Wardian's own files, rather than a project's, must therefore leave the roster
+selection empty.
 
 One difference between the two captures matters. The stills apply
 `stabilizeVisuals()`, which zeroes animation and transition durations so the
