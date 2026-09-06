@@ -32,6 +32,27 @@ const ESLINT_BIN = path.join(REPO_ROOT, "node_modules", "eslint", "bin", "eslint
 // installed tooling, while the source debt metrics are independent of the
 // transitive package graph.
 const LINT_POLICY_FILES = ["eslint.config.js", "package.json"];
+/**
+ * The manifest keys that actually define the dependency and tooling contract.
+ *
+ * The guard exists so a branch cannot loosen lint policy to hide warnings it
+ * introduced. Treating the whole manifest as policy overshoots that: adding an
+ * npm script changes no dependency, engine, or rule, and cannot conceal a
+ * warning, but it used to refuse the comparison anyway — which blocked every
+ * PR that shipped a tool with the call site the pre-commit checklist requires.
+ */
+const PACKAGE_CONTRACT_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "overrides",
+  "resolutions",
+  "engines",
+  "packageManager",
+  "eslintConfig",
+  "prettier",
+];
 const TRACKED_FILE_LINES = [
   "src-tauri/src/commands/agent.rs",
   "src-tauri/src/control.rs",
@@ -56,13 +77,49 @@ function git(args) {
   return execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
 }
 
-export function changedLintPolicyFiles(changedFiles) {
-  const changed = new Set(changedFiles);
-  return LINT_POLICY_FILES.filter((file) => changed.has(file));
+/** File contents at a revision, or undefined when it is not present there. */
+function showFile(revision, file) {
+  try {
+    return execFileSync("git", ["show", `${revision}:${file}`], { cwd: REPO_ROOT, encoding: "utf8" });
+  } catch {
+    return undefined;
+  }
 }
 
-export function assertLintPolicyUnchanged(changedFiles) {
-  const changed = changedLintPolicyFiles(changedFiles);
+/**
+ * The contract fields of a manifest, as a stable string for comparison.
+ *
+ * Unparseable input returns the raw text, so a malformed manifest compares as
+ * changed and the gate stays conservative rather than silently allowing it.
+ */
+export function packageContract(manifestText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(manifestText);
+  } catch {
+    return manifestText;
+  }
+  return JSON.stringify(PACKAGE_CONTRACT_FIELDS.map((field) => [field, parsed?.[field] ?? null]));
+}
+
+/**
+ * @param {string[]} changedFiles Paths differing from the base revision.
+ * @param {{base?: string, head?: string}} [manifests] `package.json` text on
+ *   each side. Omit them to keep the conservative behaviour of treating any
+ *   manifest change as a policy change.
+ */
+export function changedLintPolicyFiles(changedFiles, manifests) {
+  const changed = new Set(changedFiles);
+  return LINT_POLICY_FILES.filter((file) => {
+    if (!changed.has(file)) return false;
+    if (file !== "package.json") return true;
+    if (!manifests || manifests.base === undefined || manifests.head === undefined) return true;
+    return packageContract(manifests.base) !== packageContract(manifests.head);
+  });
+}
+
+export function assertLintPolicyUnchanged(changedFiles, manifests) {
+  const changed = changedLintPolicyFiles(changedFiles, manifests);
   if (changed.length > 0) {
     throw new Error(
       `Debt budget gate refuses to compare a revision that changes lint policy or dependencies: ${changed.join(", ")}`,
@@ -189,9 +246,17 @@ function linkDependencies(root) {
   );
 }
 
+/**
+ * The base worktree runs against this checkout's installed `node_modules`, so
+ * the two manifests have to agree about what is installed. They do not have to
+ * be byte-identical: comparing the contract fields asks the question this check
+ * actually cares about, and lets a script-only difference through.
+ */
 function assertDependencyParity(root) {
   for (const file of LINT_POLICY_FILES.slice(1)) {
-    if (readFileSync(path.join(REPO_ROOT, file), "utf8") !== readFileSync(path.join(root, file), "utf8")) {
+    const here = packageContract(readFileSync(path.join(REPO_ROOT, file), "utf8"));
+    const there = packageContract(readFileSync(path.join(root, file), "utf8"));
+    if (here !== there) {
       throw new Error(`Debt budget gate cannot resolve base dependencies for ${file}.`);
     }
   }
@@ -200,7 +265,10 @@ function assertDependencyParity(root) {
 export function main(argv = process.argv.slice(2)) {
   const { base: explicitBase } = parseArgs(argv);
   const base = resolveBaseRef(explicitBase);
-  assertLintPolicyUnchanged(git(["diff", "--name-only", `${base}..HEAD`, "--", ...LINT_POLICY_FILES]).split("\n").filter(Boolean));
+  assertLintPolicyUnchanged(
+    git(["diff", "--name-only", `${base}..HEAD`, "--", ...LINT_POLICY_FILES]).split("\n").filter(Boolean),
+    { base: showFile(base, "package.json"), head: showFile("HEAD", "package.json") },
+  );
   const current = measure(REPO_ROOT);
   const baseRoot = addBaseWorktree(base);
   let baseline;
