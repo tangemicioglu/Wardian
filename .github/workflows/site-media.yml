@@ -77,8 +77,21 @@ jobs:
       - name: Copy the media into the site
         if: steps.token.outputs.present == 'true'
         run: |
+          set -euo pipefail
           mkdir -p site/assets/media
-          rm -f site/assets/media/*.mp4 site/assets/media/*.webm site/assets/media/*.png
+
+          # Clear the previous clips so an id dropped from the manifest cannot
+          # linger, but only the clips. `assets/media` also holds stills this
+          # pipeline does not produce - the remote-control phone screenshots -
+          # and a blanket `rm *.png` deleted them, so the first refresh PR
+          # would have removed two images the homepage still references.
+          # A poster is identifiable by its video sibling; a lone png is not
+          # ours to delete.
+          for video in site/assets/media/*.mp4 site/assets/media/*.webm; do
+            [ -e "$video" ] || continue
+            rm -f "$video" "${video%.*}.png"
+          done
+
           cp docs/assets/site-media/* site/assets/media/
 
       - name: Open the refresh pull request

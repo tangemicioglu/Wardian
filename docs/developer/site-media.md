@@ -146,7 +146,24 @@ Opening the pull request against the site repository needs a token, because
    write**.
 2. Add it to this repository as the secret `WARDIAN_SITE_PAT`.
 
+The organization already runs a GitHub App for cross-repository release
+dispatch (`WARDIAN_RELEASE_DISPATCH_APP_ID` plus its private key), and granting
+that App access to `wardian-app/wardian.org` would let this workflow mint a
+scoped, short-lived token with `actions/create-github-app-token` instead, the
+way [`release.yml`](https://github.com/wardian-app/Wardian/blob/main/.github/workflows/release.yml)
+does. That is the better shape — nothing long-lived, nothing tied to one
+person's account — and it needs no new secret. The PAT path above is what the
+workflow reads today.
+
 Until that secret exists the workflow still captures the clips and uploads the
 artifact, and logs a warning explaining what is missing. The bundle can be
 downloaded and copied by hand in the meantime, so the pipeline is useful before
 the token is set up.
+
+### What the refresh may delete
+
+`assets/media` in the site repository holds more than this pipeline produces:
+the remote-control phone stills are committed there directly. The copy step
+therefore clears videos and the posters that sit beside them, never a `.png`
+on its own. Keep that rule if you change the step, or a refresh will silently
+delete images the homepage still references.
