@@ -1587,6 +1587,48 @@ fn native_command(
         }
         NativeProviderProtocol::CodexAppServer => {
             CodexProvider::new().append_common_args(&mut args, &config, false);
+            if config.session_id != spec.target_agent_id {
+                return Err(error(
+                    NativeDeliveryErrorCode::TransportUnavailable,
+                    "Codex native instruction owner does not match the target agent",
+                    false,
+                ));
+            }
+            let instruction_error = |message| {
+                error(
+                    NativeDeliveryErrorCode::TransportUnavailable,
+                    message,
+                    false,
+                )
+            };
+            let memory_instructions = if crate::utils::memory_feature_enabled() {
+                let store = wardian_core::memory::MemoryStore::from_default_home()
+                    .map_err(|failure| instruction_error(failure.to_string()))?;
+                let process_key = config.resume_session.clone().unwrap_or_else(|| {
+                    format!("native:{}:{}", spec.target_agent_id, spec.generation)
+                });
+                // Compilation is not evidence of consumption. Do not advance
+                // the memory checkpoint before a provider accepts the context.
+                let brief = store
+                    .compile_brief(
+                        &wardian_core::memory::MemoryActor::agent(&config.session_id),
+                        &config.session_id,
+                        Some(&spec.workspace.to_string_lossy()),
+                        "codex",
+                        &process_key,
+                        is_resume,
+                        12_000,
+                    )
+                    .map_err(|failure| instruction_error(failure.to_string()))?;
+                Some(crate::utils::fs::wardian_memory_instructions(
+                    (!brief.is_empty).then_some(brief.context_text.as_str()),
+                ))
+            } else {
+                None
+            };
+            CodexProvider::new()
+                .insert_managed_instructions_arg(&mut args, &config, memory_instructions.as_deref())
+                .map_err(instruction_error)?;
             args.push("app-server".to_string());
         }
         NativeProviderProtocol::AntigravityStreamJson => {
@@ -2097,6 +2139,10 @@ fn error(
         provider_boundary_crossed,
     }
 }
+
+#[cfg(test)]
+#[path = "codex_native_instructions_tests.rs"]
+mod codex_native_instructions_tests;
 
 #[cfg(test)]
 mod tests {

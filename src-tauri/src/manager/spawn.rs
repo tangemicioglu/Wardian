@@ -1029,14 +1029,18 @@ pub async fn spawn_agent(
         spawn_args,
     );
     provider_args.extend(spawn_args);
-    if config.provider == "codex" && memory_enabled {
-        let runtime_instructions = wardian_memory_instructions(
-            memory_setup
-                .as_ref()
-                .and_then(|(_, brief)| (!brief.is_empty).then_some(brief.context_text.as_str())),
-        );
-        CodexProvider::new()
-            .insert_developer_instructions_arg(&mut provider_args, &runtime_instructions);
+    if config.provider == "codex" {
+        let runtime_instructions =
+            memory_enabled.then(|| {
+                wardian_memory_instructions(memory_setup.as_ref().and_then(|(_, brief)| {
+                    (!brief.is_empty).then_some(brief.context_text.as_str())
+                }))
+            });
+        CodexProvider::new().insert_managed_instructions_arg(
+            &mut provider_args,
+            &config,
+            runtime_instructions.as_deref(),
+        )?;
     }
     provider_args = interactive_provider_args(&config.provider, &provider_cwd, &cwd, provider_args);
 
