@@ -1,11 +1,18 @@
 # Garden Semantic Zoom Composition
 
-- **Status:** Proposed
+- **Status:** Design direction; implementation linked, verification pending
 - **Date:** 2026-08-30
 - **Related:** `2026-06-02-malleable-garden.md`,
   `2026-07-30-garden-metric-map.md`,
   `2026-08-10-garden-file-terrain.md`, and
   `2026-08-23-agent-memory.md`
+
+The [September 7 implementation contract](./2026-09-07-garden-composition-implementation.md)
+records the concrete navigation, activity windows, persistence, and evidence
+rules for the current implementation. It takes precedence where this design
+leaves choices open or describes richer visual behavior. The context below is
+the pre-implementation baseline; linking the implementation does not certify
+tests, accessibility acceptance, or screenshot validation as passed.
 
 ## Context
 
@@ -491,9 +498,11 @@ fading rather than disappearing abruptly. A broader **Branch** or **History**
 lens can reuse branch-point changes and durable evidence when the operator is
 investigating accumulated work.
 
-Exact recency thresholds remain open. They should be phrased in concepts users
-can understand and should not rely exclusively on wall-clock time when Wardian's
-strongest evidence is turn- and run-based.
+The implementation contract resolves the initial thresholds: **Now** uses the
+newest two turns, **Recent** the newest sixteen, and **Branch** retains the
+whole current workspace comparison. Unknown recency remains visible. Automation
+run recency uses a separate 24-hour window, with active runs retained regardless
+of age. See the implementation contract for comparison and evidence semantics.
 
 ## Interaction Grammar
 
@@ -623,10 +632,10 @@ The direction is successful when representative operators can:
 
 ## Open Questions
 
-- Which evidence defines **Now** and **Recent** across interactive sessions,
-  background runs, and manually edited files?
-- What screen-space extents should trigger each semantic band after prototype
-  testing, and how wide should the hysteresis interval be?
+- Do the initial turn-based file windows and separate 24-hour run window in the
+  implementation contract support representative investigations?
+- Do the implementation's initial screen-space extents and hysteresis remain
+  usable across representative densities and viewport sizes?
 - How many concurrent run lanes can Automation Composition show before older or
   lower-priority runs need a second level of aggregation?
 

@@ -1,0 +1,63 @@
+.garden-agent-interior {
+  display: grid;
+  height: 100%;
+  min-height: 480px;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, .8fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(160px, .5fr);
+  grid-template-areas: "capabilities identity memory" "active-work identity memory" "ports ports ports";
+  gap: 1rem;
+  color: var(--color-wardian-text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  min-width: 0;
+}
+.garden-agent-interior-identity { grid-area: identity; align-self: center; max-height: 100%; }
+.garden-agent-interior-capabilities { grid-area: capabilities; }
+.garden-agent-interior-memory { grid-area: memory; }
+.garden-agent-interior-active-work { grid-area: active-work; }
+.garden-agent-interior-ports { grid-area: ports; }
+.garden-agent-interior-region {
+  min-width: 0;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  border: 1px solid var(--color-wardian-border);
+  border-radius: 2rem;
+  background: color-mix(in srgb, var(--color-wardian-card) 88%, transparent);
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+.garden-agent-interior h3 { margin: 0 0 0.75rem; font-size: 1rem; font-weight: 650; }
+.garden-agent-interior h4 { margin: 1rem 0 0.4rem; font-weight: 600; }
+.garden-agent-interior h5 { margin: 0 0 0.4rem; color: var(--color-wardian-text-muted); font-size: 0.75rem; }
+.garden-agent-interior p { margin: 0.5rem 0; }
+.garden-agent-interior-record {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+  border-radius: 1rem;
+  background: var(--color-wardian-input-bg);
+}
+.garden-agent-interior button { color: inherit; font: inherit; cursor: pointer; }
+.garden-agent-interior-select { flex: 1; min-width: 0; padding: 0.75rem; text-align: left; border: 0; background: transparent; border-radius: 1rem; }
+.garden-agent-interior-select strong, .garden-agent-interior-select span { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 3; }
+.garden-agent-interior-select span { color: var(--color-wardian-text-muted); font-size: 0.75rem; margin-top: 0.25rem; }
+.garden-agent-interior-action { background: transparent; border: 1px solid var(--color-wardian-border); border-radius: 1rem; padding: 0.5rem 0.75rem; min-height: 2.75rem; }
+.garden-agent-interior-select[aria-pressed="true"] { outline: 2px solid var(--color-wardian-accent); outline-offset: 2px; text-decoration: underline; text-underline-offset: 0.2em; }
+.garden-agent-interior button:focus-visible { outline: 2px solid var(--color-wardian-accent); outline-offset: 3px; }
+.garden-agent-interior button:hover { background: color-mix(in srgb, var(--color-wardian-accent) 10%, transparent); }
+.garden-agent-interior-scope { padding: 0.6rem; border: 1px solid var(--color-wardian-border); border-radius: 1.25rem; margin-bottom: 0.5rem; }
+.garden-agent-interior-conversation { padding: 0.5rem 0; border-bottom: 1px solid var(--color-wardian-border); }
+.garden-agent-interior-note, .garden-agent-interior small { color: var(--color-wardian-text-muted); font-size: 0.75rem; }
+.garden-agent-interior-configuration { margin: 0.5rem 0; }
+.garden-agent-interior-configuration > div { margin-bottom: 0.4rem; }
+.garden-agent-interior-configuration dt { color: var(--color-wardian-text-muted); font-size: 0.75rem; }
+.garden-agent-interior-configuration dd { margin: 0; }
+.garden-agent-interior .garden-agent-interior-identity { border-radius: 32px 40px 36px 38px; }
+.garden-agent-interior-sigil { display: grid; place-items: center; width: 56px; height: 56px; margin: 0 auto 16px; border: 2px solid var(--garden-status, var(--color-wardian-border)); border-radius: 43% 49% 45% 47%; font-size: 22px; background: var(--color-wardian-bg); }
+.garden-agent-interior-ports .garden-agent-interior-record { display: inline-flex; min-width: 150px; max-width: 280px; margin-right: 10px; vertical-align: top; }
+@container (max-width: 850px) {
+  .garden-agent-interior { height: auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; grid-template-areas: "identity" "capabilities" "memory" "active-work" "ports"; }
+  .garden-agent-interior-region { max-height: 500px; }
+  .garden-agent-interior .garden-agent-interior-identity { border-radius: 32px; }
+}

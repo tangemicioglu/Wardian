@@ -84,7 +84,7 @@ describe("GardenView", () => {
     );
     expect(screen.getByTestId("garden-canvas")).toHaveTextContent("1:1");
     expect(screen.getByRole("region", { name: "Garden status legend" })).toHaveTextContent("Action Required");
-    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select a unit to view its status.");
+    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select to inspect");
   });
 
   it("shows when the automation catalog is partial", () => {
@@ -244,7 +244,7 @@ describe("GardenView", () => {
       />,
     );
 
-    expect(gardenAutomationSpy).toHaveBeenCalledWith(false);
+    expect(gardenAutomationSpy).toHaveBeenCalledWith(false, { retainedProjectionIds: [] });
     expect(screen.queryByTestId("garden-canvas")).not.toBeInTheDocument();
     expect(screen.getByText(/renderer paused while hidden/i)).toBeInTheDocument();
   });
@@ -392,7 +392,8 @@ describe("GardenView", () => {
     );
 
     expect(screen.getByTestId("garden-canvas")).toHaveAttribute("data-selected-key", "agent:a1");
-    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Selected: Alpha · Idle");
-    expect(onSurfaceStateChange).toHaveBeenCalledWith({ selected_unit_key: "agent:a1" });
+    expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("AlphaIdle");
+    expect(screen.getByRole("button", { name: "Open agent session" })).toBeVisible();
+    expect(onSurfaceStateChange).toHaveBeenCalledWith(expect.objectContaining({ selected_unit_key: "agent:a1", trail: [], time_lens: "recent" }));
   });
 });
