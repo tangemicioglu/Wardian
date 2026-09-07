@@ -945,7 +945,9 @@ fn load_opencode_db_chat_events_from_db(
             continue;
         };
         let mut event = event;
-        event.metadata["transcript_path"] = serde_json::json!(db_path.to_string_lossy());
+        // `source_path` is part of the archive source-record contract and is
+        // retained when events are replayed after a restart.
+        event.metadata["source_path"] = serde_json::json!(db_path.to_string_lossy());
         if event.role == Some(AgentChatRole::User)
             && event.metadata["input_origin"] != "context_injection"
         {
@@ -2463,7 +2465,7 @@ Do you want to proceed?
         assert_eq!(chat_events[2].metadata["part_id"], "part-assistant");
         assert_eq!(chat_events[2].metadata["raw_type"], "text");
         assert_eq!(
-            chat_events[2].metadata["transcript_path"],
+            chat_events[2].metadata["source_path"],
             db_path.to_string_lossy().as_ref()
         );
 

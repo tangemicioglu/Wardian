@@ -279,11 +279,11 @@ This is how OpenCode sees Wardian-managed class and agent context without forcin
 
 ### Session identity
 
-- OpenCode session IDs are discovered from JSON output during `opencode run --format json`, or captured from `opencode session list` while the interactive TUI runs.
+- OpenCode session IDs are discovered from JSON output during `opencode run --format json`. For interactive TUI launches, Wardian binds the provider's `created` log record to the same OpenCode run that loaded this agent's generated `.opencode/opencode.json`; if that ownership evidence is absent or ambiguous, Wardian leaves the session identity unset rather than adopting a global session-list match.
 - Valid IDs match `ses_…`; Wardian never substitutes its own UUIDs into `--session`.
 - Resume uses `--session <session_id>`.
 - Wardian resolves OpenCode's database and rolling log from `XDG_DATA_HOME` first, then the platform data directories. This matters on Windows as well: OpenCode honors the XDG override, so using only `%LOCALAPPDATA%` can associate a session with another installation's transcript.
-- The interactive session lookup accepts only one matching `ses_…` record created after this provider launch for the real workspace; it fails closed when shared-workspace matches are ambiguous. Once that identity is available, transcript refresh reads OpenCode's SQLite `message`/`part` rows and retains the database path as provenance metadata; later rows are visible on the next refresh without restarting the agent.
+- Once that launch-scoped identity is available, transcript refresh reads OpenCode's SQLite `message`/`part` rows and retains the database path as `source_path` provenance metadata; later rows are visible on the next refresh without restarting the agent.
 
 ### Practical implications
 

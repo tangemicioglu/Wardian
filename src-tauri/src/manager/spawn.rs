@@ -2569,6 +2569,7 @@ pub async fn spawn_agent(
         let watcher_config = config_lock.clone();
         let watcher_current_status = current_status.clone();
         let watcher_workspace = cwd.clone();
+        let watcher_session = config.session_id.clone();
         let started_after_ms = chrono::Utc::now().timestamp_millis();
         std::thread::spawn(move || loop {
             let current = watcher_current_status
@@ -2579,9 +2580,11 @@ pub async fn spawn_agent(
                 break;
             }
             if wardian_core::identity::normalize_status(&current) == "processing" {
-                if let Some(provider_session_id) =
-                    opencode_recent_session_for_workspace(&watcher_workspace, started_after_ms)
-                {
+                if let Some(provider_session_id) = opencode_recent_session_for_workspace(
+                    &watcher_workspace,
+                    started_after_ms,
+                    &watcher_session,
+                ) {
                     if let Ok(mut cfg) = watcher_config.lock() {
                         cfg.resume_session = Some(provider_session_id);
                         cfg.fresh_provider_session_id = None;
