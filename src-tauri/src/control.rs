@@ -1,5 +1,10 @@
+pub(crate) mod startup_readiness;
+use startup_readiness::record_provider_ready_evidence;
+pub(crate) use startup_readiness::{
+    provider_output_has_startup_ready_prompt, provider_output_requires_startup_action,
+};
+
 use crate::manager;
-use crate::providers::claude::claude_output_has_bypass_permissions_consent_prompt;
 use crate::remote::operations::inbox_list_control as list_inbox_control;
 use crate::state::conversation_archive::{
     effective_conversation_logging, ConversationArchiveContext,
@@ -3278,43 +3283,6 @@ async fn provider_input_blocks_mailbox_drain(state: &AppState, session_id: &str)
         .is_some_and(|input_state| input_state != ProviderInputReadiness::Ready)
 }
 
-async fn record_provider_ready_evidence(
-    state: &AppState,
-    session_id: &str,
-    evidence: ProviderReadyEvidence,
-) {
-    let generation = state
-        .interactions
-        .provider_input_state(session_id)
-        .await
-        .filter(|input| input.state != ProviderInputReadiness::ActionRequired)
-        .map(|input| input.generation)
-        .unwrap_or(0);
-    state
-        .interactions
-        .record_provider_input_state(
-            session_id,
-            generation,
-            ProviderInputReadiness::Ready,
-            Some(evidence),
-        )
-        .await;
-}
-
-/// Records startup readiness only after the provider has rendered its own
-/// interactive prompt. This is deliberately separate from an `Idle` status:
-/// a newly spawned process is not safe to receive mailbox input merely because
-/// Wardian has not yet observed it doing work.
-pub(crate) async fn record_provider_ready_prompt(state: &AppState, session_id: &str) {
-    record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::PromptDetected).await;
-}
-
-/// OpenCode exposes initial compose readiness through its provider-owned
-/// terminal title rather than a stable prompt marker in the raw PTY stream.
-pub(crate) async fn record_provider_ready_title(state: &AppState, session_id: &str) {
-    record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::TitleDetected).await;
-}
-
 async fn current_agent_status_is_idle(state: &AppState, session_id: &str) -> Result<bool, String> {
     let status = {
         let agents = state.agents.lock().await;
@@ -3334,6 +3302,11 @@ async fn wait_for_opencode_terminal_ready(
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<(), String> {
+    let generation = state
+        .interactions
+        .current_provider_input_generation(session_id)
+        .await
+        .unwrap_or(0);
     let started = std::time::Instant::now();
     while started.elapsed() < std::time::Duration::from_millis(timeout_ms) {
         let (title, status) = {
@@ -3356,9 +3329,14 @@ async fn wait_for_opencode_terminal_ready(
         let title = title.trim();
         if wardian_core::identity::normalize_status(&status) == "idle"
             && (title == "OpenCode" || title.starts_with("OC | "))
+            && record_provider_ready_evidence(
+                state,
+                session_id,
+                generation,
+                ProviderReadyEvidence::TitleDetected,
+            )
+            .await
         {
-            record_provider_ready_evidence(state, session_id, ProviderReadyEvidence::TitleDetected)
-                .await;
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -3375,6 +3353,11 @@ async fn wait_for_terminal_output(
     timeout_ms: u64,
     is_ready: impl Fn(&str) -> bool,
 ) -> Result<(), String> {
+    let generation = state
+        .interactions
+        .current_provider_input_generation(session_id)
+        .await
+        .unwrap_or(0);
     let started = std::time::Instant::now();
     while started.elapsed() < std::time::Duration::from_millis(timeout_ms) {
         if !current_agent_status_is_idle(state, session_id).await? {
@@ -3395,13 +3378,15 @@ async fn wait_for_terminal_output(
             .snapshot_since(None, None)
             .map(|snapshot| snapshot.output.text)
             .unwrap_or_default();
-        if is_ready(&output) {
-            record_provider_ready_evidence(
+        if is_ready(&output)
+            && record_provider_ready_evidence(
                 state,
                 session_id,
+                generation,
                 ProviderReadyEvidence::PromptDetected,
             )
-            .await;
+            .await
+        {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -3569,39 +3554,6 @@ pub(crate) fn provider_output_has_ready_prompt(provider: &str, output: &str) -> 
         "antigravity" => antigravity_output_has_ready_prompt(output),
         _ => false,
     }
-}
-
-/// Startup has no previously submitted turn, so a provider's compose marker
-/// cannot be stale. Full-screen CLIs render that marker with cursor controls
-/// which do not preserve a useful last line in the raw ConPTY stream; use this
-/// only while the initial compose prompt is still unresolved.
-pub(crate) fn provider_output_has_startup_ready_prompt(provider: &str, output: &str) -> bool {
-    let cleaned = strip_ansi_controls(output).replace('\r', "\n");
-    match provider {
-        "codex" => {
-            !crate::delivery::codex_composer::output_has_workspace_trust_prompt(&cleaned)
-                && cleaned.contains('›')
-        }
-        "claude" => {
-            !claude_output_has_bypass_permissions_consent_prompt(&cleaned) && cleaned.contains('❯')
-        }
-        "gemini" => {
-            !gemini_output_has_api_key_prompt(&cleaned)
-                && cleaned.contains("Type your message or @path/to/file")
-        }
-        "antigravity" => antigravity_output_has_ready_prompt(&cleaned),
-        "pi" => pi_output_has_startup_ready_prompt(&cleaned),
-        _ => false,
-    }
-}
-
-/// Provider startup can require an explicit account or workspace decision
-/// before a compose prompt exists. Keep that state visible and prevent queued
-/// delivery from being mistaken for a prompt the provider can receive.
-pub(crate) fn provider_output_requires_startup_action(provider: &str, output: &str) -> bool {
-    let cleaned = strip_ansi_controls(output).to_ascii_lowercase();
-    matches!(provider, "antigravity")
-        && cleaned.contains("do you trust the contents of this project?")
 }
 
 fn antigravity_ready_prompt_footer_line(line: &str) -> bool {
@@ -6213,7 +6165,7 @@ mod tests {
         }
     }
 
-    async fn insert_test_agent(
+    pub(super) async fn insert_test_agent(
         state: &AppState,
         session_id: &str,
         session_name: &str,
@@ -6243,7 +6195,7 @@ mod tests {
             .expect("per-agent snapshot reads must not retain the global agent lock");
     }
 
-    async fn install_test_terminal_runtime(
+    pub(super) async fn install_test_terminal_runtime(
         state: &AppState,
         session_id: &str,
         input_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -6337,42 +6289,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_ready_prompt_accepts_a_full_screen_codex_compose_marker() {
-        assert!(provider_output_has_startup_ready_prompt(
-            "codex",
-            "\u{1b}[1;1H\u{1b}[J\u{1b}[13;1H\u{1b}[1m›\u{1b}[22m Write tests for @filename\u{1b}[?25h",
-        ));
-    }
-
-    #[test]
-    fn startup_ready_prompt_accepts_pi_regular_tui_footer() {
-        assert!(provider_output_has_startup_ready_prompt(
-            "pi",
-            "pi v0.84.2\r\n────────────────\r\nC:\\workspace • Wardian-Pi\r\n0.0%/33k (auto) echo",
-        ));
-        assert!(!provider_output_has_startup_ready_prompt(
-            "pi",
-            "No models available. Use /login to log into a provider.",
-        ));
-    }
-
-    #[test]
-    fn antigravity_startup_trust_prompt_requires_action() {
-        assert!(provider_output_requires_startup_action(
-            "antigravity",
-            "Do you trust the contents of this project?",
-        ));
-        assert!(!provider_output_requires_startup_action(
-            "antigravity",
-            "Welcome to the Antigravity CLI. You are currently not signed in.",
-        ));
-        assert!(!provider_output_requires_startup_action(
-            "codex",
-            "Do you trust the contents of this project?",
-        ));
-    }
-
-    #[test]
     fn gemini_ready_prompt_rejects_api_key_modal_over_composer() {
         assert!(!gemini_output_has_ready_prompt(
             "\r\n╭────────────────────────────────────────────────────────╮\r\n\
@@ -6442,7 +6358,7 @@ mod tests {
                 .unwrap()
                 .push_output(b"\r\n\xe2\x80\xba [Pasted Content 6479 chars]\r\n");
         }
-        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::ProviderEvent)
+        record_provider_ready_evidence(&state, "agent-1", 0, ProviderReadyEvidence::ProviderEvent)
             .await;
         let info = delivery_target_infos(&state, &["agent-1".to_string()])
             .await
@@ -6502,7 +6418,7 @@ mod tests {
             agent.config.lock().unwrap().provider = "codex".to_string();
             *agent.current_status.lock().unwrap() = "Idle".to_string();
         }
-        record_provider_ready_evidence(&state, "agent-1", ProviderReadyEvidence::PromptDetected)
+        record_provider_ready_evidence(&state, "agent-1", 0, ProviderReadyEvidence::PromptDetected)
             .await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         install_test_terminal_runtime_with_write_receipts(&state, "agent-1", tx).await;
@@ -8282,7 +8198,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
-        record_provider_ready_prompt(&state, "agent-1").await;
+        startup_readiness::record_provider_ready_prompt(&state, "agent-1", 4).await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
@@ -8347,7 +8263,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
-        record_provider_ready_prompt(&state, "agent-1").await;
+        startup_readiness::record_provider_ready_prompt(&state, "agent-1", 4).await;
 
         let drained = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -8425,7 +8341,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
-        record_provider_ready_prompt(&state, "agent-1").await;
+        startup_readiness::record_provider_ready_prompt(&state, "agent-1", 4).await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
@@ -8492,7 +8408,7 @@ mod tests {
         assert_eq!(queued[0].runtime_state, "provider_input_not_ready");
         assert_eq!(queued[0].delivery_state, "queued");
 
-        record_provider_ready_prompt(&state, "agent-1").await;
+        startup_readiness::record_provider_ready_prompt(&state, "agent-1", 4).await;
 
         let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
             .await
@@ -8737,6 +8653,59 @@ mod tests {
             records[0].status,
             crate::state::MailboxMessageStatus::Pending
         );
+
+        // Even a stale Idle metric must not drain startup/consent input. Once
+        // provider-owned readiness arrives, deliver the same message once.
+        {
+            let agents = state.agents.lock().await;
+            let agent = agents.get("agent-1").unwrap();
+            agent.config.lock().unwrap().provider = "claude".to_string();
+            *agent.current_status.lock().unwrap() = "Idle".to_string();
+        }
+        for readiness in [
+            ProviderInputReadiness::Booting,
+            ProviderInputReadiness::ActionRequired,
+        ] {
+            state
+                .interactions
+                .record_provider_input_state("agent-1", 1, readiness, None)
+                .await;
+            assert!(
+                drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(rx.try_recv().is_err());
+            assert_eq!(
+                state.mailbox.lock().await.list_for_target("agent-1")[0].status,
+                crate::state::MailboxMessageStatus::Pending
+            );
+        }
+        state
+            .interactions
+            .record_provider_input_state(
+                "agent-1",
+                1,
+                ProviderInputReadiness::Ready,
+                Some(ProviderReadyEvidence::ProviderEvent),
+            )
+            .await;
+        let drained = drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+            .await
+            .unwrap()
+            .expect("same queued message drains when ready");
+        assert_eq!(drained.message_id.as_deref(), Some(records[0].id.as_str()));
+        for chunk in expected_terminal_chunks("claude", "queued work") {
+            assert_eq!(rx.recv().await.unwrap(), chunk);
+        }
+        assert!(
+            drain_next_mailbox_message_for_idle_agent(None, &state, "agent-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

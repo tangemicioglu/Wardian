@@ -89,6 +89,11 @@ Wardian assigns fresh Claude session IDs up front and uses explicit resume flags
 
 Visible Claude agents run through Claude Code's interactive mode. Do not pass `--input-format stream-json` or `--output-format stream-json` to interactive launches; Claude Code treats those as print-mode flags. Wardian keeps stream-json output only for headless/bootstrap flows that also pass `--print`.
 
+Startup readiness requires a composer and its footer on the current terminal
+screen. The external `CLAUDE.md` import consent menu is `Action Needed`, not an
+idle composer. Queued prompts remain pending until the consent is resolved and
+the composer appears. Wardian does not accept external imports automatically.
+
 ### Debug First
 
 If Claude appears blocked, inspect the permission hook output, `CLAUDE.md` discovery, and resume flags before treating the issue as a generic PTY failure. If mobile or remote drag scrolling fails only for Claude, verify that the managed launch environment still includes Claude Code's alternate-screen opt-out.
@@ -139,6 +144,20 @@ paths, while agent-only MCP entries remain available.
 ### Session and Status Handling
 
 Wardian starts a fresh Codex session by writing a minimal rollout into the agent's projected `CODEX_HOME`, then resumes that exact provider UUID interactively. This avoids a bootstrap model turn while preserving per-agent session isolation. Status tracking uses Codex thread and turn events, approval requests, command events, and completion markers.
+
+Startup delivery for Codex uses the current terminal screen and keeps messages
+queued while the model banner is loading or the session is resuming. Codex can
+also display a pasted draft while its session is still loading. Automated
+delivery withholds Return while the current terminal screen shows the loading
+model banner or `Resuming session…`, even when the complete draft is visible.
+The existing composer-confirmation timeout still applies; no automatic retry
+or second paste occurs.
+
+Codex model-migration choices are `Action Needed`, not a composer. Wardian
+does not select a replacement model or send queued text into that menu. A
+choice must be resolved before a ready composer can
+receive the queued prompt. Startup readiness belongs to the runtime that
+observed it; delayed observations cannot ready a replacement runtime.
 
 ### Debug First
 

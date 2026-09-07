@@ -301,6 +301,10 @@ fn schedule_agent_status_observation(
         .next_status_observation_sequence(session_id);
     tauri::async_runtime::spawn(async move {
         let state = status_app.state::<AppState>();
+        // Startup also schedules Idle here. Serialize with replacement before
+        // looking up the input generation so an old status Arc cannot publish
+        // Ready into a replacement between identity validation and the write.
+        let _lifecycle = state.lock_agent_lifecycle(&status_session_id).await;
         // Keep the map lock through the synchronous durable write. A runtime
         // replacement must wait until this observation is either rejected or
         // committed, which prevents an old Arc from winning the database race
