@@ -81,6 +81,24 @@ pub(crate) fn opencode_database_path() -> Option<std::path::PathBuf> {
         .find(|path| path.exists())
 }
 
+pub(crate) fn opencode_telemetry_session_id(config: &AgentConfig) -> Option<String> {
+    if config.provider != "opencode" {
+        return config.resume_session.clone();
+    }
+    config
+        .resume_session
+        .as_deref()
+        .filter(|value| value.starts_with("ses_"))
+        .map(ToString::to_string)
+        .or_else(|| {
+            config
+                .fresh_provider_session_id
+                .as_deref()
+                .filter(|value| value.starts_with("ses_"))
+                .map(ToString::to_string)
+        })
+}
+
 /// Captures the OpenCode session created by this Wardian launch. OpenCode's
 /// session list is global to the provider data root, so a directory/time match
 /// alone is not ownership evidence when multiple agents share a workspace.
@@ -677,6 +695,26 @@ mod tests {
         assert!(roots
             .iter()
             .any(|path| path == &std::path::PathBuf::from("C:/Users/test/AppData/Local/opencode")));
+    }
+
+    #[test]
+    fn opencode_telemetry_prefers_a_valid_resume_or_fresh_session() {
+        let mut config = AgentConfig {
+            provider: "opencode".to_string(),
+            resume_session: Some("wardian-agent-id".to_string()),
+            fresh_provider_session_id: Some("ses_fresh".to_string()),
+            ..AgentConfig::default()
+        };
+        assert_eq!(
+            opencode_telemetry_session_id(&config).as_deref(),
+            Some("ses_fresh")
+        );
+
+        config.resume_session = Some("ses_resume".to_string());
+        assert_eq!(
+            opencode_telemetry_session_id(&config).as_deref(),
+            Some("ses_resume")
+        );
     }
 
     #[test]
