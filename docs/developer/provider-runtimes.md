@@ -33,6 +33,14 @@ This document captures the practical runtime differences between Wardian's suppo
 
 ## Antigravity
 
+### Model discovery
+
+Wardian reads `agy models` from the installed CLI. Current releases return
+tab-separated model IDs and display names; both are preserved in the model
+picker. Progress messages are excluded. The selected ID is passed unchanged
+through `--model` for launches, including low-effort Flash variants. OpenCode's
+one-model-ID-per-line catalog remains supported by the shared parser.
+
 ### Working-root model
 
 Antigravity runs directly in the real target workspace. Wardian does not use a projected workspace for Antigravity.
