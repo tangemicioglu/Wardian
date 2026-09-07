@@ -545,6 +545,59 @@ fn claude_parent_lineage_survives_normalized_conversation_archive_capture() {
 }
 
 #[test]
+fn claude_provider_provenance_keeps_context_and_tool_results_out_of_user_archive_rows() {
+    let (_guard, _temp) = isolated_home();
+    let archive = ConversationArchiveState::default();
+    let lines = [
+        r#"{"type":"user","uuid":"request-1","message":{"role":"user","content":"Inspect the evidence file."}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01evidence","name":"Read","input":{"file_path":"provider-evidence.txt"}}]}}"#,
+        r#"{"type":"user","isMeta":true,"parent_tool_use_id":"toolu_01evidence","uuid":"context-1","message":{"role":"user","content":[{"type":"text","text":"Native provider context."}]}}"#,
+        r#"{"type":"user","uuid":"tool-result-1","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_01evidence","type":"tool_result","content":"1\tWARDIAN_CLAUDE_REAL_EVIDENCE\n2\t"}]}}"#,
+        r#"{"type":"user","parentUuid":"request-1","message":{"role":"user","content":"[Request interrupted by user]"}}"#,
+    ];
+    let events = normalize_chat_lines("agent-1", "claude", lines);
+
+    archive
+        .append_chat_events("agent-1", &events)
+        .expect("append Claude events");
+    archive
+        .append_chat_events("agent-1", &events)
+        .expect("replay Claude events idempotently");
+
+    let conversation_id = archive
+        .active_conversation_id_for_test("agent-1")
+        .expect("active conversation id");
+    let conversation_path =
+        agent_conversation_dir("agent-1", &conversation_id).expect("conversation dir");
+    let records: Vec<ConversationNarrativeRecord> =
+        read_jsonl_records(&conversation_path.join("conversation.jsonl"))
+            .expect("read narrative records");
+
+    assert_eq!(records.len(), 5);
+    assert_eq!(records[0].role.as_deref(), Some("user"));
+    assert_eq!(
+        records[0].input_origin,
+        Some(ConversationInputOrigin::HumanInput)
+    );
+    assert_eq!(records[2].role.as_deref(), Some("system"));
+    assert_eq!(
+        records[2].input_origin,
+        Some(ConversationInputOrigin::ContextInjection)
+    );
+    assert_eq!(records[3].kind, ConversationRecordKind::ToolResult);
+    assert_eq!(records[3].role.as_deref(), Some("tool"));
+    assert_eq!(records[4].role.as_deref(), Some("system"));
+    assert_eq!(
+        records[4].input_origin,
+        Some(ConversationInputOrigin::ProviderInternal)
+    );
+    assert!(records.iter().skip(1).all(|record| {
+        record.input_origin != Some(ConversationInputOrigin::HumanInput)
+            || record.role.as_deref() == Some("user")
+    }));
+}
+
+#[test]
 fn codex_context_before_and_after_request_does_not_create_fake_turns() {
     let lines = [
         r#"{"type":"response_item","payload":{"type":"message","id":"context-1","role":"user","content":[{"type":"input_text","text":"Host context."}],"internal_chat_message_metadata_passthrough":{"turn_id":"codex-turn-1"}}}"#,
