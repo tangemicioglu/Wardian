@@ -112,6 +112,13 @@ checks derived snapshots so a prior failed turn/manifest publication is retried.
 A failure between files can leave derived snapshots stale until retry; no original observation is
 removed merely because source evidence is unavailable.
 
+This recovery contract covers enrichment of already-linked archive records.
+Fresh append has a separate, exact-base-reproduced failure window: an event can
+be durable before its source/narrative reference, and retry can duplicate it.
+[Issue #1183](https://github.com/wardian-app/Wardian/issues/1183) tracks that
+pre-existing recovery gap. Existing-record repair tests do not claim to cover it.
+
+
 Capture-disabled repair is a pure active-view projection. It can read the
 matching open archive after its in-memory handle was discarded, but cannot
 reopen a closed or differently bound conversation. It does not write archive
