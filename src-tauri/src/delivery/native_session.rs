@@ -289,7 +289,7 @@ pub struct NativeProtocolEvent {
     pub detail: Option<String>,
     /// When true, `text` is the complete assistant answer so far rather than an
     /// increment, so a consumer must replace what it holds instead of appending.
-    /// Pi re-sends the whole message on every update; appending would duplicate.
+    /// Pi final messages and older full-message updates replace accumulated text.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cumulative_text: bool,
 }
@@ -487,7 +487,7 @@ fn parse_claude_event(value: &Value) -> Vec<NativeProtocolEvent> {
             },
             request_id,
             string_at(value, &["session_id"]),
-            string_at(value, &["result"]),
+            text_at(value, &["result"]),
         )],
         _ => Vec::new(),
     }
@@ -524,9 +524,9 @@ fn parse_antigravity_event(value: &Value) -> Vec<NativeProtocolEvent> {
                 kind,
                 request_id,
                 string_at(value, &["step_update", "conversation_id"]),
-                string_at(value, &["step_update", "text_delta"])
-                    .or_else(|| string_at(value, &["content"]))
-                    .or_else(|| string_at(value, &["text"])),
+                text_at(value, &["step_update", "text_delta"])
+                    .or_else(|| text_at(value, &["content"]))
+                    .or_else(|| text_at(value, &["text"])),
             )]
         }
         "result" => vec![event(
@@ -544,7 +544,7 @@ fn parse_antigravity_event(value: &Value) -> Vec<NativeProtocolEvent> {
             request_id,
             string_at(value, &["result", "conversation_id"])
                 .or_else(|| string_at(value, &["conversation_id"])),
-            string_at(value, &["result", "response"]).or_else(|| string_at(value, &["content"])),
+            text_at(value, &["result", "response"]).or_else(|| text_at(value, &["content"])),
         )],
         _ => Vec::new(),
     }
@@ -588,17 +588,24 @@ fn parse_pi_event(value: &Value) -> Vec<NativeProtocolEvent> {
             None,
             None,
         )],
-        // Only the message's own `text` parts may become answer text. Tool
-        // execution is progress and never contributes answer text, and thinking
-        // parts are filtered out inside `pi_assistant_text`.
-        "message_start" | "message_update" => vec![NativeProtocolEvent {
+        // Current Pi RPC omits the full message from streaming updates. Typed
+        // text deltas accumulate until the final assistant message replaces
+        // them. Older full-message updates remain supported as snapshots.
+        "message_start" | "message_update" | "message_end" => vec![NativeProtocolEvent {
             kind: NativeProtocolEventKind::Progress,
             request_id,
             provider_session_id: None,
             provider_turn_id: None,
-            text: pi_assistant_text(value),
+            text: if value.get("message").is_some() {
+                pi_assistant_text(value)
+            } else {
+                let delta = value.get("assistantMessageEvent");
+                delta
+                    .filter(|delta| delta.get("type").and_then(Value::as_str) == Some("text_delta"))
+                    .and_then(|delta| text_at(delta, &["delta"]))
+            },
             detail: None,
-            cumulative_text: true,
+            cumulative_text: value.get("message").is_some(),
         }],
         "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
             vec![event(
@@ -719,7 +726,7 @@ fn parse_codex_event(value: &Value) -> Vec<NativeProtocolEvent> {
             NativeProtocolEventKind::Progress,
             string_at(params, &["turnId"]),
             None,
-            string_at(params, &["delta"]),
+            text_at(params, &["delta"]),
         )],
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => vec![event(
             NativeProtocolEventKind::ApprovalRequested,
@@ -790,9 +797,7 @@ fn parse_opencode_event(value: &Value) -> Vec<NativeProtocolEvent> {
             NativeProtocolEventKind::TurnStarted,
             None,
             string_at(value, &["params", "sessionId"]),
-            string_at(value, &["params", "update", "content", "text"])
-                .or_else(|| string_at(value, &["params", "update", "content"]))
-                .or_else(|| string_at(value, &["params", "update", "text"])),
+            acp_assistant_text(value),
         )],
         "session/request_permission" => vec![event(
             NativeProtocolEventKind::ApprovalRequested,
@@ -823,16 +828,15 @@ fn event(
 
 /// Pi's assistant answer, taken only from the message's `text` content parts.
 ///
-/// Pi streams assistant text and reasoning through the same `delta` field: a
-/// text part accumulates it into `part.text` and a thinking part into
-/// `part.thinking`, so the delta alone cannot say which one it belongs to.
-/// Reading the parts is what keeps a thinking summary out of the answer. Tool
-/// parts are excluded for the same reason.
-///
-/// Each update carries the whole message, so the result is cumulative and must
-/// replace previously observed text rather than extend it.
+/// Used for role-bearing start/end messages and older full-message updates.
+/// These snapshots replace accumulated text. Current RPC updates omit the full
+/// message; their separately typed text deltas are handled by `parse_pi_event`.
 fn pi_assistant_text(value: &Value) -> Option<String> {
-    let parts = value.get("message")?.get("content")?.as_array()?;
+    let message = value.get("message")?;
+    if message.get("role")?.as_str()? != "assistant" {
+        return None;
+    }
+    let parts = message.get("content")?.as_array()?;
     let mut answer = String::new();
     for part in parts {
         let is_text_part = part.get("type").and_then(Value::as_str) == Some("text")
@@ -844,8 +848,7 @@ fn pi_assistant_text(value: &Value) -> Option<String> {
             answer.push_str(chunk);
         }
     }
-    let answer = answer.trim();
-    (!answer.is_empty()).then(|| answer.to_string())
+    (!answer.is_empty()).then_some(answer)
 }
 
 fn json_rpc_id(value: &Value) -> Option<String> {
@@ -873,11 +876,36 @@ fn marker_value(text: &str, key: &str) -> Option<String> {
 }
 
 fn assistant_text(value: &Value) -> Option<String> {
-    string_at(value, &["message", "content"])
-        .or_else(|| string_at(value, &["message", "text"]))
-        .or_else(|| string_at(value, &["content"]))
-        .or_else(|| string_at(value, &["text"]))
-        .or_else(|| string_at(value, &["assistantMessageEvent", "delta"]))
+    text_at(value, &["message", "content"])
+        .or_else(|| text_at(value, &["message", "text"]))
+        .or_else(|| text_at(value, &["content"]))
+        .or_else(|| text_at(value, &["text"]))
+        .or_else(|| text_at(value, &["assistantMessageEvent", "delta"]))
+}
+
+/// ACP sends thoughts, tool updates and user echoes on the same notification
+/// method. Only a typed assistant text chunk contributes to the answer.
+fn acp_assistant_text(value: &Value) -> Option<String> {
+    let update = value.get("params")?.get("update")?;
+    if update.get("sessionUpdate")?.as_str()? != "agent_message_chunk"
+        || update.get("content")?.get("type")?.as_str()? != "text"
+    {
+        return None;
+    }
+    text_at(update, &["content", "text"])
+}
+
+/// Text chunks retain whitespace at their boundaries, including whitespace-only
+/// chunks. Trimming is valid for identifiers, but corrupts streamed answers.
+fn text_at(value: &Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 fn string_at(value: &Value, path: &[&str]) -> Option<String> {
@@ -1000,6 +1028,27 @@ mod tests {
             events[0].cumulative_text,
             "each update carries the whole message, so it replaces rather than appends"
         );
+        // Pi 0.84.2 toJsonEvent removes `message` and `partial` from updates.
+        // The final role-bearing message is still present on message_end.
+        let mut answer = String::new();
+        for value in [
+            serde_json::json!({"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"private prompt"}]}}),
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"private reasoning"}}),
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"  hello"}}),
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":" "}}),
+            serde_json::json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"world\n"}}),
+            serde_json::json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"  hello world\n"}]}}),
+            serde_json::json!({"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool output"}]}}),
+        ] {
+            let parsed = parse_pi_event(&value);
+            if let Some(text) = &parsed[0].text {
+                if parsed[0].cumulative_text {
+                    answer.clear();
+                }
+                answer.push_str(text);
+            }
+        }
+        assert_eq!(answer, "  hello world\n");
     }
 
     #[test]
@@ -1144,6 +1193,42 @@ mod tests {
         assert_eq!(
             events[0].text.as_deref(),
             Some("WARDIAN_NATIVE_OPENCODE_OK")
+        );
+        let chunk = |kind: &str, text: &str| {
+            serde_json::json!({
+                "method": "session/update", "params": {"sessionId": "ses_1",
+                    "update": {"sessionUpdate": kind, "content": {"type": "text", "text": text}}}
+            })
+        };
+        for kind in [
+            "agent_thought_chunk",
+            "user_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "unknown",
+        ] {
+            let parsed = parse_opencode_event(&chunk(kind, "not the answer"));
+            assert_eq!(
+                parsed[0].text, None,
+                "{kind} is progress, not assistant text"
+            );
+        }
+        let answer = ["hello", " ", "world", "\n", "  indented\n"]
+            .iter()
+            .filter_map(|text| {
+                parse_opencode_event(&chunk("agent_message_chunk", text))[0]
+                    .text
+                    .clone()
+            })
+            .collect::<String>();
+        assert_eq!(answer, "hello world\n  indented\n");
+        assert_eq!(
+            string_at(&serde_json::json!({"id":"  request  "}), &["id"]).as_deref(),
+            Some("request")
+        );
+        assert_eq!(
+            assistant_text(&serde_json::json!({"text":"  answer\n"})).as_deref(),
+            Some("  answer\n")
         );
     }
 }

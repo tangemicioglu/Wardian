@@ -25,13 +25,18 @@ This document captures the practical runtime differences between Wardian's suppo
 OpenCode ACP starts with its own command arguments. Wardian applies the selected
 model through `session/set_model` after binding either a new or resumed session;
 a rejected model selection stops bootstrap before a prompt is submitted.
+Only ACP `agent_message_chunk` text contributes to the assistant answer. Thoughts,
+user echoes, and tool updates remain progress signals. Native answer chunks retain
+their whitespace, including whitespace-only chunks, so streaming preserves words
+and formatting.
 Codex app-server receives the selected model through a repeatable `-c` config
 override, alongside the reasoning-effort override. Its interactive `--model`
 flag does not establish the model used by an app-server thread.
 
-Pi RPC updates can repeat the complete assistant message. Wardian replaces the
-accumulated answer for those updates and accepts only text content; thinking
-and tool events remain progress signals. Bootstrap timeout diagnostics identify
+Pi RPC streams typed text deltas and publishes the complete assistant message at
+`message_end`. Wardian replaces the accumulated answer for final messages and
+older full-message updates. User echoes, thinking, and tool events cannot become
+assistant answers. Bootstrap timeout diagnostics identify
 the protocol stage, such as `initialize` or `thread/resume`, without including
 the prompt. An unknown Codex resume identity remains a bootstrap error.
 
