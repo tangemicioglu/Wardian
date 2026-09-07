@@ -287,6 +287,11 @@ pub struct NativeProtocolEvent {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// When true, `text` is the complete assistant answer so far rather than an
+    /// increment, so a consumer must replace what it holds instead of appending.
+    /// Pi re-sends the whole message on every update; appending would duplicate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cumulative_text: bool,
 }
 
 impl NativeProtocolEvent {
@@ -583,16 +588,26 @@ fn parse_pi_event(value: &Value) -> Vec<NativeProtocolEvent> {
             None,
             None,
         )],
-        "message_start"
-        | "message_update"
-        | "tool_execution_start"
-        | "tool_execution_update"
-        | "tool_execution_end" => vec![event(
-            NativeProtocolEventKind::Progress,
+        // Only the message's own `text` parts may become answer text. Tool
+        // execution is progress and never contributes answer text, and thinking
+        // parts are filtered out inside `pi_assistant_text`.
+        "message_start" | "message_update" => vec![NativeProtocolEvent {
+            kind: NativeProtocolEventKind::Progress,
             request_id,
-            None,
-            assistant_text(value),
-        )],
+            provider_session_id: None,
+            provider_turn_id: None,
+            text: pi_assistant_text(value),
+            detail: None,
+            cumulative_text: true,
+        }],
+        "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+            vec![event(
+                NativeProtocolEventKind::Progress,
+                request_id,
+                None,
+                None,
+            )]
+        }
         "extension_ui_request" => vec![event(
             NativeProtocolEventKind::ApprovalRequested,
             request_id,
@@ -626,6 +641,7 @@ fn parse_codex_event(value: &Value) -> Vec<NativeProtocolEvent> {
             provider_turn_id: None,
             text: None,
             detail: Some(error.to_string()),
+            cumulative_text: false,
         }];
     }
     if value.get("result").is_some() {
@@ -657,6 +673,7 @@ fn parse_codex_event(value: &Value) -> Vec<NativeProtocolEvent> {
             provider_turn_id,
             text: None,
             detail: None,
+            cumulative_text: false,
         }];
     }
 
@@ -681,6 +698,7 @@ fn parse_codex_event(value: &Value) -> Vec<NativeProtocolEvent> {
                 .or_else(|| string_at(params, &["turnId"])),
             text: None,
             detail: None,
+            cumulative_text: false,
         }],
         "turn/completed" => vec![NativeProtocolEvent {
             kind: match string_at(params, &["turn", "status"]).as_deref() {
@@ -695,6 +713,7 @@ fn parse_codex_event(value: &Value) -> Vec<NativeProtocolEvent> {
             provider_turn_id: string_at(params, &["turn", "id"]),
             text: None,
             detail: string_at(params, &["turn", "error", "message"]),
+            cumulative_text: false,
         }],
         "item/started" | "item/completed" | "item/agentMessage/delta" => vec![event(
             NativeProtocolEventKind::Progress,
@@ -721,6 +740,7 @@ fn parse_opencode_event(value: &Value) -> Vec<NativeProtocolEvent> {
             provider_turn_id: None,
             text: None,
             detail: Some(error.to_string()),
+            cumulative_text: false,
         }];
     }
     if value.get("result").is_some() {
@@ -758,6 +778,7 @@ fn parse_opencode_event(value: &Value) -> Vec<NativeProtocolEvent> {
             } else {
                 stop_reason
             },
+            cumulative_text: false,
         }];
     }
     match value
@@ -796,7 +817,35 @@ fn event(
         provider_turn_id: None,
         text,
         detail: None,
+        cumulative_text: false,
     }
+}
+
+/// Pi's assistant answer, taken only from the message's `text` content parts.
+///
+/// Pi streams assistant text and reasoning through the same `delta` field: a
+/// text part accumulates it into `part.text` and a thinking part into
+/// `part.thinking`, so the delta alone cannot say which one it belongs to.
+/// Reading the parts is what keeps a thinking summary out of the answer. Tool
+/// parts are excluded for the same reason.
+///
+/// Each update carries the whole message, so the result is cumulative and must
+/// replace previously observed text rather than extend it.
+fn pi_assistant_text(value: &Value) -> Option<String> {
+    let parts = value.get("message")?.get("content")?.as_array()?;
+    let mut answer = String::new();
+    for part in parts {
+        let is_text_part = part.get("type").and_then(Value::as_str) == Some("text")
+            || (part.get("type").is_none() && part.get("text").is_some());
+        if !is_text_part {
+            continue;
+        }
+        if let Some(chunk) = part.get("text").and_then(Value::as_str) {
+            answer.push_str(chunk);
+        }
+    }
+    let answer = answer.trim();
+    (!answer.is_empty()).then(|| answer.to_string())
 }
 
 fn json_rpc_id(value: &Value) -> Option<String> {
@@ -926,6 +975,66 @@ mod tests {
             result,
             Err(NativeProtocolError::UnsupportedOperation { .. })
         ));
+    }
+
+    /// Pi accumulates the same streamed `delta` into `part.text` for a text
+    /// part and `part.thinking` for a thinking part, so the delta alone cannot
+    /// say which one it belongs to. Only the message's `text` parts may become
+    /// the assistant answer, or a reasoning summary is concatenated onto it.
+    #[test]
+    fn pi_thinking_and_tool_parts_never_become_assistant_answer_text() {
+        let update = r#"{"type":"message_update","message":{"role":"assistant","content":[
+            {"type":"thinking","thinking":"The user wants the secret repeated exactly."},
+            {"type":"toolCall","toolName":"read","input":{}},
+            {"type":"text","text":"PROBE-771F82BD"}
+        ]},"assistantMessageEvent":{"delta":"The user wants the secret"}}"#;
+
+        let events = NativeProviderProtocol::PiRpc
+            .parse_line(update)
+            .expect("pi message update");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NativeProtocolEventKind::Progress);
+        assert_eq!(events[0].text.as_deref(), Some("PROBE-771F82BD"));
+        assert!(
+            events[0].cumulative_text,
+            "each update carries the whole message, so it replaces rather than appends"
+        );
+    }
+
+    #[test]
+    fn pi_thinking_only_update_carries_progress_without_answer_text() {
+        let events = NativeProviderProtocol::PiRpc
+            .parse_line(
+                r#"{"type":"message_update","message":{"role":"assistant","content":[
+                    {"type":"thinking","thinking":"Considering the request."}
+                ]},"assistantMessageEvent":{"delta":"Considering the request."}}"#,
+            )
+            .expect("pi thinking update");
+
+        assert_eq!(events[0].kind, NativeProtocolEventKind::Progress);
+        assert_eq!(
+            events[0].text, None,
+            "thinking is progress, never answer text"
+        );
+    }
+
+    #[test]
+    fn pi_tool_execution_events_stay_progress_without_text() {
+        for line in [
+            r#"{"type":"tool_execution_start","toolName":"read"}"#,
+            r#"{"type":"tool_execution_update","text":"reading file"}"#,
+            r#"{"type":"tool_execution_end","content":"file body"}"#,
+        ] {
+            let events = NativeProviderProtocol::PiRpc
+                .parse_line(line)
+                .expect("pi tool event");
+            assert_eq!(events[0].kind, NativeProtocolEventKind::Progress);
+            assert_eq!(
+                events[0].text, None,
+                "tool output is not the assistant answer: {line}"
+            );
+        }
     }
 
     #[test]

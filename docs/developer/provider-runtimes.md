@@ -20,6 +20,21 @@ This document captures the practical runtime differences between Wardian's suppo
   direct `node <script.js>` launch resolved from an npm `.cmd` shim. Shell-wrap
   only when shell dispatch is required, such as extensionless OpenCode shims.
 
+### Native transport compatibility
+
+OpenCode ACP starts with its own command arguments. Wardian applies the selected
+model through `session/set_model` after binding either a new or resumed session;
+a rejected model selection stops bootstrap before a prompt is submitted.
+Codex app-server receives the selected model through a repeatable `-c` config
+override, alongside the reasoning-effort override. Its interactive `--model`
+flag does not establish the model used by an app-server thread.
+
+Pi RPC updates can repeat the complete assistant message. Wardian replaces the
+accumulated answer for those updates and accepts only text content; thinking
+and tool events remain progress signals. Bootstrap timeout diagnostics identify
+the protocol stage, such as `initialize` or `thread/resume`, without including
+the prompt. An unknown Codex resume identity remains a bootstrap error.
+
 ## Quick Comparison
 
 | Provider | Working root | Instruction file | Skill model | Session identity |
