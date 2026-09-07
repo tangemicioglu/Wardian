@@ -1563,10 +1563,6 @@ pub async fn spawn_agent(
                     }
 
                     if let Some(title) = extract_terminal_titles(&text).into_iter().last() {
-                        let _previous_title = terminal_title_clone
-                            .lock()
-                            .map(|value| value.clone())
-                            .unwrap_or_default();
                         if provider_name_for_pty == "opencode" {
                             log_debug(&format!(
                                 "[Wardian] OpenCode backend title for session {}: {}",
@@ -1585,12 +1581,6 @@ pub async fn spawn_agent(
                                     &sid_for_pty,
                                 )
                             {
-                                let was_idle = current_status_clone
-                                    .lock()
-                                    .map(|status| {
-                                        wardian_core::identity::normalize_status(&status) == "idle"
-                                    })
-                                    .unwrap_or(false);
                                 set_agent_status(
                                     &pty_emit_app,
                                     &sid_for_pty,
@@ -1616,14 +1606,6 @@ pub async fn spawn_agent(
                                             "Idle",
                                         );
                                     });
-                                }
-                                // OpenCode's TUI does not expose a separate
-                                // JSON acknowledgement in interactive mode;
-                                // its provider-owned title changes from
-                                // `OpenCode` to `OC | …` when it accepts a
-                                // submitted turn.
-                                if was_idle && next_status == "Processing..." {
-                                    super::emit_agent_turn_started(&pty_emit_app, &sid_for_pty);
                                 }
                             }
                         } else if provider_name_for_pty == "gemini" {
