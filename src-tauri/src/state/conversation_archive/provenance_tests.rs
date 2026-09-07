@@ -28,8 +28,7 @@ fn same_id_native_capture_repairs_persisted_provenance() {
     assert_eq!(events[0].metadata["request_root_id"], "native-event");
 }
 
-#[path = "../../commands/chat_archive_identity.rs"]
-mod native_identity;
+use crate::commands::chat::archive_identity as native_identity;
 
 const PI_FIXTURE: &str = include_str!("fixtures/real-pi-session.jsonl");
 fn pi_capture() -> (Vec<AgentChatEvent>, Vec<AgentChatEvent>) {

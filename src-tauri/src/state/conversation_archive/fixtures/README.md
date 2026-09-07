@@ -33,3 +33,17 @@ This old observation does not report metadata.source; no source-4 value is
 invented for it. Separate source-4/source-2 regression inputs explicitly model
 #1169's adapter output. Tool projection and legitimate assistant commentary
 are outside this archive fixture's assertions.
+
+## Antigravity mutable tool completion
+
+`real-agy-tool-completion.json` contains the actual archived running event and
+narrative plus the completed boundary DTO projected from a read-only query of
+the same retained integration-v1 SQLite step. Cascade
+`1b7cc6a3-7c7d-43ce-9d22-fdd8e6362a25`, step 2, type 132, source 2, native
+status 3. Result text is the exact UTF-8 payload at 140.2.1; the retained archive
+had native status 2. The full original payload SHA-256 is recorded in the
+fixture. Only relevant extracted fields are retained; opaque payload fields
+and local paths are excluded. The log path is replaced by an isolated fixture
+path consistently on both observations; original event ID and narrative
+sequence/time/references remain. The probe is disposable synthetic file data.
+This tests the shared archive boundary, not a substitute provider adapter.

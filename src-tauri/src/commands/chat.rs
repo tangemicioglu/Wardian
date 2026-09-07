@@ -24,7 +24,7 @@ use wardian_core::models::chat::{
 };
 
 #[path = "chat_archive_identity.rs"]
-mod archive_identity;
+pub(crate) mod archive_identity;
 use archive_identity::stable_provider_log_event_id;
 
 const PROVIDER_LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;

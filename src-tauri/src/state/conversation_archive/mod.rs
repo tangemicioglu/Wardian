@@ -466,6 +466,21 @@ impl ConversationArchiveState {
             .cloned()
             .collect::<Vec<_>>();
         provenance::refresh_records(&mut existing_records, &observed);
+        for record in &mut existing_records {
+            if !old_records.contains(record) {
+                materialize_record_text(&conversation_dir, record)?;
+            }
+        }
+        for event in &mut existing_events {
+            if provenance::completed_native_tool(event) {
+                if let Some(record) = existing_records
+                    .iter()
+                    .find(|record| record.event_refs.contains(&event.id))
+                {
+                    *event = event_record_for_jsonl(event, record);
+                }
+            }
+        }
         let records_refreshed = old_records != existing_records;
         let refreshed = events_refreshed || records_refreshed;
         // Each file keeps its previous snapshot on failed publication. Retry
@@ -953,6 +968,8 @@ fn event_identity_ids(event: &AgentChatEvent) -> Vec<&str> {
     }
     ids
 }
+#[cfg(test)]
+mod completion_tests;
 #[cfg(test)]
 mod provenance_tests;
 

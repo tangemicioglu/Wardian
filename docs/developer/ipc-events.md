@@ -257,6 +257,11 @@ and log path). Equal prompt text alone does not establish identity. See the
 internal design record at
 `docs/specs/2026-09-07-provider-archive-provenance-repair.md` for the publication
 and compatibility contract.
+For the verified Antigravity SQLite GENERIC tool result, an identity-bound
+running-to-DONE observation also refreshes text and native step status in place.
+The original event ID and narrative sequence remain; DONE does not assert
+success and a stale running capture cannot replace completed output. Durable
+repair still requires enabled capture; disabled replay changes only the view.
 
 ### Provider Input State
 

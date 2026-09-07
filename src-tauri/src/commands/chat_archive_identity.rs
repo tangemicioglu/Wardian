@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 /// exact old identity only when a complete session maps it to ONE native entry.
 /// Repeated equal prompts and bounded tails cannot establish that bridge.
 /// This reads adapter output; it never assigns a turn ID or request root.
-pub(super) fn attach_native_legacy_aliases(
+pub(crate) fn attach_native_legacy_aliases(
     events: &mut [AgentChatEvent],
     path: &Path,
     content: &str,
@@ -82,7 +82,7 @@ pub(super) fn attach_native_legacy_aliases(
     }
 }
 
-pub(super) fn stable_provider_log_event_id(event: &AgentChatEvent, path: &Path) -> String {
+pub(crate) fn stable_provider_log_event_id(event: &AgentChatEvent, path: &Path) -> String {
     let mut hash = Sha256::new();
     hash.update(event.session_id.as_bytes());
     hash.update(b"\0");

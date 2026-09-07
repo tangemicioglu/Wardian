@@ -44,8 +44,9 @@ while such archives are readable; removal requires an explicit end to that
 compatibility contract. There is no temporary sidecar, new event kind, bulk
 migration command, or scheduled retirement mechanism.
 
-The original event ID, narrative sequence, text, timestamp, source references,
-artifacts and unrelated metadata remain. Verified IDs are added to existing
+The original event ID, narrative sequence, timestamp, source references and
+unrelated metadata remain. Text and artifacts remain except for the verified
+native tool completion described below. Verified IDs are added to existing
 `legacy_event_ids` and narrative `event_refs`. Two already-stored aliases of the
 same proven observation converge to one ordinary event and narrative record.
 Repeated prompts with distinct identities remain distinct. Archive-only history
@@ -65,6 +66,30 @@ The broker's human/agent origin, request root and causal reference stay
 canonical. A delivered row without a native observation cannot acquire
 `provider_log`. Explicit provider context/internal events cannot reconcile with
 a delivered prompt merely because their text is equal.
+
+## Mutable native tool completion
+
+A retained Antigravity capture exposed a second #1175 failure: SQLite step 2
+(type 132, source 2) reached status 3 with the real scratch-file result, while
+the same stable archived tool-result ID at narrative sequence 4 still held
+status 2 and `Step is still running`. Its call projection was already correct.
+This is stale shared archive state, not a new adapter mapping.
+
+For the observed Antigravity SQLite GENERIC tool-result contract only, current
+status 3 may replace archived status 2 text and `provider_step_status`. The
+normal provider/source/session and event identity checks still apply; both
+observations must agree on log source, native step type/source/index and tool
+ordinal. Missing or conflicting location evidence cannot authorize mutation.
+Status 3 proves completion, not success: the public outcome status is preserved.
+A completed result cannot revert to running, and a different terminal result
+without native revision evidence does not overwrite the first completion.
+
+The event ID and narrative sequence, timestamp and source references survive.
+The existing text materialization path stores large completed output and updates
+its excerpt/artifact references. Retry can repair a stale narrative from an
+already-published completed event. There is no extra event, alias ID, schema or
+migration command. Enabled capture persists the repair; disabled live replay
+repairs only the view. Historical rows without observed completion stay as-is.
 
 ## Publication and logging policy
 
@@ -116,6 +141,11 @@ preservation, concurrent captures, conflicting evidence, and Windows atomic
 publication failure followed by retry. Existing archive/turn/normalizer checks
 also pass in the isolated harness.
 
-Full application checks, local integration review and real-provider/native
-retest remain coordinator/QA acceptance work. No paid prompts or native app runs
+The retained running/completed tool fixture fails on commit `9972602a` at the
+shared active projection. Fixed checks cover durable replay, original sequence
+and identity, stale running capture, missing/foreign native locations, large
+output materialization, no-op recapture and partial-publication retry.
+
+Full application checks and local review are tracked with this implementation;
+real-provider/native retest remains coordinator/QA acceptance work. No paid prompts or native app runs
 are part of this implementation validation.

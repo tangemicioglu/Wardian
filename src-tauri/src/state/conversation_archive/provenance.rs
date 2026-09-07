@@ -75,7 +75,68 @@ pub(crate) fn canonicalize_role(event: &mut AgentChatEvent) {
     }
 }
 
+/// Antigravity's observed SQLite GENERIC tool result has mutable output.
+/// Status 3 means DONE, not success; no other provider/status layout is inferred.
+pub(super) fn completed_native_tool(event: &AgentChatEvent) -> bool {
+    event.provider == "antigravity"
+        && event.kind == AgentChatEventKind::ToolResult
+        && event.metadata["provider_log"] == true
+        && event.metadata["log_source"] == "antigravity_conversation_database"
+        && event.metadata["provider_step_type"] == 132
+        && event.metadata["provider_step_source"] == 2
+        && event.metadata["provider_step_status"] == 3
+        && event.metadata["step_index"].as_u64().is_some()
+        && event.metadata["tool_ordinal"].as_u64().is_some()
+}
+
+fn refresh_tool_completion(old: &mut AgentChatEvent, current: &AgentChatEvent) {
+    // Called only after identity/source binding. Require the complete observed
+    // location on both sides; missing native evidence cannot authorize a rewrite.
+    if !completed_native_tool(current)
+        || old.metadata["provider_step_status"] != 2
+        || ![
+            "log_source",
+            "provider_step_type",
+            "provider_step_source",
+            "step_index",
+            "tool_ordinal",
+        ]
+        .iter()
+        .all(|key| old.metadata[*key] == current.metadata[*key])
+        || current
+            .text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return;
+    }
+    old.text = current.text.clone();
+    old.metadata["provider_step_status"] = current.metadata["provider_step_status"].clone();
+    // The newly observed text supersedes any materialized running placeholder.
+    if let Some(metadata) = old.metadata.as_object_mut() {
+        metadata.remove("text_excerpt");
+        metadata.remove("text_artifact_refs");
+    }
+}
+
 fn enrich(old: &mut AgentChatEvent, current: &AgentChatEvent) -> io::Result<()> {
+    if old.kind == AgentChatEventKind::ToolResult {
+        for key in [
+            "step_index",
+            "tool_ordinal",
+            "provider_step_type",
+            "log_source",
+        ] {
+            if let (Some(a), Some(b)) = (old.metadata.get(key), current.metadata.get(key)) {
+                if !a.is_null() && !b.is_null() && a != b {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("conflicting native tool location: {key}"),
+                    ));
+                }
+            }
+        }
+    }
     // An adapter downgrade must not replace native source evidence with its
     // older role-based fallback. Missing fields never erase known evidence.
     let weaker = old.metadata.get("provider_step_source").is_some()
@@ -91,6 +152,7 @@ fn enrich(old: &mut AgentChatEvent, current: &AgentChatEvent) -> io::Result<()> 
             ));
         }
     }
+    refresh_tool_completion(old, current);
     let broker_input = old.metadata["generated"] == true;
     if !weaker && !broker_input {
         for key in ["request_root_id", "provider_step_source"] {
@@ -270,6 +332,24 @@ pub(super) fn refresh_records(
         };
         let mut canonical = records[first].clone();
         canonical.turn_id = projection.turn_id.or(canonical.turn_id);
+        if completed_native_tool(event) {
+            // Also repairs a narrative left stale by failure after event publish.
+            // Preserve narrative sequence/time/source refs and outcome status.
+            if let Some(text) = event.text.as_ref() {
+                if canonical.text.as_ref() != Some(text) {
+                    canonical.text = Some(text.clone());
+                    canonical.excerpt = None;
+                    canonical.artifact_refs.clear();
+                }
+            } else if let Some(refs) = event.metadata["text_artifact_refs"].as_array() {
+                canonical.text = None;
+                canonical.excerpt = event.metadata["text_excerpt"].as_str().map(str::to_owned);
+                canonical.artifact_refs = refs
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+            }
+        }
         // Broker-authored delivery provenance remains authoritative. Native
         // observation aliases enrich it without turning an agent input human.
         if !canonical
