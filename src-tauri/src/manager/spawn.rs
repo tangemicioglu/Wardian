@@ -1378,7 +1378,7 @@ pub async fn spawn_agent(
                         None
                     };
                     let startup_screen = if startup_prompt_pending
-                        && matches!(provider_name_for_pty.as_str(), "codex" | "claude")
+                        && matches!(provider_name_for_pty.as_str(), "codex" | "claude" | "pi")
                     {
                         // Output was applied to the broker above. Read its current
                         // screen so chunk boundaries and erased startup messages
@@ -3066,6 +3066,8 @@ mod tests {
             ("claude", "\x1b[2J\x1b[HClaude Code v2.1.263\r\n❯ Try fix typecheck errors", false),
             ("claude", "\r\n────────\r\nHaiku 4.5 | workspace | /rc connecting…\r\n⏵⏵ bypass permissions on (shift+tab to cycle)", false),
             ("claude", "\x1b[4;1H\x1b[2KHaiku 4.5 | workspace | /rc", true),
+            ("pi", "\x1b[2J\x1b[Hpi v0.84.2\r\n────────────────\r\n<workspace-root>/habitat/workspace (test/provider-conformanc...\r\n$0.000 (sub) 0.0%/272k (auto) (openai-codex) gpt-5.4-mini • medium", true),
+            ("pi", "\x1b[2J\x1b[Hpi v0.84.2\r\n────────────────\r\n<workspace-root>/habitat/workspace\r\nLoading model…", false),
         ] {
             let output_broker = broker.clone();
             tokio::task::spawn_blocking(move || {
