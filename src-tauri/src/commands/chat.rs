@@ -1194,7 +1194,10 @@ fn should_collapse_provider_message_duplicate(
     existing: &AgentChatEvent,
     candidate: &AgentChatEvent,
 ) -> bool {
-    if existing.metadata["provider_log"] == true && candidate.metadata["provider_log"] == true {
+    if existing.metadata["provider_log"] == true
+        && candidate.metadata["provider_log"] == true
+        && !archive_identity::is_codex_stream_completion_pair(existing, candidate)
+    {
         return false; // Native records with distinct IDs are distinct observations.
     }
     if existing.kind != AgentChatEventKind::Message || candidate.kind != AgentChatEventKind::Message
@@ -2082,6 +2085,26 @@ Do you want to proceed?
         assert_eq!(
             chat_events[0].text.as_deref(),
             Some("Created #daily-task-list under General.")
+        );
+        // The mirror exception must not collapse two identified observations or
+        // equal answers belonging to different native requests.
+        let mut identified = chat_events[0].clone();
+        identified.id = "other-identified-answer".into();
+        identified.turn_id = Some("other-native-message".into());
+        assert_eq!(
+            merge_chat_events(Vec::new(), vec![chat_events[0].clone(), identified]).len(),
+            2
+        );
+        let mut rooted_stream = chat_events[0].clone();
+        rooted_stream.id = "stream-another-request".into();
+        rooted_stream.turn_id = None;
+        rooted_stream.source = Some("event_msg".into());
+        rooted_stream.metadata["request_root_id"] = serde_json::json!("request-a");
+        let mut rooted_completion = chat_events[0].clone();
+        rooted_completion.metadata["request_root_id"] = serde_json::json!("request-b");
+        assert_eq!(
+            merge_chat_events(Vec::new(), vec![rooted_stream, rooted_completion]).len(),
+            2
         );
     }
 
