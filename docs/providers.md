@@ -101,7 +101,7 @@ Codex executes against the real target workspace while Wardian keeps mutable pro
 
 Codex reads `AGENTS.md`. Wardian passes the real project root with `--cd <absolute-workspace-path>` and projects assigned skills into the agent-specific `CODEX_HOME/skills` tree. This keeps skill scope per agent while preserving Codex trust and command execution against the actual repository path.
 
-For interactive and inherited headless launches, Wardian also supplies its
+For interactive, inherited headless, and native launches, Wardian also supplies its
 managed common, class, and agent instructions through Codex's developer
 instructions setting, in that order. These are the same managed sources used
 to generate habitat `AGENTS.md`; workspace instructions retain Codex's normal
