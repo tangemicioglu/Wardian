@@ -53,29 +53,45 @@ jobs:
           path: docs/assets/site-media/
           if-no-files-found: error
 
-      - name: Check for the cross-repository token
-        id: token
-        env:
-          WARDIAN_SITE_PAT: ${{ secrets.WARDIAN_SITE_PAT }}
+      # `GITHUB_TOKEN` cannot write to another repository, so the pull request
+      # needs its own credential. It comes from the organization's existing
+      # release-dispatch GitHub App rather than a personal access token: the
+      # token it mints expires within the hour and is scoped to one repository
+      # and two permissions, and no long-lived secret is tied to an account.
+      #
+      # `continue-on-error` because the App not being installed on the site
+      # repository is a setup state, not a broken run. The capture still
+      # happens and the bundle is still uploaded; only the pull request is
+      # skipped, with a warning saying what is missing.
+      - name: Create the site repository token
+        id: app-token
+        if: vars.WARDIAN_RELEASE_DISPATCH_APP_ID != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ vars.WARDIAN_RELEASE_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.WARDIAN_RELEASE_DISPATCH_PRIVATE_KEY }}
+          owner: wardian-app
+          repositories: wardian.org
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Report a missing token
+        if: steps.app-token.outputs.token == ''
         run: |
-          if [ -z "${WARDIAN_SITE_PAT}" ]; then
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Site media not published::The media bundle was captured and uploaded as the 'site-media' artifact, but no pull request was opened. Opening one requires a token with write access to the site repository. Create a fine-grained personal access token scoped to wardian-app/wardian.org with Contents and Pull requests write permission, then add it to this repository as the WARDIAN_SITE_PAT secret and re-run this workflow."
-          else
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "::warning title=Site media not published::The media bundle was captured and uploaded as the 'site-media' artifact, but no pull request was opened. Opening one needs a token that can write to wardian-app/wardian.org. Install the release-dispatch GitHub App (WARDIAN_RELEASE_DISPATCH_APP_ID) on that repository and grant it Contents: write and Pull requests: write, then re-run this workflow. The bundle can be downloaded and copied by hand in the meantime."
 
       - name: Check out the site repository
-        if: steps.token.outputs.present == 'true'
+        if: steps.app-token.outputs.token != ''
         uses: actions/checkout@v6
         with:
           repository: wardian-app/wardian.org
-          token: ${{ secrets.WARDIAN_SITE_PAT }}
+          token: ${{ steps.app-token.outputs.token }}
           path: site
           fetch-depth: 0
 
       - name: Copy the media into the site
-        if: steps.token.outputs.present == 'true'
+        if: steps.app-token.outputs.token != ''
         run: |
           set -euo pipefail
           mkdir -p site/assets/media
@@ -95,10 +111,10 @@ jobs:
           cp docs/assets/site-media/* site/assets/media/
 
       - name: Open the refresh pull request
-        if: steps.token.outputs.present == 'true'
+        if: steps.app-token.outputs.token != ''
         working-directory: site
         env:
-          GH_TOKEN: ${{ secrets.WARDIAN_SITE_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SOURCE_REF: ${{ github.event.release.tag_name || github.sha }}
         run: |
           set -euo pipefail

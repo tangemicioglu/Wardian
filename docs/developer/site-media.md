@@ -138,27 +138,37 @@ uploads the result as a `site-media` workflow artifact.
 
 ### The one manual setup step
 
-Opening the pull request against the site repository needs a token, because
-`GITHUB_TOKEN` cannot write to another repository.
+Opening the pull request against the site repository needs its own credential,
+because `GITHUB_TOKEN` cannot write to another repository.
 
-1. Create a fine-grained personal access token scoped to
-   `wardian-app/wardian.org` with **Contents: write** and **Pull requests:
-   write**.
-2. Add it to this repository as the secret `WARDIAN_SITE_PAT`.
+It comes from the organization's existing release-dispatch GitHub App, the one
+[`release.yml`](https://github.com/wardian-app/Wardian/blob/main/.github/workflows/release.yml)
+already uses to reach `homebrew-tap` and `packages`. There is no new secret to
+create: `WARDIAN_RELEASE_DISPATCH_APP_ID` and
+`WARDIAN_RELEASE_DISPATCH_PRIVATE_KEY` are configured, and this workflow mints
+a token from them with `actions/create-github-app-token`.
 
-The organization already runs a GitHub App for cross-repository release
-dispatch (`WARDIAN_RELEASE_DISPATCH_APP_ID` plus its private key), and granting
-that App access to `wardian-app/wardian.org` would let this workflow mint a
-scoped, short-lived token with `actions/create-github-app-token` instead, the
-way [`release.yml`](https://github.com/wardian-app/Wardian/blob/main/.github/workflows/release.yml)
-does. That is the better shape — nothing long-lived, nothing tied to one
-person's account — and it needs no new secret. The PAT path above is what the
-workflow reads today.
+Two things have to be true of that App, both set in its settings rather than
+here:
 
-Until that secret exists the workflow still captures the clips and uploads the
-artifact, and logs a warning explaining what is missing. The bundle can be
-downloaded and copied by hand in the meantime, so the pipeline is useful before
-the token is set up.
+1. It is installed on `wardian-app/wardian.org`. It was installed for release
+   dispatch, so its repository access probably lists only `homebrew-tap` and
+   `packages`.
+2. It holds **Contents: write** and **Pull requests: write**. Release dispatch
+   only needs Actions: write, so these are likely additional permissions, and
+   adding them raises a request an organization owner has to approve on the
+   installation.
+
+The token this mints is scoped to `wardian.org` and those two permissions, and
+expires within the hour. Nothing long-lived is stored, and nothing is tied to
+one person's account — which is why this is worth the two settings changes over
+a personal access token.
+
+Until both are true the workflow still captures the clips and uploads the
+artifact, and logs a warning explaining what is missing. A failure to mint the
+token is treated the same way, because an App that is not installed yet is a
+setup state rather than a broken run. The bundle can be downloaded and copied
+by hand in the meantime, so the pipeline is useful before the App is set up.
 
 ### What the refresh may delete
 
