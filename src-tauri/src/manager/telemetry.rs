@@ -680,6 +680,7 @@ struct AgentSnapshot {
     folder: String,
     is_off: bool,
     resume_session: Option<String>,
+    fresh_provider_session_id: Option<String>,
     provider_generation: u64,
     process_id: Option<u32>,
     query_count: Arc<Mutex<usize>>,
@@ -1360,6 +1361,7 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
                     folder: config.folder.clone(),
                     is_off: config.is_off,
                     resume_session: config.resume_session.clone(),
+                    fresh_provider_session_id: config.fresh_provider_session_id.clone(),
                     provider_generation: 0,
                     process_id: agent.process_id,
                     query_count: agent.query_count.clone(),
@@ -1474,7 +1476,12 @@ pub async fn get_all_metrics(state: &AppState) -> Vec<AgentTelemetry> {
             let opencode_session_id = snap
                 .resume_session
                 .as_deref()
-                .filter(|value| value.starts_with("ses_"));
+                .filter(|value| value.starts_with("ses_"))
+                .or_else(|| {
+                    snap.fresh_provider_session_id
+                        .as_deref()
+                        .filter(|value| value.starts_with("ses_"))
+                });
             let gemini_session_id = snap.resume_session.as_deref();
             let status_before_log_work = snap.current_status.lock().unwrap().clone();
             let mut last_query_timestamp = last_user_query_timestamps.remove(&snap.session_id);
@@ -2124,6 +2131,7 @@ mod tests {
             folder: "D:/work".to_string(),
             is_off: false,
             resume_session: None,
+            fresh_provider_session_id: None,
             provider_generation: 0,
             process_id: Some(1234),
             query_count: Arc::new(Mutex::new(0)),

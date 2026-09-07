@@ -282,6 +282,8 @@ This is how OpenCode sees Wardian-managed class and agent context without forcin
 - OpenCode session IDs are discovered from JSON output during `opencode run --format json`, or captured from `opencode session list` while the interactive TUI runs.
 - Valid IDs match `ses_…`; Wardian never substitutes its own UUIDs into `--session`.
 - Resume uses `--session <session_id>`.
+- Wardian resolves OpenCode's database and rolling log from `XDG_DATA_HOME` first, then the platform data directories. This matters on Windows as well: OpenCode honors the XDG override, so using only `%LOCALAPPDATA%` can associate a session with another installation's transcript.
+- The interactive session lookup accepts only one matching `ses_…` record created after this provider launch for the real workspace; it fails closed when shared-workspace matches are ambiguous. Once that identity is available, transcript refresh reads OpenCode's SQLite `message`/`part` rows and retains the database path as provenance metadata; later rows are visible on the next refresh without restarting the agent.
 
 ### Practical implications
 
@@ -289,6 +291,7 @@ This is how OpenCode sees Wardian-managed class and agent context without forcin
 - OpenCode is closer to Codex than Gemini on instruction naming: it consumes `AGENTS.md` directly.
 - If OpenCode stops seeing Wardian skills or class instructions, inspect the generated `<habitat>/.opencode/opencode.json` (`OPENCODE_CONFIG`) first, then verify the junctioned `skills/` entries resolve.
 - Interactive status comes from TUI window-title scraping ("OpenCode" idle, "OC | …" processing), while token/cost telemetry comes from OpenCode's shared SQLite store via wardian-core; both channels are expected to exist side by side.
+- The chat-log link and transcript source must resolve from the same provider data root as the running OpenCode process. If an isolated harness sets `XDG_DATA_HOME`, keep that setting for the Wardian process that reads telemetry and chat history as well.
 - TUI "Permission required" prompts never appear in the window title. Wardian detects them from the provider log (`message=asking id=per_…`) and raises Action Needed; the ask is attributed to a session only while its prompt loop is the sole open loop in the log, and clears once loop activity resumes after the prompt is answered.
 - On Windows, Wardian should launch the `opencode` command resolved from PATH,
   matching how a user terminal starts OpenCode. Interactive and headless launch

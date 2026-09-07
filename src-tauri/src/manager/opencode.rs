@@ -34,24 +34,45 @@ fn opencode_loop_line_session_id(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn opencode_data_dirs() -> Vec<std::path::PathBuf> {
+fn opencode_data_dirs_from_roots(
+    xdg_data_home: Option<&std::path::Path>,
+    data_local_dir: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
+    home_dir: Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(d) = dirs::data_local_dir() {
-        dirs.push(d.join("opencode"));
-    }
-    if let Some(d) = dirs::data_dir() {
-        let p = d.join("opencode");
-        if !dirs.contains(&p) {
-            dirs.push(p);
+    let mut push_unique = |path: std::path::PathBuf| {
+        if !path.as_os_str().is_empty() && !dirs.contains(&path) {
+            dirs.push(path);
         }
+    };
+
+    // OpenCode follows XDG_DATA_HOME even on Windows. It must win over the
+    // platform default so isolated provider runs do not get attributed to a
+    // different installation's database or rolling log.
+    if let Some(xdg_data_home) = xdg_data_home {
+        push_unique(xdg_data_home.join("opencode"));
     }
-    if let Some(h) = dirs::home_dir() {
-        let p = h.join(".local").join("share").join("opencode");
-        if !dirs.contains(&p) {
-            dirs.push(p);
-        }
+    if let Some(data_local_dir) = data_local_dir {
+        push_unique(data_local_dir.join("opencode"));
+    }
+    if let Some(data_dir) = data_dir {
+        push_unique(data_dir.join("opencode"));
+    }
+    if let Some(home_dir) = home_dir {
+        push_unique(home_dir.join(".local").join("share").join("opencode"));
     }
     dirs
+}
+
+fn opencode_data_dirs() -> Vec<std::path::PathBuf> {
+    let xdg_data_home = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from);
+    opencode_data_dirs_from_roots(
+        xdg_data_home.as_deref(),
+        dirs::data_local_dir(),
+        dirs::data_dir(),
+        dirs::home_dir(),
+    )
 }
 
 pub(crate) fn opencode_database_path() -> Option<std::path::PathBuf> {
@@ -73,30 +94,44 @@ pub(crate) fn opencode_recent_session_for_workspace(
     let mut args = initial_args;
     args.extend(["session", "list", "--format", "json", "--max-count", "20"].map(str::to_string));
     let launch = build_program_launch(&bin, &args).ok()?;
-    let output = std::process::Command::new(launch.executable)
-        .args(launch.args)
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new(launch.executable);
+    command.args(launch.args).current_dir(workspace);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
     let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let expected = workspace.to_string_lossy().replace('/', "\\");
-    sessions.as_array()?.iter().find_map(|session| {
-        let directory = session
-            .get("directory")
-            .and_then(|value| value.as_str())?
-            .replace('/', "\\");
-        let created = session.get("created").and_then(|value| value.as_i64())?;
-        (directory.eq_ignore_ascii_case(&expected) && created >= created_after_ms)
-            .then(|| {
-                session
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string)
-            })
-            .flatten()
-    })
+    select_recent_opencode_session(sessions.as_array()?, workspace, created_after_ms)
+}
+
+fn normalize_opencode_workspace(path: &str) -> String {
+    path.replace('/', "\\")
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase()
+}
+
+fn select_recent_opencode_session(
+    sessions: &[serde_json::Value],
+    workspace: &std::path::Path,
+    created_after_ms: i64,
+) -> Option<String> {
+    let expected = normalize_opencode_workspace(&workspace.to_string_lossy());
+    let mut candidates = sessions
+        .iter()
+        .filter_map(|session| {
+            let id = session.get("id").and_then(|value| value.as_str())?;
+            let directory = session.get("directory").and_then(|value| value.as_str())?;
+            let created = session.get("created").and_then(|value| value.as_i64())?;
+            (id.starts_with("ses_")
+                && normalize_opencode_workspace(directory) == expected
+                && created >= created_after_ms)
+                .then_some((created, id.to_string()))
+        })
+        .map(|(_, id)| id)
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    (candidates.len() == 1).then(|| candidates.remove(0))
 }
 
 pub(crate) fn opencode_last_assistant_text(session_id: &str) -> Result<Option<String>, String> {
@@ -334,26 +369,13 @@ pub(crate) fn opencode_log_path_in(
 }
 
 /// Return the ordered list of directories where opencode writes its log files.
-/// Tries platform-native data dirs first (Windows: %LOCALAPPDATA%, %APPDATA%),
-/// then the XDG fallback (~/.local/share).
+/// Honors XDG_DATA_HOME first, then tries platform-native data dirs (Windows:
+/// %LOCALAPPDATA%, %APPDATA%), followed by the home-directory XDG fallback.
 pub(crate) fn opencode_log_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(d) = dirs::data_local_dir() {
-        dirs.push(d.join("opencode").join("log"));
-    }
-    if let Some(d) = dirs::data_dir() {
-        let p = d.join("opencode").join("log");
-        if !dirs.contains(&p) {
-            dirs.push(p);
-        }
-    }
-    if let Some(h) = dirs::home_dir() {
-        let p = h.join(".local").join("share").join("opencode").join("log");
-        if !dirs.contains(&p) {
-            dirs.push(p);
-        }
-    }
-    dirs
+    opencode_data_dirs()
+        .into_iter()
+        .map(|path| path.join("log"))
+        .collect()
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -540,6 +562,62 @@ mod tests {
     };
     use std::path::Path;
     use wardian_core::models::AgentConfig;
+
+    #[test]
+    fn opencode_data_root_prefers_xdg_provider_storage() {
+        let xdg_data_home = std::path::PathBuf::from("D:/isolated/data");
+        let platform_local = std::path::PathBuf::from("C:/Users/test/AppData/Local");
+        let platform_data = std::path::PathBuf::from("C:/Users/test/AppData/Roaming");
+        let home = std::path::PathBuf::from("C:/Users/test");
+
+        let roots = opencode_data_dirs_from_roots(
+            Some(&xdg_data_home),
+            Some(platform_local),
+            Some(platform_data),
+            Some(home),
+        );
+
+        assert_eq!(roots[0], xdg_data_home.join("opencode"));
+        assert!(roots
+            .iter()
+            .any(|path| path == &std::path::PathBuf::from("C:/Users/test/AppData/Local/opencode")));
+    }
+
+    #[test]
+    fn recent_opencode_session_requires_unique_matching_real_session() {
+        let workspace = std::path::Path::new("D:/work/project");
+        let sessions = vec![
+            serde_json::json!({
+                "id": "ses_other",
+                "directory": "D:/work/other",
+                "created": 300,
+            }),
+            serde_json::json!({
+                "id": "ses_old",
+                "directory": "D:\\work\\project\\",
+                "created": 400,
+            }),
+            serde_json::json!({
+                "id": "ses_new",
+                "directory": "D:/work/project",
+                "created": 500,
+            }),
+            serde_json::json!({
+                "id": "wardian-uuid",
+                "directory": "D:/work/project",
+                "created": 600,
+            }),
+        ];
+
+        assert_eq!(
+            select_recent_opencode_session(&sessions, workspace, 450).as_deref(),
+            Some("ses_new")
+        );
+        assert_eq!(
+            select_recent_opencode_session(&sessions, workspace, 350),
+            None
+        );
+    }
     #[test]
     fn opencode_title_maps_to_status() {
         assert_eq!(opencode_status_from_title("OpenCode"), Some("Idle"));
