@@ -80,7 +80,8 @@ function buildCli(harness) {
     `cargo build -p wardian-cli failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
 
-  return path.join(harness.repoRoot, "target", "debug", commandName("wardian-cli"));
+  const targetDirectory = process.env.CARGO_TARGET_DIR || path.join(harness.repoRoot, "target");
+  return path.join(targetDirectory, "debug", commandName("wardian-cli"));
 }
 
 function runCli(cliPath, harness, args) {
@@ -102,6 +103,36 @@ function runCliOk(cliPath, harness, args) {
     `wardian ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
   return result;
+}
+
+function runCliWatchOk(cliPath, harness, args) {
+  const watchArgs = [...args];
+  const sinceIndex = watchArgs.indexOf("--since");
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = runCli(cliPath, harness, watchArgs);
+    if (result.status === 0) {
+      return JSON.parse(result.stdout);
+    }
+
+    let errorResponse;
+    try {
+      errorResponse = JSON.parse(result.stderr);
+    } catch {
+      errorResponse = null;
+    }
+    const oldestAvailableCursor = errorResponse?.error?.details?.oldest_available_cursor;
+    if (sinceIndex < 0 || typeof oldestAvailableCursor !== "string") {
+      assert.equal(
+        result.status,
+        0,
+        `wardian ${args.join(" ")} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+    }
+    watchArgs[sinceIndex + 1] = oldestAvailableCursor;
+  }
+
+  assert.fail(`watch cursor remained expired after recovery attempts: ${watchArgs.join(" ")}`);
 }
 
 function parseCommaList(value, fallback) {
@@ -344,6 +375,7 @@ async function waitForPersistedOpenCodeSession(harness, sessionId, timeoutMs = 1
 }
 
 async function runRealDeliveryCase({
+  driver,
   cliPath,
   harness,
   provider,
@@ -383,7 +415,7 @@ async function runRealDeliveryCase({
 
   if (inputCase.expectOutput) {
     const expected = inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker;
-    const watched = runCliOk(cliPath, harness, [
+    const watchJson = runCliWatchOk(cliPath, harness, [
       "agent",
       "watch",
       agentName,
@@ -396,7 +428,6 @@ async function runRealDeliveryCase({
       "--timeout",
       "180s",
     ]);
-    const watchJson = JSON.parse(watched.stdout);
     const transcript = watchJson.transcript?.latest_text ?? "";
     const output = watchJson.output?.text ?? "";
     const combinedOutput = `${transcript}\n${output}`;
@@ -406,7 +437,63 @@ async function runRealDeliveryCase({
     );
   }
 
+  await assertRealChatConformance(driver, agentSessionId, provider, marker);
+
   return { marker, expected: inputCase.name === "mailbox-multiline" ? `${marker}_LINE_2` : marker };
+}
+
+async function assertRealChatConformance(driver, sessionId, provider, marker) {
+  const events = await driver.wait(async () => {
+    try {
+      const candidate = await invokeTauri(driver, "load_agent_chat_transcript", { sessionId });
+      if (!Array.isArray(candidate)) return false;
+      const hasUser = candidate.some((event) =>
+        event?.role === "user" && (event.text ?? "").includes(marker));
+      const hasAssistant = candidate.some((event) =>
+        event?.role === "assistant" && (event.text ?? "").includes(marker));
+      return hasUser && hasAssistant ? candidate : false;
+    } catch {
+      return false;
+    }
+  }, 20_000, `${provider} chat replay did not settle for ${marker}`);
+
+  const userEvents = events.filter((event) =>
+    event?.role === "user" && (event.text ?? "").includes(marker));
+  assert.equal(userEvents.length, 1, `${provider} chat replay did not retain one user request for ${marker}`);
+  assert.equal(userEvents[0].metadata?.input_origin, "human_input");
+  assert.equal(userEvents[0].metadata?.input_purpose, "request");
+  assert.ok(userEvents[0].metadata?.request_root_id, `${provider} user request lacks causal provenance`);
+
+  const assistantEvents = events.filter((event) =>
+    event?.role === "assistant" && (event.text ?? "").includes(marker));
+  assert.equal(
+    assistantEvents.length,
+    1,
+    `${provider} chat replay duplicated or omitted the assistant response for ${marker}`,
+  );
+  assert.equal(new Set(events.map((event) => event.id)).size, events.length, `${provider} chat replay contains duplicate event IDs`);
+
+  const metrics = await invokeTauri(driver, "list_agent_metrics");
+  const metric = metrics.find((entry) => entry.session_id === sessionId);
+  assert.ok(metric?.log_path, `${provider} did not publish a chat-log link after delivery`);
+
+  const conversations = await invokeTauri(driver, "list_conversations", {
+    agent: sessionId,
+    scopeAll: false,
+  });
+  const archive = conversations.conversations?.find((entry) =>
+    entry.agent_id === sessionId && entry.provider === provider && entry.record_count > 0);
+  assert.ok(archive, `${provider} did not materialize a durable conversation archive for ${marker}`);
+
+  const replay = await invokeTauri(driver, "show_conversation", {
+    conversationId: archive.conversation_id,
+  });
+  assert.equal(replay.manifest.agent_id, sessionId);
+  assert.equal(replay.manifest.provider, provider);
+  assert.ok(
+    replay.conversation.some((record) => (record.text ?? "").includes(marker)),
+    `${provider} durable archive replay omitted ${marker}`,
+  );
 }
 
 async function waitForFreshTranscript(driver, sessionId, freshMarker) {
@@ -441,6 +528,7 @@ async function resumeFreshAndAssertTranscript({
   await invokeTauri(driver, "resume_agent", { sessionId: agentSessionId });
 
   const freshDelivery = await runRealDeliveryCase({
+    driver,
     cliPath,
     harness,
     provider,
@@ -602,6 +690,7 @@ test("real provider delivery validation uses actual provider CLIs", { timeout: 9
       const deliveredCases = [];
       for (const inputCase of selectedCases) {
         deliveredCases.push(await runRealDeliveryCase({
+          driver: session.driver,
           cliPath,
           harness,
           provider,

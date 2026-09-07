@@ -13,6 +13,13 @@ import {
 } from "../lib/harness.mjs";
 
 const PROVIDERS = ["codex", "claude", "opencode", "antigravity", "pi"];
+const DEFAULT_PROVIDER_MODELS = {
+  codex: "gpt-5.4-mini",
+  claude: "haiku",
+  opencode: "opencode/mimo-v2.5-free",
+  antigravity: "gemini-3.6-flash-low",
+  pi: "openai-codex/gpt-5.4-mini",
+};
 const runRealHeadlessProviders = process.env.WARDIAN_E2E_REAL_HEADLESS_PROVIDERS === "1";
 const allowPartialProviders = process.env.WARDIAN_E2E_HEADLESS_ALLOW_PARTIAL === "1";
 const workspacePath = process.env.WARDIAN_E2E_REAL_WORKSPACE || process.cwd();
@@ -29,6 +36,11 @@ function parseCommaList(value, fallback) {
 
 function selectedProviders() {
   return parseCommaList(process.env.WARDIAN_E2E_HEADLESS_PROVIDERS, PROVIDERS);
+}
+
+function providerModel(provider) {
+  const envName = `WARDIAN_E2E_HEADLESS_${provider.toUpperCase()}_MODEL`;
+  return process.env[envName]?.trim() || DEFAULT_PROVIDER_MODELS[provider] || null;
 }
 
 function nodeOutputText(output) {
@@ -100,6 +112,7 @@ async function invokeTemporaryProviderAutomation(driver, { automationPath, provi
         target_type: "temporary_provider",
         provider,
         workspace,
+        model: providerModel(provider),
       },
     },
   });
