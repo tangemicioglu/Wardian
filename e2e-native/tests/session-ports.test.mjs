@@ -42,15 +42,16 @@ test("an occupied port is reported as unavailable rather than assumed free", asy
  * that the port was free at one instant and that our process has not exited.
  * Neither says the listener answering now is ours.
  */
-test("a listener owned by another process is refused, not adopted as our endpoint", async () => {
+test("a foreign native-driver listener is refused after the free-check race", async () => {
   const { server, port } = await listenOnEphemeralPort();
   try {
-    // This process owns the socket, so a run claiming that pid verifies.
+    // This process owns the socket, standing in for a listener that claimed
+    // the native-driver port after the pre-spawn free check.
     const owned = assertPortOwnedBy({ port, processRef: { pid: process.pid } });
     assert.equal(owned.verified, true);
     assert.equal(owned.owner, process.pid);
 
-    // A run whose driver is a different process must refuse the same listener,
+    // A tauri-driver with a different root must refuse the same native port,
     // even though the port answers and that driver is notionally alive.
     assert.throws(
       () => assertPortOwnedBy({ port, processRef: { pid: 999_999 } }),

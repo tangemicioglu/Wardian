@@ -5,7 +5,8 @@ import path from "node:path";
 export const NATIVE_E2E_HOME_ENV = "WARDIAN_E2E_NATIVE_HOME";
 export const NATIVE_E2E_RUN_ID_ENV = "WARDIAN_E2E_RUN_ID";
 export const NATIVE_E2E_HOME_PREFIX = "wardian-e2e-native-";
-export const HOME_LOCK_FILE = ".native-e2e-lock.json";
+export const HOME_LOCK_DIRECTORY = ".native-e2e-lock";
+export const HOME_LOCK_FILE = `${HOME_LOCK_DIRECTORY}/owner.json`;
 
 /** Identifies one run so its home, ports and children are attributable. */
 export function nativeRunId() {
@@ -62,6 +63,14 @@ export function readHomeLock(homePath) {
   }
 }
 
+function lockDirectoryPath(home) {
+  return path.join(home, HOME_LOCK_DIRECTORY);
+}
+
+function staleLockPath(home, runId) {
+  return path.join(home, `${HOME_LOCK_DIRECTORY}.stale-${process.pid}-${runId ?? "unknown"}`);
+}
+
 /**
  * Claim a home before anything destructive touches it.
  *
@@ -74,33 +83,63 @@ export function readHomeLock(homePath) {
  * Returns the lock this run now holds. Throws if a live foreign holder exists.
  */
 export function acquireHomeLock({ home, runId, pid = process.pid }) {
-  const existing = readHomeLock(home);
-  // A run spans more than one process: the runner claims the home, then spawns
-  // the test child that opens the session. Identity is therefore the run id.
-  // Comparing pids instead made a run refuse its own home, because the child
-  // saw its live parent as a foreign holder.
-  const heldByThisRun = Boolean(existing) && existing.runId != null && existing.runId === runId;
-  if (existing && !heldByThisRun && lockHolderAlive(existing.pid)) {
-    throw new Error(
-      `Refusing to use native E2E home ${home}: run ${existing.runId ?? "unknown"} (pid ${existing.pid}, ` +
-        `started ${existing.startedAt ?? "unknown"}) is still using it. Give each concurrent run its own ` +
-        `${NATIVE_E2E_HOME_ENV}, or leave it unset to get an isolated home automatically.`,
-    );
-  }
-
-  const lock = {
-    runId: runId ?? null,
-    pid,
-    // Keep the first claim's timestamp so the record shows when the run began.
-    startedAt: heldByThisRun && existing.startedAt ? existing.startedAt : new Date().toISOString(),
-  };
   fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(path.join(home, HOME_LOCK_FILE), `${JSON.stringify(lock)}\n`);
-  return {
-    lock,
-    reclaimed: heldByThisRun,
-    staleHolder: existing && !heldByThisRun && !lockHolderAlive(existing.pid) ? existing : null,
-  };
+  const lockPath = lockDirectoryPath(home);
+
+  // The directory creation is the ownership claim. Unlike read-then-write of
+  // a JSON file, mkdir is one OS-level exclusive operation, so two runners
+  // cannot both pass the check and then reset the same home.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.mkdirSync(lockPath);
+      const lock = {
+        runId: runId ?? null,
+        pid,
+        startedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.join(home, HOME_LOCK_FILE), `${JSON.stringify(lock)}\n`);
+      return { lock, reclaimed: false, staleHolder: null };
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    const existing = readHomeLock(home);
+    // A run spans more than one process: the runner claims the home, then
+    // spawns a child that opens the session. Identity is therefore the run id.
+    // A missing or malformed record means a claim is in progress; fail closed
+    // rather than deleting a lock another runner may just have created.
+    if (!existing || existing.runId == null) {
+      throw new Error(`Refusing to use native E2E home ${home}: its exclusive lock is active but unreadable.`);
+    }
+    if (existing.runId === runId) {
+      return { lock: existing, reclaimed: true, staleHolder: null };
+    }
+    if (lockHolderAlive(existing.pid)) {
+      throw new Error(
+        `Refusing to use native E2E home ${home}: run ${existing.runId ?? "unknown"} (pid ${existing.pid}, ` +
+          `started ${existing.startedAt ?? "unknown"}) is still using it. Give each concurrent run its own ` +
+          `${NATIVE_E2E_HOME_ENV}, or leave it unset to get an isolated home automatically.`,
+      );
+    }
+
+    // Reclaim stale ownership by moving the lock directory first. Rename is
+    // exclusive here: only one stale-run reclaimer can win, while a live run's
+    // directory is never removed merely because another reader saw old JSON.
+    const stalePath = staleLockPath(home, runId);
+    try {
+      fs.renameSync(lockPath, stalePath);
+      fs.rmSync(stalePath, { recursive: true, force: true });
+      const acquired = acquireHomeLock({ home, runId, pid });
+      return { ...acquired, staleHolder: existing };
+    } catch (reclaimError) {
+      if (reclaimError?.code !== "ENOENT" && reclaimError?.code !== "EEXIST" && reclaimError?.code !== "EPERM") {
+        throw reclaimError;
+      }
+    }
+  }
+  throw new Error(`Could not acquire exclusive native E2E home lock for ${home}; another run is claiming it.`);
 }
 
 /** Release this run's claim; never remove a lock another run owns. */
@@ -109,7 +148,10 @@ export function releaseHomeLock({ home, runId, pid = process.pid }) {
   const ours = lock && (runId != null ? lock.runId === runId : lock.pid === pid);
   if (ours) {
     try {
-      fs.rmSync(path.join(home, HOME_LOCK_FILE), { force: true });
+      // The directory is the lock and the owner metadata lives inside it, so
+      // removing the directory releases both atomically from a new claimant's
+      // point of view.
+      fs.rmSync(lockDirectoryPath(home), { recursive: true, force: true });
     } catch {
       // A home already removed by teardown needs no release.
     }

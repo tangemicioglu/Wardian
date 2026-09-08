@@ -16,6 +16,7 @@ import { allocateSessionPorts, assertPortOwnedBy, portIsFree } from "./sessionPo
 import { FROZEN_BIN_DIR, freezeArtifact, freezeRunArtifacts } from "./frozenArtifacts.mjs";
 import {
   NATIVE_E2E_HOME_ENV,
+  HOME_LOCK_DIRECTORY,
   acquireHomeLock,
   defaultNativeE2EHome,
   nativeRunId,
@@ -353,7 +354,17 @@ export function prepareIsolatedHome(harness) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      fs.rmSync(harness.isolatedHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      for (const entry of fs.readdirSync(harness.isolatedHome, { withFileTypes: true })) {
+        if (entry.name === HOME_LOCK_DIRECTORY) {
+          continue;
+        }
+        fs.rmSync(path.join(harness.isolatedHome, entry.name), {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100,
+        });
+      }
       lastError = null;
       break;
     } catch (error) {
@@ -365,11 +376,9 @@ export function prepareIsolatedHome(harness) {
     throw lastError;
   }
   fs.mkdirSync(harness.isolatedHome, { recursive: true });
-  // The reset above deleted the claim, so re-record it for this run.
-  harness.homeLock = acquireHomeLock({
-    home: harness.isolatedHome,
-    runId: harness.runId,
-  }).lock;
+  // The exclusive lock and its metadata were preserved throughout reset, so
+  // there is no check-then-delete window in which another run can claim this
+  // home while its contents are being removed.
 
   // Take a private copy of every binary this run executes. The normal build
   // target is shared between worktrees, so another build can replace the app or
@@ -546,6 +555,18 @@ async function startNativeSessionAttempt(harness) {
     // port was free earlier and our child is alive. Establish actual ownership.
     harness.driverPortOwnership = assertPortOwnedBy({
       port: driverPort,
+      processRef: tauriDriver,
+    });
+    // The native-driver endpoint is a second externally supplied socket. It
+    // has the same free-check race as the WebDriver endpoint, so prove its
+    // listener belongs to this tauri-driver tree before Selenium can use it.
+    await waitForPort({
+      port: nativePort,
+      processRef: tauriDriver,
+      logs,
+    });
+    harness.nativeDriverPortOwnership = assertPortOwnedBy({
+      port: nativePort,
       processRef: tauriDriver,
     });
   } catch (error) {

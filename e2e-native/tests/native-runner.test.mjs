@@ -11,9 +11,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   createNativeE2eRunPlans,
   createOwnedTreeTerminationPlan,
+  createWindowsSupervisorPlan,
   resolveRunNativeHome,
 } from "../../scripts/native-e2e-runner.mjs";
-import { acquireHomeLock, readHomeLock, releaseHomeLock } from "../lib/sessionHome.mjs";
+import { HOME_LOCK_DIRECTORY, HOME_LOCK_FILE, acquireHomeLock, readHomeLock, releaseHomeLock } from "../lib/sessionHome.mjs";
 
 test("each run without an explicit home gets its own, so concurrent runs cannot reset each other", () => {
   const first = resolveRunNativeHome({});
@@ -43,10 +44,7 @@ test("an explicit home is honored verbatim and never silently replaced", () => {
 // Cleanup is now limited to the process tree the runner itself started.
 
 test("cleanup addresses only a process tree this runner started", () => {
-  assert.deepEqual(createOwnedTreeTerminationPlan(4321, "win32"), {
-    command: "taskkill.exe",
-    args: ["/PID", "4321", "/T", "/F"],
-  });
+  assert.equal(createOwnedTreeTerminationPlan(4321, "win32"), null);
   assert.deepEqual(createOwnedTreeTerminationPlan(4321, "linux"), {
     command: "kill",
     args: ["-TERM", "-4321"],
@@ -57,7 +55,7 @@ test("cleanup addresses only a process tree this runner started", () => {
   }
 });
 
-test("an unrelated process naming the home survives cleanup of an owned tree", async () => {
+test("an unrelated process naming the home survives POSIX owned-tree cleanup", { skip: process.platform === "win32" }, async () => {
   const { home } = resolveRunNativeHome({});
   fs.mkdirSync(home, { recursive: true });
 
@@ -99,7 +97,7 @@ test("a second run refuses a live explicit home instead of clearing it", () => {
     // happen here, before any destructive step, or the second run terminates
     // the first run's processes and wipes its home first.
     fs.writeFileSync(
-      path.join(home, ".native-e2e-lock.json"),
+      path.join(home, HOME_LOCK_FILE),
       JSON.stringify({ runId: "run-a", pid: process.ppid, startedAt: new Date().toISOString() }),
     );
     assert.throws(
@@ -155,10 +153,11 @@ test("a stale lock from a dead run is reported, not treated as a live holder", (
   const home = path.join(os.tmpdir(), `wardian-e2e-native-stale-${process.pid}`);
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(path.join(home, HOME_LOCK_DIRECTORY));
   try {
     // Pid 0 is never a live holder, so this stands in for a crashed run.
     fs.writeFileSync(
-      path.join(home, ".native-e2e-lock.json"),
+      path.join(home, HOME_LOCK_FILE),
       JSON.stringify({ runId: "crashed", pid: 0, startedAt: new Date().toISOString() }),
     );
     const { staleHolder } = acquireHomeLock({ home, runId: "run-c", pid: process.pid });
@@ -206,6 +205,133 @@ test("native e2e runner preserves explicitly requested target ordering", () => {
       "e2e-native/tests/cli-shared-state-native.test.mjs",
     ],
   );
+});
+
+test("Windows supervision assigns the root before it can create descendants", () => {
+  const plan = createWindowsSupervisorPlan(
+    { command: process.execPath, args: ["--version"] },
+    "win32",
+  );
+  assert.equal(plan.command, "powershell.exe");
+  assert.deepEqual(plan.args.slice(0, 5), [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    expectPath(plan.args[4]),
+  ]);
+  assert.equal(plan.args[5], "-Executable");
+  assert.equal(plan.args[6], process.execPath);
+  assert.equal(plan.args[7], "-ArgumentsJson");
+  assert.equal(plan.args[8], JSON.stringify(["--version"]));
+});
+
+function expectPath(value) {
+  assert.match(value, /native-e2e-windows-supervisor\.ps1$/i);
+  return value;
+}
+
+test("simultaneous explicit-home starts have one atomic owner", { timeout: 15000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wardian-native-lock-race-"));
+  const home = path.join(root, "home");
+  const gate = path.join(root, "start");
+  const release = path.join(root, "release");
+  const moduleUrl = new URL("../lib/sessionHome.mjs", import.meta.url).href;
+  const childSource = `
+    import fs from "node:fs";
+    import { acquireHomeLock, releaseHomeLock } from ${JSON.stringify(moduleUrl)};
+    const [targetHome, startGate, readyPath, resultPath, runId, releaseGate] = process.argv.slice(1);
+    fs.writeFileSync(readyPath, "ready");
+    while (!fs.existsSync(startGate)) {}
+    try {
+      const claim = acquireHomeLock({ home: targetHome, runId, pid: process.pid });
+      fs.writeFileSync(resultPath, JSON.stringify({ ok: true, runId, reclaimed: claim.reclaimed }));
+      while (!fs.existsSync(releaseGate)) {}
+      releaseHomeLock({ home: targetHome, runId, pid: process.pid });
+    } catch (error) {
+      fs.writeFileSync(resultPath, JSON.stringify({ ok: false, message: String(error.message) }));
+    }
+  `;
+  const children = ["run-a", "run-b"].map((runId) => {
+    const ready = path.join(root, `${runId}.ready`);
+    const result = path.join(root, `${runId}.json`);
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "-e", childSource, home, gate, ready, result, runId, release],
+      { stdio: "ignore" },
+    );
+    const exit = new Promise((resolve, reject) => {
+      child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}`))));
+      child.once("error", reject);
+    });
+    return { child, ready, result, exit };
+  });
+  const waitForFiles = async (files) => {
+    const deadline = Date.now() + 5000;
+    while (files.some((file) => !fs.existsSync(file))) {
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${files.join(", ")}`);
+      await delay(25);
+    }
+  };
+  try {
+    await waitForFiles(children.map(({ ready }) => ready));
+    fs.writeFileSync(gate, "go");
+    await waitForFiles(children.map(({ result }) => result));
+    const outcomes = children.map(({ result }) => JSON.parse(fs.readFileSync(result, "utf8")));
+    assert.equal(outcomes.filter(({ ok }) => ok).length, 1, JSON.stringify(outcomes));
+    assert.equal(outcomes.filter(({ ok }) => !ok).length, 1, JSON.stringify(outcomes));
+    assert.match(outcomes.find(({ ok }) => !ok).message, /Refusing to use native E2E home/);
+    fs.writeFileSync(release, "done");
+    await Promise.all(children.map(({ exit }) => exit));
+  } finally {
+    for (const { child } of children) child.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Windows Job Object cleanup removes a grandchild after root exit", { skip: process.platform !== "win32", timeout: 15000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wardian-native-job-"));
+  const marker = path.join(root, "grandchild.pid");
+  const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000);"], { stdio: "ignore" });
+  const childSource = `
+    const fs = require("node:fs");
+    const { spawn } = require("node:child_process");
+    const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000);"], { stdio: "ignore" });
+    grandchild.unref();
+    fs.writeFileSync(${JSON.stringify(marker)}, String(grandchild.pid));
+  `;
+  const supervisor = spawn(
+    createWindowsSupervisorPlan({ command: process.execPath, args: ["-e", childSource] }, "win32").command,
+    createWindowsSupervisorPlan({ command: process.execPath, args: ["-e", childSource] }, "win32").args,
+    { stdio: "ignore" },
+  );
+  try {
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(marker)) {
+      if (Date.now() >= deadline) throw new Error("supervised root did not start");
+      await delay(25);
+    }
+    const grandchildPid = Number(fs.readFileSync(marker, "utf8"));
+    await new Promise((resolve, reject) => {
+      supervisor.once("exit", resolve);
+      supervisor.once("error", reject);
+    });
+    const goneBy = Date.now() + 5000;
+    while (Date.now() < goneBy) {
+      try {
+        process.kill(grandchildPid, 0);
+      } catch {
+        break;
+      }
+      await delay(50);
+    }
+    assert.throws(() => process.kill(grandchildPid, 0));
+    assert.equal(bystander.exitCode, null, "a foreign bystander must survive job cleanup");
+  } finally {
+    supervisor.kill();
+    bystander.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // Keep the file terminator explicit for cross-platform checkout normalization.

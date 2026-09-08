@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   NATIVE_E2E_HOME_ENV,
@@ -9,6 +11,7 @@ import {
 } from "../e2e-native/lib/sessionHome.mjs";
 
 const NODE_TEST_ARGS = ["--test", "--test-concurrency=1"];
+const WINDOWS_SUPERVISOR_SCRIPT = fileURLToPath(new URL("./native-e2e-windows-supervisor.ps1", import.meta.url));
 
 export { resolveRunNativeHome };
 
@@ -22,7 +25,8 @@ export function createNativeE2eRunPlans({ requestedTargets, defaultTargets }) {
 
 function runChild(plan, env) {
   return new Promise((resolve) => {
-    const child = spawn(plan.command, plan.args, {
+    const spawnPlan = process.platform === "win32" ? createWindowsSupervisorPlan(plan) : plan;
+    const child = spawn(spawnPlan.command, spawnPlan.args, {
       stdio: "inherit",
       env,
       // A process group makes the whole tree addressable on POSIX, so cleanup
@@ -35,6 +39,32 @@ function runChild(plan, env) {
       resolve({ result: { code: code ?? 1, signal }, pid });
     });
   });
+}
+
+/**
+ * Start a Windows child suspended, assign it to a kill-on-close Job Object,
+ * then resume it. The supervisor owns the job for the whole child lifetime;
+ * closing it after the root exits terminates descendants that outlived their
+ * parent instead of relying on a post-exit PID tree walk.
+ */
+export function createWindowsSupervisorPlan(plan, platform = process.platform) {
+  if (platform !== "win32") {
+    return plan;
+  }
+  return {
+    command: "powershell.exe",
+    args: [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      path.resolve(WINDOWS_SUPERVISOR_SCRIPT),
+      "-Executable",
+      plan.command,
+      "-ArgumentsJson",
+      JSON.stringify(plan.args),
+    ],
+  };
 }
 
 /**
@@ -51,12 +81,20 @@ export function createOwnedTreeTerminationPlan(pid, platform = process.platform)
     return null;
   }
   if (platform === "win32") {
-    return { command: "taskkill.exe", args: ["/PID", String(pid), "/T", "/F"] };
+    // Windows runs are supervised by a Job Object from process creation. A
+    // post-exit taskkill/PID walk is intentionally unavailable because the
+    // root may already be gone while descendants remain alive.
+    return null;
   }
   return { command: "kill", args: ["-TERM", `-${pid}`] };
 }
 
 function terminateOwnedTree(pid, platform = process.platform) {
+  if (platform === "win32") {
+    // The Windows supervisor closes its kill-on-close Job Object when the
+    // supervised root exits, which is the only reliable ownership boundary.
+    return;
+  }
   const plan = createOwnedTreeTerminationPlan(pid, platform);
   if (!plan) {
     return;
