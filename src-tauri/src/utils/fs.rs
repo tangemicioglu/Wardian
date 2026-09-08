@@ -6,6 +6,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::utils::logging::log_debug;
 use fs2::FileExt;
 
+mod claude_instructions;
+
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
@@ -108,6 +110,9 @@ pub fn provider_uses_projected_workspace(provider: &str) -> bool {
     matches!(provider, "codex" | "gemini" | "opencode")
 }
 
+/// Prepare the generated habitat for an ordinary provider launch. Claude also
+/// refreshes existing owned instruction bridges in its managed include roots;
+/// canonical AGENTS.md files and custom or linked CLAUDE.md files stay intact.
 pub fn prepare_provider_habitat(
     provider: &str,
     workspace_root: &std::path::Path,
@@ -121,6 +126,9 @@ pub fn prepare_provider_habitat(
     let habitat_root = prepare_habitat_workspace(workspace_root, class_name, session_id)?;
     if provider == "codex" {
         ensure_codex_home_projection(&habitat_root, workspace_root)?;
+    } else if provider == "claude" {
+        let wardian_home = get_wardian_home().ok_or("Could not find Wardian home")?;
+        claude_instructions::refresh_managed_roots(&wardian_home, class_name, session_id)?;
     }
 
     Ok(Some(habitat_root))
@@ -128,6 +136,8 @@ pub fn prepare_provider_habitat(
 
 /// Add Wardian's runtime-owned memory contract and startup brief to the
 /// generated habitat instructions without touching user-authored files.
+/// Refresh the owned Claude sibling snapshot after the append so it includes
+/// the final launch-time memory text; preserve custom or linked Claude files.
 pub fn append_habitat_memory_instructions(
     habitat_root: &std::path::Path,
     startup_brief: Option<&str>,
@@ -137,7 +147,8 @@ pub fn append_habitat_memory_instructions(
         std::fs::read_to_string(&path).unwrap_or_else(|_| "# Wardian Habitat\n".into());
     content.push('\n');
     content.push_str(&wardian_memory_instructions(startup_brief));
-    std::fs::write(path, content).map_err(|error| error.to_string())
+    std::fs::write(path, content).map_err(|error| error.to_string())?;
+    claude_instructions::refresh_habitat(habitat_root)
 }
 
 /// Build the provider-neutral memory context used by both generated habitat
@@ -1652,11 +1663,8 @@ fn write_habitat_instruction_files(
     };
     std::fs::write(habitat_root.join("AGENTS.md"), agents_md).map_err(|e| e.to_string())?;
 
-    for stub_name in ["GEMINI.md", "CLAUDE.md"] {
-        std::fs::write(habitat_root.join(stub_name), "@AGENTS.md\n").map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
+    std::fs::write(habitat_root.join("GEMINI.md"), "@AGENTS.md\n").map_err(|e| e.to_string())?;
+    claude_instructions::refresh_habitat(habitat_root)
 }
 
 fn build_habitat_skill_projection(
@@ -2076,6 +2084,13 @@ mod tests {
         assert!(agents_md.contains("Source: Agent"));
         assert!(!agents_md.contains(&wardian_home.to_string_lossy().to_string()));
         assert!(!agents_md.contains("agent-1/AGENTS.md"));
+        let claude_md =
+            std::fs::read_to_string(habitat_root.join("CLAUDE.md")).expect("read CLAUDE.md");
+        assert!(
+            claude_md.ends_with(&agents_md),
+            "Claude must load the managed instruction text directly"
+        );
+        assert_ne!(claude_md.trim(), "@AGENTS.md");
         assert_eq!(
             std::fs::read_to_string(habitat_root.join("GEMINI.md")).expect("read GEMINI.md"),
             "@AGENTS.md\n"
