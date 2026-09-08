@@ -284,18 +284,23 @@ test("native harness resolves debug app from cargo metadata target directory", a
 test("native consumers build before asserting an app path", () => {
   const testsRoot = path.join(process.cwd(), "e2e-native", "tests");
   const consumerFiles = fs.readdirSync(testsRoot)
-    .filter((fileName) => fileName.endsWith("-native.test.mjs"));
+    .filter((fileName) => fileName.endsWith("native.test.mjs"));
 
   for (const fileName of consumerFiles) {
     const source = fs.readFileSync(path.join(testsRoot, fileName), "utf8");
     let assertion;
     const assertions = /assert\.ok\(harness\.appPath\)/g;
     while ((assertion = assertions.exec(source)) !== null) {
+      const testStart = source.lastIndexOf("test(", assertion.index);
       const precedingBuild = source.lastIndexOf("ensureNativeAppBuilt(harness)", assertion.index);
       assert.notEqual(
-        precedingBuild,
+        testStart,
         -1,
-        `${fileName} asserts harness.appPath before ensuring the native app is built`,
+        `${fileName} app-path assertion is outside a test block`,
+      );
+      assert.ok(
+        precedingBuild > testStart,
+        `${fileName} asserts harness.appPath before ensuring the native app is built in its test`,
       );
     }
   }
