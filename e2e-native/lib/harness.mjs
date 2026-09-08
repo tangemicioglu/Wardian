@@ -6,10 +6,14 @@ import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { Builder, By, Capabilities, until } from "selenium-webdriver";
-import { resolveNativeAppArtifact } from "./native-artifact-resolution.mjs";
+import {
+  resolveBuiltCliPath,
+  resolveExistingCliPath,
+  resolveNativeAppArtifact,
+} from "./native-artifact-resolution.mjs";
 
 import { allocateSessionPorts, assertPortOwnedBy, portIsFree } from "./sessionPorts.mjs";
-import { freezeRunArtifacts } from "./frozenArtifacts.mjs";
+import { FROZEN_BIN_DIR, freezeArtifact, freezeRunArtifacts } from "./frozenArtifacts.mjs";
 import {
   NATIVE_E2E_HOME_ENV,
   NATIVE_E2E_RUN_ID_ENV,
@@ -121,14 +125,29 @@ function resolveTauriDriverPath() {
  * freeze it afterwards with `freezeRunArtifacts`.
  */
 export function resolveSharedCliPath() {
-  const name = process.platform === "win32" ? "wardian-cli.exe" : "wardian-cli";
-  const metadataTargetDir = cargoTargetDirectory();
-  return existingPath([
-    path.join(metadataTargetDir ?? "", "debug", name),
-    path.join(metadataTargetDir ?? "", "release", name),
-    path.join(repoRoot, "target", "debug", name),
-    path.join(repoRoot, "target", "release", name),
-  ]);
+  return resolveExistingCliPath({ repoRoot, env: process.env });
+}
+
+/**
+ * Resolve a just-built CLI from Cargo's configured target and freeze it into
+ * this run's private home before a caller starts using it.
+ */
+export function freezeBuiltCliForRun(harness) {
+  const sourcePath = resolveBuiltCliPath({
+    repoRoot: harness.repoRoot,
+    env: process.env,
+  });
+  const frozen = freezeArtifact(
+    sourcePath,
+    path.join(harness.isolatedHome, FROZEN_BIN_DIR),
+  );
+  if (!frozen) {
+    throw new Error(`wardian-cli could not be frozen from ${sourcePath}.`);
+  }
+  harness.sharedCliPath = sourcePath;
+  harness.cliPath = frozen.path;
+  harness.cliArtifact = frozen;
+  return frozen.path;
 }
 
 function resolveIsolatedHome(runId) {

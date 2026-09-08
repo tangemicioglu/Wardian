@@ -9,11 +9,11 @@ import { By, until } from "selenium-webdriver";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  freezeBuiltCliForRun,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
 } from "../lib/harness.mjs";
-import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 import { workbenchSnapshot, waitForWorkbenchReady } from "../lib/workbench.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
@@ -25,7 +25,7 @@ function buildCli(harness) {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `CLI build failed:\n${result.stdout}\n${result.stderr}`);
-  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
+  return freezeBuiltCliForRun(harness);
 }
 
 async function spawnArtifactAgent(driver, sessionId, folder) {
