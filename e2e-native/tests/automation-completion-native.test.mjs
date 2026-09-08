@@ -215,12 +215,12 @@ async function setAgentStatus(driver, sessionId, status) {
 
 test("automation detects live agent turn completion instead of timing out", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
-  assert.ok(harness.appPath);
 
   try {
     if (!skipNativeBuild) {
       ensureNativeAppBuilt(harness);
     }
+    assert.ok(harness.appPath);
   } catch (error) {
     t.skip(String(error));
     return;

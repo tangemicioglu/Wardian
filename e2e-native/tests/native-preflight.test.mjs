@@ -281,6 +281,26 @@ test("native harness resolves debug app from cargo metadata target directory", a
   assert.equal(harness.appPath, sharedDebugApp);
 });
 
+test("native consumers build before asserting an app path", () => {
+  const testsRoot = path.join(process.cwd(), "e2e-native", "tests");
+  const consumerFiles = fs.readdirSync(testsRoot)
+    .filter((fileName) => fileName.endsWith("-native.test.mjs"));
+
+  for (const fileName of consumerFiles) {
+    const source = fs.readFileSync(path.join(testsRoot, fileName), "utf8");
+    let assertion;
+    const assertions = /assert\.ok\(harness\.appPath\)/g;
+    while ((assertion = assertions.exec(source)) !== null) {
+      const precedingBuild = source.lastIndexOf("ensureNativeAppBuilt(harness)", assertion.index);
+      assert.notEqual(
+        precedingBuild,
+        -1,
+        `${fileName} asserts harness.appPath before ensuring the native app is built`,
+      );
+    }
+  }
+});
+
 test("native app shell timeout explains dev server connection failures", () => {
   const message = formatAppShellTimeoutMessage({
     timeoutMs: 20000,

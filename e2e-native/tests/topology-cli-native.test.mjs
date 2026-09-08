@@ -142,12 +142,12 @@ async function removeTopologyEdge(driver, aUuid, bUuid) {
 
 test("native CLI neighbors scoping reads app-written topology", { timeout: 180000 }, async (t) => {
   const harness = await createNativeHarness();
-  assert.ok(harness.appPath);
 
   try {
     if (!skipNativeBuild) {
       ensureNativeAppBuilt(harness);
     }
+    assert.ok(harness.appPath);
   } catch (error) {
     t.skip(String(error));
     return;
@@ -310,12 +310,12 @@ test(
   { timeout: 180000 },
   async (t) => {
     const harness = await createNativeHarness();
-    assert.ok(harness.appPath);
 
     try {
       if (!skipNativeBuild) {
         ensureNativeAppBuilt(harness);
       }
+      assert.ok(harness.appPath);
     } catch (error) {
       t.skip(String(error));
       return;

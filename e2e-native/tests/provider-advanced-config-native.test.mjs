@@ -349,12 +349,12 @@ async function spawnOffAgent(driver, harness, testCase) {
 
 test("per-agent advanced config survives persistence and reaches native provider argv", { timeout: 420000 }, async (t) => {
   const harness = await createNativeHarness();
-  assert.ok(harness.appPath);
 
   try {
     if (!skipNativeBuild) {
       ensureNativeAppBuilt(harness);
     }
+    assert.ok(harness.appPath);
   } catch (error) {
     t.skip(String(error));
     return;

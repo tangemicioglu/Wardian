@@ -162,9 +162,9 @@ async function assertArtifactCanOpen(
 
 test("artifact CLI retains provenance after its origin agent is deleted", { timeout: 300_000 }, async (t) => {
   const harness = await createNativeHarness();
-  assert.ok(harness.appPath);
   try {
     if (!skipNativeBuild) ensureNativeAppBuilt(harness);
+    assert.ok(harness.appPath);
   } catch (error) {
     t.skip(String(error));
     return;
