@@ -208,3 +208,5 @@ test("native e2e runner preserves explicitly requested target ordering", () => {
   );
 });
 
+// Keep the file terminator explicit for cross-platform checkout normalization.
+
