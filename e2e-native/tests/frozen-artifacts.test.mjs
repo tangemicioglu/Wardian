@@ -94,6 +94,41 @@ test("Tauri runtime payload directories travel with the executable", () => {
   }
 });
 
+test("a later CLI freeze cannot replace runtime payloads already in use", () => {
+  const firstBuild = scratch("runtime-payload-first");
+  const laterBuild = scratch("runtime-payload-later");
+  const home = scratch("runtime-payload-existing");
+  try {
+    for (const build of [firstBuild, laterBuild]) {
+      fs.writeFileSync(path.join(build, "Wardian.exe"), "app");
+      fs.writeFileSync(path.join(build, "wardian-cli.exe"), "cli");
+      fs.mkdirSync(path.join(build, "resources", "bin"), { recursive: true });
+    }
+    fs.writeFileSync(path.join(firstBuild, "resources", "bin", "wardian-cli.exe"), "payload-v1");
+    fs.writeFileSync(path.join(laterBuild, "resources", "bin", "wardian-cli.exe"), "payload-v2-from-other-build");
+    fs.writeFileSync(path.join(laterBuild, "resources", "bin", "new-helper.exe"), "new payload");
+
+    const frozenDir = path.join(home, FROZEN_BIN_DIR);
+    freezeArtifact(path.join(firstBuild, "Wardian.exe"), frozenDir);
+    freezeArtifact(path.join(laterBuild, "wardian-cli.exe"), frozenDir);
+
+    assert.equal(
+      fs.readFileSync(path.join(frozenDir, "resources", "bin", "wardian-cli.exe"), "utf8"),
+      "payload-v1",
+      "later freezes must not replace payload bytes already used by the run",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(frozenDir, "resources", "bin", "new-helper.exe"), "utf8"),
+      "new payload",
+      "later freezes may fill missing payload files",
+    );
+  } finally {
+    for (const dir of [firstBuild, laterBuild, home]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("each run freezes into its own home, so runs cannot share a binary", () => {
   const sharedTarget = scratch("shared");
   const homeA = scratch("run-a");

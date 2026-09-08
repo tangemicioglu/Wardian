@@ -14,7 +14,9 @@ function sha256(filePath) {
  * Binaries a Windows Tauri build needs beside the executable.
  *
  * Copying the executable alone produces something that cannot start, so the
- * adjacent link libraries travel with it.
+ * adjacent link libraries travel with it. Tauri's allowlisted runtime payload
+ * directories are copied below without replacing files already frozen for the
+ * run, because a later CLI freeze may share this destination after launch.
  */
 function sidecarsFor(sourcePath) {
   const dir = path.dirname(sourcePath);
@@ -35,6 +37,19 @@ function runtimePayloadsFor(sourcePath) {
   return RUNTIME_PAYLOAD_DIRECTORIES
     .map((name) => path.join(dir, name))
     .filter((payloadPath) => fs.existsSync(payloadPath) && fs.statSync(payloadPath).isDirectory());
+}
+
+function copyMissingTree(sourcePath, destPath) {
+  if (!fs.existsSync(destPath)) {
+    fs.cpSync(sourcePath, destPath, { recursive: true });
+    return;
+  }
+  if (!fs.statSync(sourcePath).isDirectory() || !fs.statSync(destPath).isDirectory()) {
+    return;
+  }
+  for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+    copyMissingTree(path.join(sourcePath, entry.name), path.join(destPath, entry.name));
+  }
 }
 
 /**
@@ -61,7 +76,7 @@ export function freezeArtifact(sourcePath, destDir) {
 
   for (const payload of runtimePayloadsFor(sourcePath)) {
     const target = path.join(destDir, path.basename(payload));
-    fs.cpSync(payload, target, { recursive: true, force: true });
+    copyMissingTree(payload, target);
   }
 
   const frozenPath = path.join(destDir, path.basename(sourcePath));
