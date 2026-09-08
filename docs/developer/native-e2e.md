@@ -26,6 +26,28 @@ npm run setup:e2e:native:windows
 
 Generated driver artifacts belong under `tools/e2e-native/` and are ignored by git.
 
+Native artifact selection is fail-closed. Cargo metadata supplies the effective
+target directory, including `CARGO_TARGET_DIR` and Cargo config overrides; a
+stale repository-local `target/` binary is not selected. Set
+`WARDIAN_NATIVE_APP=<artifact-path>` only when using a deliberate custom app
+artifact. Relative values are resolved from the repository root, and a missing,
+empty, or directory override stops before WebDriver/provider startup. The
+setup script also verifies package-local `@tauri-apps/cli` and
+`selenium-webdriver` resolution before driver setup.
+
+POSIX shell:
+
+```bash
+WARDIAN_NATIVE_APP=<artifact-path> npm run test:e2e:native:fast -- <native-test-file>
+```
+
+PowerShell:
+
+```powershell
+$env:WARDIAN_NATIVE_APP = '<artifact-path>'
+npm run test:e2e:native:fast -- <native-test-file>
+```
+
 `e2e-native/tests/artifact-presentation-native.test.mjs` proves the artifact
 control path with real IPC: an isolated mock agent presents an authorized
 Markdown file through the built CLI, Wardian routes a non-focused Files tab,

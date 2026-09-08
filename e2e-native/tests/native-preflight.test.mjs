@@ -41,6 +41,24 @@ test("native preflight reports missing tauri-driver clearly", () => {
   );
 });
 
+test("native harness rejects a missing explicit app before driver startup", async () => {
+  const previousApp = process.env.WARDIAN_NATIVE_APP;
+  process.env.WARDIAN_NATIVE_APP = path.join(os.tmpdir(), `missing-wardian-app-${process.pid}.exe`);
+
+  try {
+    await assert.rejects(
+      () => createNativeHarness(),
+      (error) => error?.code === "EXPLICIT_APP_MISSING" && /WARDIAN_NATIVE_APP does not exist/.test(error.message),
+    );
+  } finally {
+    if (previousApp === undefined) {
+      delete process.env.WARDIAN_NATIVE_APP;
+    } else {
+      process.env.WARDIAN_NATIVE_APP = previousApp;
+    }
+  }
+});
+
 test("native preflight reports missing native driver clearly", () => {
   assert.throws(
     () =>

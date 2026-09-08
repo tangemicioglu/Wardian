@@ -13,6 +13,7 @@ import {
   waitForAppShell,
   watchStep,
 } from "../lib/harness.mjs";
+import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
@@ -33,10 +34,6 @@ const ROUTE_LIVE_ONLY_SESSION_NAME = `E2E-CLI-ROUTE-LIVE-${RUN_ID}`;
 const HEADLESS_SEND_SESSION_NAME = `E2E-CLI-HEADLESS-SEND-${RUN_ID}`;
 const HEADLESS_STRUCTURED_ASK_SESSION_NAME = `E2E-CLI-HEADLESS-ASK-${RUN_ID}`;
 
-function commandName(name) {
-  return process.platform === "win32" ? `${name}.exe` : name;
-}
-
 function buildCli(harness) {
   const result = spawnSync(
     "cargo",
@@ -53,28 +50,7 @@ function buildCli(harness) {
     `cargo build -p wardian-cli failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
 
-  const localCandidate = path.join(harness.repoRoot, "target", "debug", commandName("wardian-cli"));
-  if (existsSync(localCandidate)) {
-    return localCandidate;
-  }
-
-  const metadata = spawnSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], {
-    cwd: harness.repoRoot,
-    encoding: "utf8",
-  });
-  assert.equal(
-    metadata.status,
-    0,
-    `cargo metadata failed\nstdout:\n${metadata.stdout}\nstderr:\n${metadata.stderr}`,
-  );
-  const targetDirectory = JSON.parse(metadata.stdout).target_directory;
-  const metadataCandidate = path.join(targetDirectory, "debug", commandName("wardian-cli"));
-  assert.equal(
-    existsSync(metadataCandidate),
-    true,
-    `wardian-cli binary was not found at ${metadataCandidate}`,
-  );
-  return metadataCandidate;
+  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
 }
 
 function runCli(cliPath, harness, args) {
