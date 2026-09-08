@@ -81,6 +81,66 @@ You can also target a specific file:
 npm run test:e2e:native:fast -- e2e-native/tests/opencode-native.test.mjs
 ```
 
+### Concurrent runs
+
+Two native runs can execute at the same time. Every run claims its own
+resources automatically, so nothing has to be chosen by hand:
+
+- **Ports.** The driver and its child native driver each get a port reserved
+  from the OS at startup, passed through as `--port` and `--native-port`. There
+  is no fixed port any more, so a second run cannot collide with the first.
+- **Home.** Each run gets `wardian-e2e-native-<runId>` under the OS temp
+  directory. The runner pins that value once and hands it to every child, so
+  the runner and harness never disagree about which home is in play.
+- **Cleanup.** A run ends only the process tree it started. It does not search
+  for processes by command line, so an unrelated process is never terminated
+  because its command line happens to mention the home path.
+
+Both `npm run test:e2e:native` and the runner script activate this. Nothing
+needs a free port picked in advance.
+
+#### Using an explicit home
+
+Set `WARDIAN_E2E_NATIVE_HOME` to keep a run's state for inspection:
+
+```bash
+WARDIAN_E2E_NATIVE_HOME=/tmp/wardian-e2e-native-inspect npm run test:e2e:native
+```
+
+PowerShell:
+
+```powershell
+$env:WARDIAN_E2E_NATIVE_HOME = "$env:TEMP\wardian-e2e-native-inspect"
+npm run test:e2e:native
+```
+
+The path must be under the OS temp directory and begin with
+`wardian-e2e-native`, or sit under `.tmp/e2e-native` in the repository. The
+harness resets the home it is given, and that guard is what stops a reset from
+reaching an unrelated directory.
+
+A run writes `.native-e2e-lock.json` into its home and removes it on exit. A
+second run pointed at the same explicit home is refused before anything is
+deleted or terminated. Give each concurrent run its own home, or leave the
+variable unset.
+
+If a previous run crashed, its lock is left behind. The next run reports the
+stale lock and proceeds. It does not terminate processes that run may have
+orphaned, because they cannot be told apart from unrelated processes without
+the kind of command-line matching that caused cross-run kills.
+
+#### Endpoint ownership
+
+A run refuses to use a driver endpoint it cannot prove it owns. After the port
+answers, the harness resolves the pid listening on it and requires that pid to
+be the driver it started or one of that driver's children. A live listener left
+by something else fails the run instead of being adopted, and a driver that
+exits before binding is reported rather than treated as ready.
+
+Some capture and chat helper scripts still assume the old fixed port. They read
+the port from the harness session instead: `harness.driverPort` and
+`harness.nativeDriverPort`.
+
 For manual validation, run the same native harness in visible watch mode:
 
 ```bash
