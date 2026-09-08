@@ -4,6 +4,7 @@ import path from "node:path";
 
 /** Directory inside a run's home holding that run's private binaries. */
 export const FROZEN_BIN_DIR = ".frozen-bin";
+const RUNTIME_PAYLOAD_DIRECTORIES = ["conpty", "resources"];
 
 function sha256(filePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
@@ -28,6 +29,14 @@ function sidecarsFor(sourcePath) {
     .map((entry) => path.join(dir, entry.name));
 }
 
+/** Runtime directories resolved relative to a Tauri executable. */
+function runtimePayloadsFor(sourcePath) {
+  const dir = path.dirname(sourcePath);
+  return RUNTIME_PAYLOAD_DIRECTORIES
+    .map((name) => path.join(dir, name))
+    .filter((payloadPath) => fs.existsSync(payloadPath) && fs.statSync(payloadPath).isDirectory());
+}
+
 /**
  * Copy one binary and its sidecars into a run-private directory.
  *
@@ -48,6 +57,11 @@ export function freezeArtifact(sourcePath, destDir) {
     if (!fs.existsSync(target)) {
       fs.copyFileSync(sidecar, target);
     }
+  }
+
+  for (const payload of runtimePayloadsFor(sourcePath)) {
+    const target = path.join(destDir, path.basename(payload));
+    fs.cpSync(payload, target, { recursive: true, force: true });
   }
 
   const frozenPath = path.join(destDir, path.basename(sourcePath));

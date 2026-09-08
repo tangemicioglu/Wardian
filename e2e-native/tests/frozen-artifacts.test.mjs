@@ -62,6 +62,38 @@ test("sidecar libraries travel with the executable", () => {
   }
 });
 
+test("Tauri runtime payload directories travel with the executable", () => {
+  const sharedTarget = scratch("runtime-payload");
+  const home = scratch("runtime-payload-home");
+  try {
+    fs.writeFileSync(path.join(sharedTarget, "Wardian.exe"), "app");
+    fs.mkdirSync(path.join(sharedTarget, "conpty", "x64"), { recursive: true });
+    fs.mkdirSync(path.join(sharedTarget, "resources", "bin"), { recursive: true });
+    fs.writeFileSync(path.join(sharedTarget, "conpty", "x64", "conpty.dll"), "conpty");
+    fs.writeFileSync(path.join(sharedTarget, "conpty", "x64", "OpenConsole.exe"), "openconsole");
+    fs.writeFileSync(path.join(sharedTarget, "resources", "bin", "wardian-cli.exe"), "cli");
+
+    const frozen = freezeArtifact(path.join(sharedTarget, "Wardian.exe"), path.join(home, FROZEN_BIN_DIR));
+    const frozenDir = path.dirname(frozen.path);
+
+    assert.equal(
+      fs.readFileSync(path.join(frozenDir, "conpty", "x64", "conpty.dll"), "utf8"),
+      "conpty",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(frozenDir, "conpty", "x64", "OpenConsole.exe"), "utf8"),
+      "openconsole",
+    );
+    assert.equal(
+      fs.readFileSync(path.join(frozenDir, "resources", "bin", "wardian-cli.exe"), "utf8"),
+      "cli",
+    );
+  } finally {
+    fs.rmSync(sharedTarget, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("each run freezes into its own home, so runs cannot share a binary", () => {
   const sharedTarget = scratch("shared");
   const homeA = scratch("run-a");
