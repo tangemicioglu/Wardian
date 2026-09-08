@@ -17,7 +17,7 @@ function sha256(filePath) {
  */
 function sidecarsFor(sourcePath) {
   const dir = path.dirname(sourcePath);
-  let entries = [];
+  let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {

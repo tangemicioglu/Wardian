@@ -78,7 +78,7 @@ export async function runNativeE2eTargets({
   // child so the runner and the harness never disagree about which home is in
   // play. Isolation therefore applies to the ordinary npm path with no manual
   // port or home selection.
-  const { home, generated, runId } = resolveRunNativeHome(env);
+  const { home, runId } = resolveRunNativeHome(env);
 
   // Claim the home BEFORE anything destructive happens. Cleanup used to run
   // ahead of the test child, so a refusal raised later inside the harness

@@ -16,7 +16,6 @@ import { allocateSessionPorts, assertPortOwnedBy, portIsFree } from "./sessionPo
 import { FROZEN_BIN_DIR, freezeArtifact, freezeRunArtifacts } from "./frozenArtifacts.mjs";
 import {
   NATIVE_E2E_HOME_ENV,
-  NATIVE_E2E_RUN_ID_ENV,
   acquireHomeLock,
   defaultNativeE2EHome,
   nativeRunId,
