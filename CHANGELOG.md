@@ -4,6 +4,28 @@ All notable changes to Wardian will be documented in this file. The format is ba
 
 Entries from `0.3.0` onward are generated automatically by release-please from Conventional Commits. Entries for `0.1.0` through `0.2.1` were backfilled from git history and are thematic summaries rather than exhaustive commit lists.
 
+## [0.6.1](https://github.com/wardian-app/Wardian/compare/v0.6.0...v0.6.1) (2026-09-08)
+
+
+### Features
+
+* **ci:** mint the site refresh token from the release-dispatch App ([#1156](https://github.com/wardian-app/Wardian/issues/1156)) ([39d996c](https://github.com/wardian-app/Wardian/commit/39d996c896de2e5a4883ff325984889c851348e2))
+* **docs:** capture the feature-site clips from the real app ([#1146](https://github.com/wardian-app/Wardian/issues/1146)) ([1845bec](https://github.com/wardian-app/Wardian/commit/1845bece8e8f8384ee3c34fcbc122de505a86783)), closes [#332](https://github.com/wardian-app/Wardian/issues/332)
+* **docs:** make the garden clip required ([#1158](https://github.com/wardian-app/Wardian/issues/1158)) ([b7d5d30](https://github.com/wardian-app/Wardian/commit/b7d5d30657e95613488f54175f8c3cd2b18a036e))
+* **library:** preview Markdown and clarify class contents ([#1221](https://github.com/wardian-app/Wardian/issues/1221)) ([f0143e0](https://github.com/wardian-app/Wardian/commit/f0143e03303b113c5568c35c9fc28ea30b7b5d89))
+
+
+### Bug Fixes
+
+* **antigravity:** restore tab-separated model discovery ([#1171](https://github.com/wardian-app/Wardian/issues/1171)) ([9b39f5d](https://github.com/wardian-app/Wardian/commit/9b39f5dcbaf9d917db67d19b276e82bbacf314bd))
+* **chat:** keep Claude history synchronized ([#1144](https://github.com/wardian-app/Wardian/issues/1144)) ([d153c82](https://github.com/wardian-app/Wardian/commit/d153c82f18d263afb6e3268c1e6a6cf3e3ce8ec5))
+* **ci:** stop the site refresh deleting the phone screenshots ([#1154](https://github.com/wardian-app/Wardian/issues/1154)) ([add3f5d](https://github.com/wardian-app/Wardian/commit/add3f5dd8337147fa696172d42225bc1c3e87406))
+* **docs:** complete screenshot capture on a cold dev server ([#1142](https://github.com/wardian-app/Wardian/issues/1142)) ([428a207](https://github.com/wardian-app/Wardian/commit/428a2072c511c0589ee0b2b93b39a79eb650f87c))
+* **lifecycle:** preserve config updates during startup restoration ([#1203](https://github.com/wardian-app/Wardian/issues/1203)) ([e8b99e3](https://github.com/wardian-app/Wardian/commit/e8b99e33dbc2d7772c7f6f168e90d4319b5d61e4))
+* **native:** preserve Windows build argv ([#1228](https://github.com/wardian-app/Wardian/issues/1228)) ([13c5aec](https://github.com/wardian-app/Wardian/commit/13c5aec1b808417ea0424745bc688b7736459809))
+* **qa:** compare package.json contract fields, not the whole manifest ([#1150](https://github.com/wardian-app/Wardian/issues/1150)) ([5f2b7a4](https://github.com/wardian-app/Wardian/commit/5f2b7a45a80dc82f1abb9e4598086fb92d8a04f6)), closes [#1149](https://github.com/wardian-app/Wardian/issues/1149)
+* **terminal:** preserve history during snapshot replay ([#1213](https://github.com/wardian-app/Wardian/issues/1213)) ([7e96017](https://github.com/wardian-app/Wardian/commit/7e9601760c864ee62c60d2593fd5d3373f9aff44))
+
 ## [0.6.0](https://github.com/wardian-app/Wardian/compare/v0.5.3...v0.6.0) (2026-09-05)
 
 
