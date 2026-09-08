@@ -11,7 +11,10 @@ Use the Garden when you want to see the shape of your setup: which agents
 cluster around a repository, which agents participate in a routine, what files
 they changed, and what evidence supports a memory or run stage.
 
-![Workstream with labelled cell inhabitants and a situated automation route](../assets/screenshots/garden/workstream-inhabitants.png)
+![Workstream with labelled agent cells, workspace ground, and a situated automation route](../assets/screenshots/garden/workstream-inhabitants.png)
+
+*Agent cells share stable workstream geography with workspace ground and
+situated routines.*
 
 ## How Position Is Decided
 
@@ -49,9 +52,23 @@ then enter an agent or workspace to inspect its contents.
 
 ## Compositions and Records
 
-Agents use the same five regions so their contents remain easy to find:
+Agents use the same five regions so their contents remain easy to find.
 
-![Agent cutaway with a central Identity core and surrounding Capabilities, Memory, Active work, and Ports](../assets/screenshots/garden/agent-cutaway.png)
+The agent circle and its regions keep their world geometry. Zooming closer
+reveals records at their source anchors. Record, workspace, and automation
+labels keep their centre and width while their outlines grow smoothly in
+height into reading planes. Zooming out reverses the change, keeping the
+surrounding geography connected.
+
+![Agent cell with Identity, Capabilities, Memory, Active work, and Ports anchored inside its membrane](../assets/screenshots/garden/agent-cutaway.png)
+
+*Zoom into an agent cell to read its regions and records in place.*
+
+Entering an agent, workspace, automation, or record brings it to a readable
+scale. On a small or short viewport, the outer plane or membrane may extend
+offscreen while the reading column fits the available width and height. Text
+flows inside without moving its anchor. Pan or zoom to explore the surrounding
+plane and geography.
 
 | Region | Contents |
 | --- | --- |
@@ -64,6 +81,7 @@ Agents use the same five regions so their contents remain easy to find:
 Saved permission and tool settings describe configuration; runtime application
 may require a restart. A port is a relationship, not exclusive ownership.
 Following a peer or workspace keeps a breadcrumb back to the originating agent.
+Peer links travel to that peer's cell in its own place in the world.
 
 Memory records show full text, scope, evidence, sources, verification time, and
 revision history. Skill records expose **Open in Library**. File records show
@@ -141,17 +159,24 @@ resolve approvals inside the composition.
 
 - **Click or Space** selects and explains without moving the camera or opening
   another surface. **Double-click or Enter** opens the next composition or
-  record. Touch users can select, then use the explicit **Enter/Open record**
+  record by animating the same camera. Touch users can select, then use the explicit **Enter/Open record**
   action.
-- **Escape** rises one level. Use the breadcrumb to return directly to an
-  ancestor or **Habitat**, restoring the saved return camera.
-- **Scroll** to zoom. Zoom uses the wheel delta, so high-resolution trackpads
+- **Escape** animates the same camera out one level. Use the breadcrumb to
+  return to an ancestor or **Habitat** through that camera.
+- **Wheel** zooms through every scale, including compositions and records;
+  reverse wheel zooms back out. Zoom uses the wheel delta, so high-resolution trackpads
   move continuously while a normal wheel notch remains a small step. It is
   anchored at the pointer, so the point under the cursor stays put.
+- **Alt + wheel** explicitly scrolls overflowing record content under the
+  pointer. Ordinary wheel over content continues to zoom the world. Use Tab
+  to focus a named reading region, then scroll with the keyboard using arrows,
+  Page Up/Page Down, and Home/End.
 - **Drag the background** to pan.
 - **Arrow keys** pan when the canvas has focus; hold Shift for larger steps.
   On a semantic object, arrows move keyboard focus; Home/End reach the first or
-  last object. Tab reaches the object controls and composition actions.
+  last object. A coarse cell can receive keyboard focus before its inner
+  controls become readable; Enter brings it closer. Tab reaches the object
+  controls and composition actions.
 - **`+` / `-`** to zoom in and out.
 - **`0` or `f`** to fit the whole map into view.
 
@@ -161,9 +186,10 @@ canvas ever looks empty — it usually means the view is scrolled away from the
 content rather than that there is nothing to show.
 
 Zooming toward a selected map object can enter its next scale once it is large
-enough. Empty-space zoom does not choose an object. Within a composition, use
-Escape or breadcrumbs to return. Reduced-motion settings disable the entrance
-animation.
+enough, continuing into its regions and records in the same world. Empty-space
+zoom does not choose an object. Zoom out to retrace the hierarchy, or use Escape
+or breadcrumbs. Reduced motion preserves the same camera destinations and
+spatial relationships while suppressing travel animation.
 
 ## Moving Units by Hand
 
@@ -196,6 +222,10 @@ before assuming a loaded catalog is complete.
 An agent removed from the roster, unavailable routine evidence, or an
 unavailable saved stage keeps a return path through the breadcrumb. An empty or
 failed read is not evidence that no work exists.
+
+If an older saved trail lacks the position needed to reopen a record, Garden
+returns to the nearest available agent or district in that trail. A notice
+explains the recovery so you can continue navigating from a known place.
 
 ## Where the State Lives
 

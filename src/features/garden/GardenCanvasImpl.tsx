@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Layer, Stage } from "react-konva";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Group, Layer, Stage } from "react-konva";
+import { revealBetween } from "./gardenSpatialZoom";
 import type Konva from "konva";
 import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
 import { DistrictLayer } from "./DistrictLayer";
@@ -37,6 +38,8 @@ export interface GardenCanvasProps {
   automationProjections?: readonly GardenAutomationInput[];
   /** The DOM spatial container owns focus and navigation while open. */
   compositionActive?: boolean;
+  /** World-anchored interiors share this camera; semantic entry must not replace it. */
+  continuousZoom?: boolean;
   agentUnits: GardenAgentUnit[];
   automationUnits: GardenAutomationUnit[];
   selectedKey: string | null;
@@ -65,6 +68,8 @@ export interface GardenCanvasProps {
   onOpenAgent: (id: string) => void;
   onOpenSkill?: (glyph: GardenSkillGlyph) => void;
   onMoveUnit: (key: string, x: number, y: number) => void;
+  /** Hide the static DOM counterpart while Konva moves an agent locally. */
+  onDraggingAgentChange?: (id: string | null) => void;
   onResetLayout: () => void;
 }
 
@@ -94,6 +99,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   onOpenAgent,
   onOpenSkill,
   onMoveUnit,
+  onDraggingAgentChange,
   onResetLayout,
   onEnter,
   onClearSelection,
@@ -106,12 +112,14 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   districtByAgentId,
   automationProjections = [],
   compositionActive = false,
+  continuousZoom = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const layerRef = useRef<Konva.Layer>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(camera?.scale ?? 1);
+  const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
   const transformRef = useRef<GardenCamera>(camera ?? { scale: 1, position: { x: 0, y: 0 } });
   const [cameraPosition, setCameraPosition] = useState(transformRef.current.position);
   const onCameraChangeRef = useRef(onCameraChange);
@@ -128,8 +136,8 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     return id ? bands.get(id) === "workstream" : scale >= 0.7;
   };
   const routes = useMemo(() => situatedRoutes(automationProjections, agentUnits, districts), [automationProjections, agentUnits, districts]);
-  const visibleRoutes = routes.filter((route) => route.points.some((point) => [...districts].some(([id, district]) => bands.get(id) === "workstream" && Math.hypot(point.x - district.origin.x, point.y - district.origin.y) <= district.radius)) || (districts.size === 0 && scale >= 0.7));
-  const visibleTerrainCells = (terrainCells ?? []).filter((cell) => bands.get(cell.districtId) === "workstream" &&
+  const visibleRoutes = continuousZoom ? routes : routes.filter((route) => route.points.some((point) => [...districts].some(([id, district]) => bands.get(id) === "workstream" && Math.hypot(point.x - district.origin.x, point.y - district.origin.y) <= district.radius)) || (districts.size === 0 && scale >= 0.7));
+  const visibleTerrainCells = (terrainCells ?? []).filter((cell) => (continuousZoom || bands.get(cell.districtId) === "workstream") &&
     (cell.isDir || (cell.rect.width * scale >= 100 && cell.rect.height * scale >= 40)));
   const [rovingKey, setRovingKey] = useState<string | null>(null);
   const [keyboardKey, setKeyboardKey] = useState<string | null>(null);
@@ -200,7 +208,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     reportViewport();
   }, [reportViewport]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!camera) return;
     userAdjustedRef.current = true;
     minScaleRef.current = Math.min(MIN_SCALE, camera.scale);
@@ -211,7 +219,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     if (compositionActive) return;
     const ref: GardenEntityRef = target.kind === "path" && terrainCells?.some((cell) => cell.path === target.id && cell.isDir)
       ? { kind: "workspace", id: target.id } : target;
-    if (ref.kind === "district") {
+    if (ref.kind === "district" && !continuousZoom) {
       const district = districts.get(ref.id);
       if (district && size.width > 0 && size.height > 0) {
         const nextScale = Math.min(MAX_SCALE, Math.max(0.01, Math.min(size.width, size.height) * 0.8 / (district.radius * 2)));
@@ -223,7 +231,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     }
     if (onEnter) onEnter(ref);
     else if (ref.kind === "path") onOpenPath?.(ref.id);
-  }, [districts, size, applyTransform, onFocusDistrict, onEnter, onOpenPath, terrainCells, compositionActive]);
+  }, [districts, size, applyTransform, onFocusDistrict, onEnter, onOpenPath, terrainCells, compositionActive, continuousZoom]);
 
   // Progressive disclosure. Detail is a pure function of zoom and touches only
   // what is painted — the layout reserved the crown's footprint regardless, so
@@ -294,11 +302,11 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     userAdjustedRef.current = true;
     const next = zoomAt(screenPoint, transformRef.current, factor, {
       min: minScaleRef.current,
-      max: MAX_SCALE,
+      max: continuousZoom ? 100000 : MAX_SCALE,
     });
     if (next.scale === transformRef.current.scale) return;
     applyTransform(next);
-    if (!selectedKey || compositionActive) return;
+    if (!selectedKey || compositionActive || continuousZoom) return;
     const separator = selectedKey.indexOf(":");
     const kind = selectedKey.slice(0, separator);
     const id = selectedKey.slice(separator + 1);
@@ -326,7 +334,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       diveLatchRef.current = selectedKey;
       enterObject(ref);
     }
-  }, [applyTransform, selectedKey, compositionActive, agentUnits, districts, terrainCells, routes, enterObject]);
+  }, [applyTransform, selectedKey, compositionActive, agentUnits, districts, terrainCells, routes, enterObject, continuousZoom]);
 
   /** Zoom about the middle of the viewport, for the keyboard and the buttons. */
   const zoomByStep = useCallback(
@@ -444,13 +452,19 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     [onEnter, enterObject, onOpenSkill],
   );
   const handleEnterAgent = useCallback((id: string) => enterObject({ kind: "agent", id }), [enterObject]);
+  const handleDragAgentStart = useCallback((id: string) => {
+    setDraggingAgentId(id);
+    onDraggingAgentChange?.(id);
+  }, [onDraggingAgentChange]);
   const handleDragAgent = useCallback(
     (id: string, x: number, y: number) => {
+      setDraggingAgentId(null);
+      onDraggingAgentChange?.(null);
       if (compositionActive) return;
       userAdjustedRef.current = true;
       onMoveUnit(unitKey({ kind: "agent", id }), x, y);
     },
-    [onMoveUnit, compositionActive],
+    [onMoveUnit, compositionActive, onDraggingAgentChange],
   );
 
   // The wheel always zooms, and never scrolls. A canvas that pans on wheel and
@@ -491,7 +505,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   // At Habitat, overlapping screen targets resolve to the district population.
   const populations = districtPopulations(agentUnits, districts, bands, scale, districtByAgentId);
   const clusteredAgents = new Set([...populations.values()].filter((population) => population.clustered).flatMap((population) => population.agentIds));
-  const labelWidths = agentLabelWidths(agentUnits.filter(isWorkstream), scale);
+  const labelWidths = agentLabelWidths(continuousZoom ? agentUnits : agentUnits.filter(isWorkstream), scale);
   const objects: { ref: GardenEntityRef; label: string; position: { x: number; y: number } }[] = [
     ...[...districts].map(([id, district]) => ({ ref: { kind: "district" as const, id }, label: `${districtLabels?.get(id) ?? id}, district, ${populations.get(id)?.summary ?? "0 agents"}`, position: { x: district.origin.x, y: populations.get(id)?.clustered ? district.origin.y : district.origin.y - district.radius } })),
     ...agentUnits.filter((unit) => !clusteredAgents.has(unit.ref.id)).map((unit) => ({ ref: unit.ref, label: `${unit.label}, agent, ${unit.status}`, position: unit.position })),
@@ -561,10 +575,11 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
         }}
       >
         <Layer ref={layerRef}>
-          <DistrictLayer districts={districts} labels={districtLabels} populations={populations} bands={bands} scale={scale} selectedKey={keyboardKey ?? selectedKey} theme={theme}
+          <Group opacity={continuousZoom ? 1 - revealBetween(scale, 4, 18) * .96 : 1}>
+          <DistrictLayer continuousZoom={continuousZoom} districts={districts} labels={districtLabels} populations={populations} bands={bands} scale={scale} selectedKey={keyboardKey ?? selectedKey} theme={theme}
             onSelect={(id) => onSelect({ kind: "district", id })} onOpen={(id) => enterObject({ kind: "district", id })} />
           {terrainCells && terrainCells.length > 0 && terrainDistricts && (
-            <>
+            <Group opacity={continuousZoom ? revealBetween(scale, .35, .8) : 1}>
               <TerrainLayer
                 cells={visibleTerrainCells}
                 districts={terrainDistricts}
@@ -586,18 +601,23 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
                   theme={theme}
                 />
               )}
-            </>
+            </Group>
           )}
           <AutomationRoutesLayer mode="routes" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} />
-          {agentUnits.filter((unit) => !clusteredAgents.has(unit.ref.id)).map((unit) => (
+          </Group>
+          {agentUnits.filter((unit) => continuousZoom || !clusteredAgents.has(unit.ref.id)).map((unit) => (
             <AgentUnit
               key={unitKey(unit.ref)}
               unit={unit}
+              dragging={draggingAgentId === unit.ref.id}
+              onDragStart={handleDragAgentStart}
               selected={selectedKey === unitKey(unit.ref) || keyboardKey === unitKey(unit.ref)}
               highlighted={highlightedAgentIds?.has(unit.ref.id) ?? false}
               detail={detail}
               signal={!isWorkstream(unit)}
               scale={scale}
+              continuousZoom={continuousZoom}
+              populationOpacity={continuousZoom && clusteredAgents.has(unit.ref.id) ? revealBetween((districts.get(agentDistrict(unit, districts, districtByAgentId) ?? "")?.radius ?? 120) * 2 * scale, 80, 240) : 1}
               labelWidthPx={labelWidths.get(unit.ref.id)}
               draggable={!compositionActive && isWorkstream(unit)}
               theme={theme}
@@ -609,7 +629,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               onDragEnd={handleDragAgent}
             />
           ))}
-          <AutomationRoutesLayer mode="markers" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} />
+          <Group opacity={continuousZoom ? 1 - revealBetween(scale, 4, 18) * .96 : 1}><AutomationRoutesLayer mode="markers" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} /></Group>
         </Layer>
       </Stage>
       {!compositionActive && <div className="garden-object-controls" aria-label="Garden objects">
@@ -682,7 +702,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
         </button>
       </div>
       <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md border border-wardian-border bg-[var(--color-wardian-bg)]/80 px-2 py-1 text-[10px] text-muted-neutral shadow-sm backdrop-blur">
-        {compositionActive ? "Scroll to read · Escape or breadcrumbs to return" : "Scroll to zoom · drag to pan · arrows to move · 0 to fit"}
+        {continuousZoom ? "Wheel to zoom · Alt + wheel to read · drag to pan · Escape to return" : compositionActive ? "Scroll to read · Escape or breadcrumbs to return" : "Scroll to zoom · drag to pan · arrows to move · 0 to fit"}
       </div>
       {menu && !compositionActive && (
         <GardenContextMenu

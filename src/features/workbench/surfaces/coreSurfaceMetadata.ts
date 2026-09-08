@@ -175,10 +175,14 @@ function restoreGardenState(value: unknown, version: number): SurfaceRestoreResu
       && typeof camera.position.y === "number" && Number.isFinite(camera.position.y);
   };
   const kinds = new Set(["district", "workspace", "agent", "automation", "identity", "skill", "memory", "path", "stage"]);
+  const boundsValid = (bounds: unknown) => isRecord(bounds)
+    && [bounds.x, bounds.y, bounds.width, bounds.height].every((coordinate) => typeof coordinate === "number" && Number.isFinite(coordinate))
+    && Number(bounds.width) > 0 && Number(bounds.height) > 0;
   const trail = Array.isArray(value.trail) ? value.trail.filter((frame): frame is GardenNavigationFrame =>
     isRecord(frame) && isRecord(frame.ref) && kinds.has(String(frame.ref.kind))
     && typeof frame.ref.id === "string" && typeof frame.label === "string"
-    && (frame.camera === undefined || cameraValid(frame.camera)),
+    && (frame.camera === undefined || cameraValid(frame.camera))
+    && (frame.bounds === undefined || boundsValid(frame.bounds)),
   ) : undefined;
   return { ok: true, state: {
     selected_unit_key: value.selected_unit_key as string | null,

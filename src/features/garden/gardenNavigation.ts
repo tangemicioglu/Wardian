@@ -1,4 +1,5 @@
 import type { GardenEntityRef, GardenCamera } from "./garden.types";
+import type { GardenWorldBounds } from "./gardenSpatialZoom";
 export type { GardenCamera } from "./garden.types";
 
 export type GardenTimeLens = "now" | "recent" | "branch";
@@ -8,6 +9,8 @@ export interface GardenNavigationFrame {
   ref: GardenEntityRef;
   label: string;
   camera?: GardenCamera;
+  /** Occurrence geometry: a record retains its place inside its originating cell. */
+  bounds?: GardenWorldBounds;
 }
 
 /** Keep port jumps reversible, including a jump to an object already in the trail. */

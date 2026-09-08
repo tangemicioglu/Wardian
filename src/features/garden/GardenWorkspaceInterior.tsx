@@ -46,7 +46,7 @@ export function GardenWorkspaceInterior({ path, entries, paint, lens, selectedKe
     <div className="garden-activity-groups">{children.map((group) => {
       const ref: GardenEntityRef = { kind: group.isDirectory ? "workspace" : "path", id: group.path };
       const evidence = paint.get(group.path);
-      return <button key={group.path} className="garden-organelle" aria-pressed={selectedKey === `${ref.kind}:${ref.id}`}
+      return <button key={group.path} data-garden-ref={`${ref.kind}:${ref.id}`} className="garden-organelle" aria-pressed={selectedKey === `${ref.kind}:${ref.id}`}
         onClick={() => onSelect(ref)} onDoubleClick={() => onEnter(ref)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onEnter(ref); } }}>
         <span className="garden-eyebrow">{group.isDirectory ? "Activity group" : "File"}</span>
         <strong>{basename(group.path)}</strong>

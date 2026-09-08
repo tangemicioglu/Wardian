@@ -1,17 +1,23 @@
 # Garden Composition Implementation Contract
 
-- **Status:** Implemented; frontend and focused browser verification complete
+- **Status:** Historical implementation; navigation and visual acceptance superseded
 - **Date:** 2026-09-07
 - **Design:** [Garden Semantic Zoom Composition](./2026-08-30-garden-semantic-zoom-composition.md)
 - **User documentation:** [Garden](../guide/garden.md)
 
-This contract resolves open decisions in the August 30 direction against the
-current GardenView, interiors, canvas, and Workbench integration. Verification
-results and their native/provider limitations are recorded below.
-The earlier spec remains the broader design intent; the decisions below define
-this implementation's scope.
+The [September 8 continuous-zoom contract](./2026-09-08-garden-continuous-zoom.md)
+supersedes this document wherever navigation, camera ownership, presentation,
+content scrolling, or visual acceptance differ. The user rejected the abrupt
+switch from the world into a text-heavy DOM cutaway. Continuous camera travel
+into world-anchored cells and records is fundamental intent, not optional polish.
+Integration and validation of the replacement are pending.
 
-## Hierarchy and Navigation
+The sections below preserve the September 7 implementation record. Its recorded
+checks remain evidence for that historical implementation only; they do not
+establish acceptance or passing tests for the replacement. Canonical data,
+attribution, and authority rules remain applicable unless explicitly revised.
+
+## Historical Hierarchy and Navigation (Superseded)
 
 Habitat exposes stable districts and agent signals; workstream scale reveals
 named cell-like inhabitants, workspace ground, skill marks, and situated
@@ -159,15 +165,16 @@ retain breadcrumb recovery. Paging controls disclose bounded catalogs.
 
 The canvas supplies labelled semantic-object controls with roving focus,
 Space/Enter/Escape, and arrow/Home/End traversal; canvas-focused arrows pan.
-DOM interiors own focus while open, retain named regions and explicit actions,
+In the superseded interaction model, DOM interiors own focus while open, retain named regions and explicit actions,
 and report loading/errors through status/alert text. Reduced motion disables
 the composition entrance animation. Focused browser checks cover keyboard,
 narrow-layout, and reduced-motion behavior; they are not a complete assistive-
 technology or physical-touch-device audit.
 
-## Verification Boundary
+## Historical Verification Boundary
 
-Verification on September 7, 2026:
+Recorded verification on September 7, 2026, before the continuous-zoom revision
+(not current acceptance evidence):
 
 - Full `npm run verify:ci -- --only frontend` passed: typecheck, lint, unit
   tests, production build, Workbench cutover, test reachability, dead code,
@@ -189,8 +196,8 @@ Verification on September 7, 2026:
   concurrent assignment lanes, expired focused evidence, independent source
   failure/recovery, denied file reads, and inactive closes not stealing focus.
 - Desktop and narrow screenshots were inspected for text clipping, complete
-  Ports content, stable regions, and readable labels. The owning guide now
-  includes refreshed reader-facing screenshots; PR evidence uses synthetic data.
+  Ports content, stable regions, and readable labels. The owning guide at that time
+  included refreshed reader-facing screenshots; PR evidence uses synthetic data.
 
 Browser fixtures do not prove native file access, PTY behavior, or real provider
 execution. Backend and hosted-check outcomes belong in the delivery evidence,
@@ -198,7 +205,10 @@ not an inferred claim from frontend success. The implementation adds no new
 native command or provider lifecycle. Release notes follow the feature's
 Conventional Commit rather than a manually edited changelog.
 
-The stage-local attention marks and temporary-provider silhouettes are
-implemented scope. Continuous same-object vector morphing and directional
-route animation are deliberate omissions: stable geography, explicit reversible
-entry, and legible execution state take precedence in this implementation.
+The stage-local attention marks and temporary-provider silhouettes were
+implemented scope. Historically, continuous same-object vector morphing and
+directional route animation were deliberately omitted in favor of stable
+geography, explicit entry, and legible execution state. The continuous-zoom
+omission and explicit-only return are now superseded; the new contract requires
+continuous, reversible travel. This correction does not establish a new
+requirement for directional route animation.

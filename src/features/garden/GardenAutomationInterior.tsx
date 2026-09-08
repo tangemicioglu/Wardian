@@ -42,7 +42,7 @@ export function GardenAutomationInterior({ automation, agents, selectedKey, onSe
       <div className="garden-run-stages">{lane.stages.map((stage, index) => {
         const node = (automation.runEvidence.find((run) => run.summary.run_id === lane.runId)?.detail?.blueprint ?? automation.blueprint)?.nodes.find((item) => item.id === stage.nodeId);
         const ref: GardenEntityRef = { kind: "stage", id: JSON.stringify([lane.runId, stage.nodeId]) };
-        return <button className="garden-organelle" key={`${stage.nodeId}:${index}`} aria-pressed={selectedKey === `stage:${ref.id}`} onClick={() => onSelect(ref)} onDoubleClick={() => onEnter(ref)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onEnter(ref); } }}>
+        return <button className="garden-organelle" data-garden-ref={`stage:${ref.id}`} key={`${stage.nodeId}:${index}`} aria-pressed={selectedKey === `stage:${ref.id}`} onClick={() => onSelect(ref)} onDoubleClick={() => onEnter(ref)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onEnter(ref); } }}>
           <span className="garden-eyebrow">Stage {index + 1} →</span><strong>{node?.name ?? stage.nodeId}</strong><span>{stage.status ?? "Scheduled"}</span><span>{stage.agentId ? agents.find((agent) => agent.session_id === stage.agentId)?.session_name ?? stage.agentId : stage.temporaryProvider ? `Temporary · ${stage.temporaryProvider}` : stage.role ? `Unresolved role · ${stage.role}` : "Engine"}</span>
         </button>;
       })}</div>

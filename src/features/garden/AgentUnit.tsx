@@ -8,6 +8,7 @@ import type { GardenDetail, GardenSkillGlyph } from "./skillGlyphs";
 import { PULSE_BASE_RADIUS, PULSE_HALO_NAME } from "./useGardenPulse";
 import type { GardenTheme } from "./useGardenTheme";
 import { agentMonogram } from "./agentMonogram";
+import { revealBetween } from "./gardenSpatialZoom";
 
 /** Konva node `name` used to identify agent units during canvas hit-testing. */
 export const AGENT_UNIT_NAME = "agent-unit";
@@ -27,7 +28,10 @@ interface AgentUnitProps {
   /** Habitat uses a signal; only Workstream permits authored placement. */
   signal?: boolean;
   draggable?: boolean;
+  dragging?: boolean;
   scale?: number;
+  continuousZoom?: boolean;
+  populationOpacity?: number;
   /** Available screen pixels between neighboring name labels. Full name stays in the selection summary. */
   labelWidthPx?: number;
   theme: GardenTheme;
@@ -39,6 +43,7 @@ interface AgentUnitProps {
   onOpenSkill: (glyph: GardenSkillGlyph) => void;
   /** Fired once, when the drag finishes. See the note on the handler. */
   onDragEnd: (key: string, x: number, y: number) => void;
+  onDragStart?: (id: string) => void;
 }
 
 const AgentUnitImpl: React.FC<AgentUnitProps> = ({
@@ -48,7 +53,10 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
   detail,
   signal = false,
   draggable = true,
+  dragging = false,
   scale = 1,
+  continuousZoom = false,
+  populationOpacity = 1,
   labelWidthPx = 140,
   theme,
   selectedSkillRef = null,
@@ -57,12 +65,18 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
   onSelectSkill,
   onOpenSkill,
   onDragEnd,
+  onDragStart,
 }) => {
   const fill = resolveCssVar(gardenAgentStatusColor(unit.status));
   const active = isActiveAgentStatus(unit.status);
+  const exteriorOpacity = continuousZoom && !dragging ? 1 - revealBetween(scale * 32, 70, 150) : 1;
+  const bodyOpacity = continuousZoom ? revealBetween(scale * 32, 12, 28) : signal ? 0 : 1;
+  const showBody = continuousZoom || !signal;
 
   return (
     <Group
+      opacity={populationOpacity}
+      listening={populationOpacity > .1}
       x={unit.position.x}
       y={unit.position.y}
       // id + name let the canvas resolve which agent was right-clicked via
@@ -82,6 +96,7 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
       onDblTap={() => onOpen(unit.ref.id)}
       onDragStart={(event) => {
         event.target.getStage()?.container().style.setProperty("cursor", "grabbing");
+        onDragStart?.(unit.ref.id);
       }}
       // Committed on drag *end*, not on every move. A move-by-move commit
       // pinned the unit and re-ran the whole layout on each mouse event, so
@@ -96,11 +111,11 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
       {/* Named so the canvas' single pulse animation can find it. The radius is
           mutated on the Konva node rather than through React, so a busy agent
           does not re-render its whole crown once per frame. */}
-      {!signal && <Circle
-        name={active ? PULSE_HALO_NAME : undefined}
+      {showBody && <Circle
+        name={active && exteriorOpacity > 0 ? PULSE_HALO_NAME : undefined}
         radius={PULSE_BASE_RADIUS}
         fill={fill}
-        opacity={0.18}
+        opacity={0.18 * exteriorOpacity * bodyOpacity}
         listening={false}
       />}
       {/* Drawn outside the status halo so a carrier stands out without
@@ -116,26 +131,31 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
         />
       )}
       <Circle
-        radius={signal ? 4 / scale : 16}
+        opacity={exteriorOpacity * (continuousZoom ? bodyOpacity : 1)}
+        radius={continuousZoom ? 4 / scale + (16 - 4 / scale) * bodyOpacity : signal ? 4 / scale : 16}
         hitStrokeWidth={signal ? 16 / scale : 12}
-        fill={signal ? fill : theme.groundFile}
+        fill={continuousZoom ? theme.groundFile : signal ? fill : theme.groundFile}
         stroke={selected ? theme.selection : signal ? "transparent" : theme.groundBorder}
         strokeWidth={selected ? 3 / scale : 1}
       />
-      {!signal && <Circle radius={4} x={10} y={10} fill={fill} listening={false} />}
-      {!signal && <Text text={agentMonogram(unit.label)} x={-14} y={-7} width={28}
-        align="center" fontSize={13} fontFamily={theme.font} fill={theme.label} listening={false} />}
-      {!signal && <SkillCrown
-        crown={unit.crown.slice(0, 3)}
+      {continuousZoom && <Circle radius={4 / scale} opacity={1 - bodyOpacity} fill={fill} hitStrokeWidth={16 / scale} />}
+      {showBody && <Circle opacity={exteriorOpacity * bodyOpacity} radius={4} x={10} y={10} fill={fill} listening={false} />}
+      {showBody && <Text opacity={exteriorOpacity * bodyOpacity} text={agentMonogram(unit.label)} x={-14} y={continuousZoom ? -Math.min(22, 13 * scale) / (2 * scale) : -7} width={28}
+        align="center" fontSize={continuousZoom ? Math.min(22, 13 * scale) / scale : 13} fontFamily={theme.font} fill={theme.label} listening={false} />}
+      {showBody && <Group opacity={continuousZoom ? 1 - revealBetween(scale, 6, 12) : 1}><SkillCrown
+        crown={continuousZoom ? unit.crown : unit.crown.slice(0, 3)}
+        scale={continuousZoom ? scale : undefined}
+        convergence={continuousZoom ? revealBetween(scale, 4, 10) : 0}
         detail={detail}
         theme={theme}
         selectedEntryRef={selectedSkillRef}
         onSelect={onSelectSkill}
         onOpen={onOpenSkill}
-      />}
-      {!signal && unit.crown.length > 3 && <Text text={`+${unit.crown.length - 3}`} x={24} y={-28}
+      /></Group>}
+      {!continuousZoom && !signal && unit.crown.length > 3 && <Text text={`+${unit.crown.length - 3}`} x={24} y={-28}
         fontSize={theme.subLabelSize / scale} fontFamily={theme.font} fill={theme.labelMuted} listening={false} />}
-      {!signal && labelWidthPx >= 40 && <Text
+      {showBody && labelWidthPx >= 40 && <Text
+        opacity={(continuousZoom && !dragging ? 1 - revealBetween(scale * 32, 180, 300) : exteriorOpacity) * bodyOpacity}
         text={unit.label}
         fontSize={Math.min(14, Math.max(12, theme.labelSize)) / scale}
         fontFamily={theme.font}
@@ -181,7 +201,10 @@ function propsEqual(previous: AgentUnitProps, next: AgentUnitProps): boolean {
     previous.detail === next.detail &&
     previous.signal === next.signal &&
     previous.draggable === next.draggable &&
+    previous.dragging === next.dragging &&
     previous.scale === next.scale &&
+    previous.continuousZoom === next.continuousZoom &&
+    previous.populationOpacity === next.populationOpacity &&
     previous.labelWidthPx === next.labelWidthPx &&
     previous.theme === next.theme &&
     previous.selectedSkillRef === next.selectedSkillRef &&
@@ -189,7 +212,8 @@ function propsEqual(previous: AgentUnitProps, next: AgentUnitProps): boolean {
     previous.onOpen === next.onOpen &&
     previous.onSelectSkill === next.onSelectSkill &&
     previous.onOpenSkill === next.onOpenSkill &&
-    previous.onDragEnd === next.onDragEnd
+    previous.onDragEnd === next.onDragEnd &&
+    previous.onDragStart === next.onDragStart
   );
 }
 

@@ -7,12 +7,14 @@
   `2026-08-10-garden-file-terrain.md`, and
   `2026-08-23-agent-memory.md`
 
-The [September 7 implementation contract](./2026-09-07-garden-composition-implementation.md)
-records the concrete navigation, activity windows, persistence, and evidence
-rules for the current implementation. It takes precedence where this design
-leaves choices open or describes richer visual behavior. The context below is
-the pre-implementation baseline; linking the implementation does not certify
-tests, accessibility acceptance, or screenshot validation as passed.
+The [September 8 continuous-zoom contract](./2026-09-08-garden-continuous-zoom.md)
+is the latest implementation direction and takes precedence for camera travel,
+world-anchored composition and records, scrolling, and acceptance. Integration
+and validation are pending. The [September 7 implementation record](./2026-09-07-garden-composition-implementation.md)
+preserves historical decisions and validation; its DOM cutaway and omission of
+continuous reverse-wheel navigation no longer override this design's intent.
+Its canonical data and evidence rules remain applicable unless revised by the
+latest contract. The context below describes the pre-implementation baseline.
 
 ## Context
 

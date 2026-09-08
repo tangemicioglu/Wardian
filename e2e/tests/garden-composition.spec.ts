@@ -79,7 +79,81 @@ test.describe("Garden semantic composition", () => {
     await expect(garden(page).getByRole("region", { name: "Memory", exact: true })).toBeVisible();
     await garden(page).getByRole("navigation", { name: "Garden breadcrumb" }).getByRole("button", { name: "Habitat", exact: true }).click();
     await expect(canvas).toHaveAttribute("data-garden-fit", before!);
-    await expect(garden(page).locator(".garden-composition")).toHaveCount(0);
+    await expect(garden(page).getByRole("navigation", { name: "Garden breadcrumb" }).getByRole("button", { name: "Moss Designer", exact: true })).toHaveCount(0);
+  });
+
+  test("peer Ports link enters Fern at its world location and Escape restores Moss", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await enterAgent(page);
+    const moss = garden(page).locator(`[data-garden-cell="agent:${GARDEN_AGENT}"]`);
+    const mossWorld = await moss.getAttribute("data-garden-world");
+    const ports = moss.getByRole("region", { name: "Ports", exact: true });
+    const peer = ports.getByRole("button", { name: /Fern Reviewer/ });
+    await peer.click();
+    await expect(peer).toHaveAttribute("aria-pressed", "true");
+    // Selecting a link to a distant peer must not make wheel over these Ports enter it.
+    const hit = await peer.boundingBox();
+    if (!hit) throw new Error("Peer port has no bounds");
+    const zoom = garden(page).getByTestId("garden-zoom-level");
+    const before = await zoom.textContent();
+    await page.mouse.move(hit.x + hit.width / 2, hit.y + hit.height / 2);
+    await page.mouse.wheel(0, -120);
+    await expect(zoom).not.toHaveText(before!);
+    const trail = garden(page).getByRole("navigation", { name: "Garden breadcrumb" });
+    await expect(trail.getByRole("button").last()).toHaveText("Moss Designer");
+    await peer.press("Enter");
+    const fern = garden(page).locator('[data-garden-cell="agent:garden-reviewer"]');
+    const fernIdentity = fern.getByRole("region", { name: "Identity", exact: true });
+    await expect(fernIdentity).toBeInViewport();
+    await expect(fernIdentity.getByRole("button", { name: /Fern Reviewer.*Reviewer/ })).toBeVisible();
+    await expect(trail.getByRole("button").last()).toHaveText("Fern Reviewer");
+    await expect(fern).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(trail.getByRole("button").last()).toHaveText("Moss Designer");
+    await expect(moss.getByRole("region", { name: "Identity", exact: true })).toBeInViewport();
+    await expect(moss.getByRole("region", { name: "Identity", exact: true })).toContainText("Moss Designer");
+    await expect(moss).toHaveAttribute("data-garden-world", mossWorld!);
+    await expect(moss).toBeFocused();
+  });
+
+  test("narrow memory record supports Tab and PageDown without moving the world camera", async ({ page }) => {
+    await page.setViewportSize({ width: 640, height: 900 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    for (const label of ["Hide Left Sidebar", "Hide Agent List"]) {
+      const toggle = page.getByRole("button", { name: label, exact: true });
+      if (await toggle.isVisible()) await toggle.click();
+    }
+    await garden(page).getByTestId("garden-fit-view").click();
+    await object(page, `district:workspace:${GARDEN_ROOT}`).press("Enter");
+    await enterAgent(page);
+    await garden(page).getByRole("button", { name: /Keep the five agent regions/ }).press("Enter");
+    const cell = garden(page).locator('[data-garden-cell^="memory:"]');
+    const reading = cell.getByRole("region", { name: /reading area$/ });
+    await expect(cell).toBeFocused();
+    await expect(reading).toBeInViewport({ ratio: 1 });
+    await expect(reading.getByRole("article", { name: "memory record" })).toContainText("conversation-design:turn:4");
+    await page.keyboard.press("Tab");
+    await expect(reading).toBeFocused();
+    // Expand the existing revision evidence so this fixture exercises real overflow.
+    await reading.getByText("Revision history (2)", { exact: true }).press("Enter");
+    await expect(reading).toContainText("Keep agent regions stable.");
+    await page.keyboard.press("Shift+Tab");
+    await expect(reading).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect.poll(() => reading.evaluate((element) => element.scrollTop)).toBe(0);
+    expect(await reading.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    const before = await cell.boundingBox();
+    const world = await cell.getAttribute("data-garden-world");
+    const zoom = await garden(page).getByTestId("garden-zoom-level").textContent();
+    const initialScroll = await reading.evaluate((element) => element.scrollTop);
+    expect(await reading.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await page.keyboard.press("PageDown");
+    await expect.poll(() => reading.evaluate((element) => element.scrollTop)).toBeGreaterThan(initialScroll);
+    await expect(cell).toHaveAttribute("data-garden-world", world!);
+    await expect(garden(page).getByTestId("garden-zoom-level")).toHaveText(zoom!);
+    expect(await cell.boundingBox()).toEqual(before);
+    await page.keyboard.press("Escape");
+    await expect(garden(page).getByRole("navigation", { name: "Garden breadcrumb" }).getByRole("button").last()).toHaveText("Moss Designer");
   });
 
   test("workspace activity excludes unchanged siblings until full tree; file record carries evidence", async ({ page }) => {
@@ -162,15 +236,34 @@ test.describe("Garden semantic composition", () => {
     await agent.press("ArrowRight");
     await expect(agent).not.toBeFocused();
     await agent.press("Enter");
-    await expect(garden(page).getByRole("region", { name: "Identity", exact: true })).toBeVisible();
-    await expect(garden(page).locator(".garden-composition")).toHaveCSS("animation-name", "none");
-    await garden(page).getByRole("region", { name: "Ports", exact: true }).scrollIntoViewIfNeeded();
-    await expect(garden(page).getByRole("region", { name: "Ports", exact: true })).toBeInViewport();
+    const cell = garden(page).locator(`[data-garden-cell="agent:${GARDEN_AGENT}"]`);
+    const world = await cell.getAttribute("data-garden-world");
+    await expect(cell).toHaveCSS("animation-name", "none");
+    // Enter focuses the world cell; keyboard zoom must work even when already readable.
+    await expect(cell).toBeFocused();
+    const beforeZoom = await cell.boundingBox();
+    if (!beforeZoom) throw new Error("Agent cell has no bounds");
+    await cell.press("+");
+    await expect.poll(async () => (await cell.boundingBox())!.width / beforeZoom.width).toBeCloseTo(1.25, 2);
+    await cell.press("-");
+    await expect.poll(async () => (await cell.boundingBox())!.width).toBeCloseTo(beforeZoom.width, 1);
+    await expect.poll(async () => (await cell.boundingBox())!.height).toBeCloseTo(beforeZoom.height, 1);
+    const identity = garden(page).getByRole("region", { name: "Identity", exact: true });
+    const ports = garden(page).getByRole("region", { name: "Ports", exact: true });
+    await expect(identity).toBeVisible();
+    await expect(ports).toBeVisible();
+    await expect(cell).toHaveAttribute("data-garden-world", world!);
+    const identityBounds = await identity.boundingBox();
+    const portsBounds = await ports.boundingBox();
+    expect(portsBounds!.y).toBeGreaterThan(identityBounds!.y);
+    const capabilitiesBounds = await garden(page).getByRole("region", { name: "Capabilities", exact: true }).boundingBox();
+    const memoryBounds = await garden(page).getByRole("region", { name: "Memory", exact: true }).boundingBox();
+    expect(capabilitiesBounds!.x).toBeLessThan(identityBounds!.x);
+    expect(memoryBounds!.x).toBeGreaterThan(identityBounds!.x);
     expect(await garden(page).evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-    await garden(page).getByRole("region", { name: "Identity", exact: true }).scrollIntoViewIfNeeded();
     await capture(page, "09-narrow-reduced-motion");
     await page.keyboard.press("Escape");
-    await expect(garden(page).locator(".garden-composition")).toHaveCount(0);
+    await expect(garden(page).getByRole("navigation", { name: "Garden breadcrumb" }).getByRole("button", { name: "Moss Designer", exact: true })).toHaveCount(0);
   });
 
   test("workstream shows labelled inhabitants and situated run route", async ({ page }) => {
@@ -183,6 +276,7 @@ test.describe("Garden semantic composition", () => {
 
   for (const action of ["double-click", "keyboard Enter", "summary Enter"] as const) {
     test(`nested canvas directory opens Workspace with ${action}`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
       await object(page, `district:workspace:${GARDEN_ROOT}`).press("Enter");
       const directory = garden(page).locator(`[data-garden-object$=":${GARDEN_ROOT}/src"]`);
       await expect(directory).toBeAttached();
@@ -204,48 +298,41 @@ test.describe("Garden semantic composition", () => {
     });
   }
 
-  test("composition margins cannot select, pan, zoom or enter background objects", async ({ page }) => {
+  test("composition margins retain camera pan and wheel access", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await enterAgent(page);
     const canvas = garden(page).locator(".garden-canvas");
+    const cell = garden(page).locator(`[data-garden-cell="agent:${GARDEN_AGENT}"]`);
+    const world = await cell.getAttribute("data-garden-world");
     const bounds = await canvas.boundingBox();
     if (!bounds) throw new Error("Canvas has no bounds");
+    const before = await cell.boundingBox();
     const point = { x: bounds.x + 5, y: bounds.y + bounds.height / 2 };
-    const camera = await canvas.getAttribute("data-garden-fit");
-    const breadcrumb = await garden(page).getByRole("navigation", { name: "Garden breadcrumb" }).textContent();
-    const summary = await garden(page).getByTestId("garden-selection-summary").textContent();
-    for (const gesture of ["click", "double-click", "drag", "wheel"] as const) {
-      await test.step(gesture, async () => {
-        await page.mouse.move(point.x, point.y);
-        if (gesture === "click") await page.mouse.click(point.x, point.y);
-        if (gesture === "double-click") await page.mouse.dblclick(point.x, point.y);
-        if (gesture === "drag") {
-          await page.mouse.down();
-          await page.mouse.move(point.x, point.y + 90, { steps: 8 });
-          await page.mouse.up();
-        }
-        if (gesture === "wheel") await page.mouse.wheel(0, -400);
-        // Wait across frames so asynchronous wheel/paint work cannot escape the assertion.
-        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-        await expect(canvas).toHaveAttribute("data-garden-fit", camera!);
-        await expect(garden(page).getByRole("navigation", { name: "Garden breadcrumb" })).toHaveText(breadcrumb!);
-        await expect(garden(page).getByTestId("garden-selection-summary")).toHaveText(summary!);
-        await expect(garden(page).getByRole("region", { name: "Identity", exact: true })).toBeVisible();
-      });
-    }
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x, point.y + 90, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await cell.boundingBox())!.y).toBeCloseTo(before!.y + 90, 0);
+    const zoom = await garden(page).getByTestId("garden-zoom-level").textContent();
+    await page.mouse.wheel(0, -120);
+    await expect(garden(page).getByTestId("garden-zoom-level")).not.toHaveText(zoom!);
+    await expect(cell).toHaveAttribute("data-garden-world", world!);
+    await expect(garden(page).getByRole("region", { name: "Identity", exact: true })).toBeVisible();
   });
 
   test("canonical run evidence opens Observe and schedule management opens Monitor with Garden return", async ({ page }) => {
     await enterAgent(page);
     await garden(page).getByRole("region", { name: "Active work", exact: true }).getByRole("button", { name: /Daily design review/ }).press("Enter");
     await garden(page).getByRole("region", { name: `Run ${GARDEN_RUN}`, exact: true }).getByRole("button", { name: /Draft interface/ }).press("Enter");
-    await garden(page).getByRole("button", { name: "Inspect run evidence", exact: true }).click();
+    await garden(page).getByRole("article").getByRole("button", { name: "Inspect run evidence", exact: true }).click();
     const automations = surfacePanel(page, "automations");
     await expect(automations.getByTestId("automations-observe-mode")).toBeVisible();
     await expect(automations.getByTestId("automations-observe-mode")).toContainText(GARDEN_RUN);
     await surfaceTab(page, "automations").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Close tab", exact: true }).click();
     await expect(garden(page).getByRole("article")).toContainText("cutaway-preview");
-    await garden(page).locator(".garden-composition").press("Escape");
+    await garden(page).locator('[data-garden-cell^="stage:"]').press("Escape");
+    await expect(garden(page).locator('[data-garden-cell^="stage:"]')).toHaveCount(0);
     await garden(page).getByRole("button", { name: "Manage schedules in Monitor", exact: true }).click();
     await expect(automations.getByTestId("automation-monitor")).toBeVisible();
     await surfaceTab(page, "automations").click({ button: "right" });

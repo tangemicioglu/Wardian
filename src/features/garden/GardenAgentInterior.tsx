@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
 import type { AgentConfig, QueueItem } from "../../types";
 import { useQueueStore } from "../../store/useQueueStore";
 import { normalizeAgentConfig } from "../agents/configUtils";
@@ -24,11 +24,27 @@ export interface GardenAgentInteriorProps {
   onOpenAgent: (id: string) => void;
 }
 
-function Region({ name, children }: { name: string; children: ReactNode }) {
+function Region({ name, children, action }: { name: string; children: ReactNode; action?: ReactNode }) {
   const id = useId();
   return <section className={`garden-agent-interior-region garden-agent-interior-${name.toLowerCase().replace(/ /g, "-")}`} aria-labelledby={id}>
-    <h3 id={id}>{name}</h3>{children}
+    <h3 id={id}>{name}</h3>
+    <div className="garden-agent-interior-scroll" tabIndex={0} aria-label={`${name} contents`}>{children}</div>
+    {action && <div className="garden-agent-interior-primary-action">{action}</div>}
   </section>;
+}
+
+/** Keep scanning text short; the complete source remains in an explicit disclosure. */
+function concise(text: string, limit = 64): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line.length <= limit) return line;
+  const boundary = line.lastIndexOf(" ", limit);
+  return `${line.slice(0, boundary > limit / 2 ? boundary : limit)}…`;
+}
+
+function Excerpt({ text }: { text: string }) {
+  return text.length > 48 ? <details className="garden-agent-interior-disclosure">
+    <summary>{concise(text, 48)}</summary><p>{text}</p>
+  </details> : <p>{text}</p>;
 }
 
 function ContentNotice({ state, label }: { state: GardenContentState<unknown>; label: string }) {
@@ -68,11 +84,11 @@ function AgentQueue({ agentId }: { agentId: string }) {
   const attributed = items.filter((item) => item.agent_session_id === agentId && !item.dismissed)
     .sort((left, right) => right.timestamp - left.timestamp);
   return <div className="garden-agent-interior-queue">
-    <h4>Inbox work and updates</h4>
+    <h4>Inbox</h4>
     {loading && <p role="status">Loading Inbox…</p>}
     {attributed.map((item) => <article key={item.id} className="garden-agent-interior-conversation">
       <strong>{item.notification_title || queueItemStatus(item)}</strong>
-      <p>{item.summary || item.proposed_action || item.error || "No summary recorded."}</p>
+      <Excerpt text={item.summary || item.proposed_action || item.error || "No summary recorded."} />
       <small>{queueItemStatus(item)} · {item.read ? "Read" : "Unread"}</small>
     </article>)}
     {!loading && !attributed.length && <p>No attributable items in the loaded Inbox.</p>}
@@ -122,34 +138,38 @@ export function GardenAgentInterior({ agent, status, crown, agents, teams, autom
     || memberships.some((team) => team.agentIds.includes(peer.session_id))
   ));
 
-  const record = (ref: GardenEntityRef, title: string, detail?: ReactNode) => <div className="garden-agent-interior-record" key={`${ref.kind}:${ref.id}`}>
-    <button type="button" className="garden-agent-interior-select" aria-pressed={selectedKey === `${ref.kind}:${ref.id}`} onClick={() => onSelect(ref)} onDoubleClick={(event) => { event.stopPropagation(); onEnter(ref); }}
+  const record = (ref: GardenEntityRef, title: string, detail?: ReactNode, glyph?: GardenSkillGlyph) => <div className={`garden-agent-interior-record${glyph ? " garden-agent-interior-skill" : ""}`} key={`${ref.kind}:${ref.id}`}>
+    <button type="button" data-garden-ref={`${ref.kind}:${ref.id}`} className="garden-agent-interior-select" aria-pressed={selectedKey === `${ref.kind}:${ref.id}`} onClick={() => onSelect(ref)} onDoubleClick={(event) => { event.stopPropagation(); onEnter(ref); }}
       onKeyDown={(event) => {
         if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); onEnter(ref); }
         if (event.key === " ") event.stopPropagation();
       }}>
+      {glyph && <i className="garden-agent-interior-glyph" aria-hidden="true" style={{ "--garden-skill-hue": glyph.hue } as CSSProperties}><b>{glyph.monogram}</b></i>}
       <strong>{title}</strong>{detail && <> <span>{detail}</span></>}
     </button>
   </div>;
 
   return <div className="garden-agent-interior" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-    <Region name="Identity">
+    <Region name="Identity" action={<button type="button" className="garden-agent-interior-action" onClick={() => onOpenAgent(agent.session_id)}>Open agent session</button>}>
       <div className="garden-agent-interior-sigil" aria-hidden="true">{agentMonogram(agent.session_name)}</div>
       {record({ kind: "identity", id: agent.session_id }, agent.session_name,
         <>{agent.agent_class} · {agent.provider || "Provider unspecified"}{agent.model ? ` · ${agent.model}` : ""}<br />{status}</>)}
+      <details className="garden-agent-interior-disclosure">
+      <summary>Configured permissions</summary>
       {agent.description && <p>{agent.description}</p>}
-      <h4>Configured permissions</h4>
       <ConfigurationFields config={providerConfig} fields={PERMISSION_FIELDS} />
       <p className="garden-agent-interior-note">Saved configuration; runtime application may require a restart.</p>
-      <button type="button" className="garden-agent-interior-action" onClick={() => onOpenAgent(agent.session_id)}>Open agent session</button>
+      </details>
     </Region>
     <Region name="Capabilities">
       {crown.length ? crown.map((skill) => record({ kind: "skill", id: skill.entryRef }, skill.label,
-        `${skill.provenance === "class" ? "Class-inherited" : skill.provenance === "global" ? "Global" : "Direct"} · ${skill.copied ? "Copied; does not sync" : "Linked"}`))
+        `${skill.provenance === "class" ? "Class-inherited" : skill.provenance === "global" ? "Global" : "Direct"} · ${skill.copied ? "Copied; does not sync" : "Linked"}`, skill))
         : <p>No deployed skills in this projection.</p>}
-      <h4>Configured tools</h4>
+      <details className="garden-agent-interior-disclosure">
+      <summary>Configured tools</summary>
       <ConfigurationFields config={providerConfig} fields={TOOL_FIELDS} />
       {typeof providerConfig.mcp_config === "string" && providerConfig.mcp_config && <p>MCP configuration supplied.</p>}
+      </details>
     </Region>
     <Region name="Memory">
       <ContentNotice state={contents.memories} label="Memory" />
@@ -159,8 +179,13 @@ export function GardenAgentInterior({ agent, status, crown, agents, teams, autom
           const records = contents.memories.data?.filter((memory) => memory.kind === kind && (memory.workspace !== null) === workspaceBound) ?? [];
           return records.length > 0 && <div key={String(workspaceBound)} className="garden-agent-interior-scope">
             <h5>{workspaceBound ? "Workspace-bound" : "Agent-wide"}</h5>
-            {records.map((memory) => record({ kind: "memory", id: memory.memory_id }, memory.text,
-              <>{memory.workspace || "All workspaces"} · Revision {memory.revision}<br />{memory.evidence_excerpt}</>))}
+            {records.map((memory) => <div key={memory.memory_id}>
+              {record({ kind: "memory", id: memory.memory_id }, concise(memory.text), `Revision ${memory.revision}`)}
+              <details className="garden-agent-interior-disclosure garden-agent-interior-evidence">
+                <summary>Evidence & scope</summary>
+                <p>{memory.text}</p><p>{memory.workspace || "All workspaces"}</p><p>{memory.evidence_excerpt}</p>
+              </details>
+            </div>)}
           </div>;
         })}
       </div>)}
@@ -170,9 +195,9 @@ export function GardenAgentInterior({ agent, status, crown, agents, teams, autom
     <Region name="Active work">
       <ContentNotice state={contents.conversations} label="Conversations" />
       {contents.conversations.data?.slice(0, 3).map((conversation) => <div className="garden-agent-interior-conversation" key={conversation.conversation_id}>
-        <strong>{conversation.status === "open" ? "Current conversation" : "Recent conversation"}</strong>
-        <p>{conversation.last_record_excerpt || conversation.first_prompt_excerpt || "No recorded excerpt."}</p>
-        <small>{conversation.status} · {conversation.turn_count} turns · {conversation.artifact_count} artifacts</small>
+        <strong>{conversation.status === "open" ? "Current session" : "Recent session"}</strong>
+        <Excerpt text={conversation.last_record_excerpt || conversation.first_prompt_excerpt || "No recorded excerpt."} />
+        <small title={`Status: ${conversation.status}`}>{conversation.turn_count} turns · {conversation.artifact_count} artifacts</small>
       </div>)}
       {contents.conversations.data?.length === 0 && <p>No recorded conversations available.</p>}
       {routines.map((routine) => record({ kind: "automation", id: routine.id }, routine.label, routine.runStatus === "none" ? "Assigned routine" : routine.runStatus))}
