@@ -13,7 +13,6 @@ export function reserveEphemeralPort(host = "127.0.0.1") {
     });
   });
 }
-
 /**
  * Resolve true when nothing is listening on the port.
  *
@@ -159,4 +158,3 @@ export async function allocateSessionPorts() {
   }
   return { driverPort, nativePort };
 }
-

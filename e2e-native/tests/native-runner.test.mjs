@@ -29,7 +29,6 @@ test("each run without an explicit home gets its own, so concurrent runs cannot 
     );
   }
 });
-
 test("an explicit home is honored verbatim and never silently replaced", () => {
   const explicit = path.join(os.tmpdir(), "wardian-e2e-native-explicit");
   const resolved = resolveRunNativeHome({ WARDIAN_E2E_NATIVE_HOME: explicit });
@@ -208,5 +207,4 @@ test("native e2e runner preserves explicitly requested target ordering", () => {
     ],
   );
 });
-
 
