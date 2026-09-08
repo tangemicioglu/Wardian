@@ -1206,7 +1206,14 @@ async fn apply_protocol_event(
         NativeProtocolEventKind::Progress | NativeProtocolEventKind::TurnStarted
     ) {
         if let Some(text) = event.text.as_deref() {
-            active.response_text.push_str(text);
+            if event.cumulative_text {
+                // The provider re-sends the whole answer on every update, so
+                // appending would duplicate it.
+                active.response_text.clear();
+                active.response_text.push_str(text);
+            } else {
+                active.response_text.push_str(text);
+            }
         }
     }
     let Some(mut next) = event.delivery_phase() else {
@@ -1414,6 +1421,27 @@ async fn start_runtime(
             apply_bootstrap_request(&mut runtime, protocol, &spec.provider, &replacement).await?;
         }
     }
+    // OpenCode's ACP command takes no model flag, so the operator's model is
+    // applied over the protocol once the session exists. Skipping this would
+    // silently run the provider's default model instead.
+    if protocol == NativeProviderProtocol::OpenCodeAcp {
+        if let (Some(session_id), Some(model)) = (
+            runtime.binding.provider_session_id.clone(),
+            spec.config
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty()),
+        ) {
+            let request = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": format!("wardian:model:{}", spec.target_agent_id),
+                "method": "session/set_model",
+                "params": {"sessionId": session_id, "modelId": model}
+            });
+            apply_bootstrap_request(&mut runtime, protocol, &spec.provider, &request).await?;
+        }
+    }
     runtime.binding.observed_at = now();
     wardian_core::db::upsert_native_session_binding(&runtime.binding).map_err(db_error)?;
     Ok(runtime)
@@ -1454,7 +1482,14 @@ async fn apply_bootstrap_request(
     .map_err(|_| {
         error(
             NativeDeliveryErrorCode::TransportUnavailable,
-            format!("{provider} native bootstrap timed out"),
+            // Name the stage. A generic provider label cannot distinguish a
+            // stall in `initialize` from one in `thread/start` or
+            // `thread/resume`, and those have entirely different causes.
+            format!(
+                "{provider} native bootstrap timed out during {} after {}s",
+                bootstrap_stage(request),
+                BOOTSTRAP_TIMEOUT.as_secs()
+            ),
             false,
         )
     })?;
@@ -1496,11 +1531,7 @@ async fn bootstrap_failure_detail(
 ) -> String {
     // Give the stderr reader a scheduling opportunity after process exit.
     tokio::task::yield_now().await;
-    let request_name = request
-        .get("method")
-        .or_else(|| request.get("type"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("bootstrap");
+    let request_name = bootstrap_stage(request);
     let status = runtime
         .child
         .try_wait()
@@ -1518,6 +1549,19 @@ async fn bootstrap_failure_detail(
     } else {
         format!("{message} for {request_name}{status}; stderr={stderr}")
     }
+}
+
+/// The protocol stage a bootstrap request represents, for diagnostics.
+///
+/// Both JSON-RPC style requests (`method`) and Pi's typed envelopes (`type`)
+/// are covered; anything unrecognized reports `bootstrap` rather than leaking
+/// request content into an error message.
+fn bootstrap_stage(request: &serde_json::Value) -> &str {
+    request
+        .get("method")
+        .or_else(|| request.get("type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("bootstrap")
 }
 
 fn bounded_diagnostic(value: &str) -> String {
@@ -1587,6 +1631,7 @@ fn native_command(
         }
         NativeProviderProtocol::CodexAppServer => {
             CodexProvider::new().append_common_args(&mut args, &config, false);
+            args = codex_app_server_model_args(args, &config);
             args.push("app-server".to_string());
         }
         NativeProviderProtocol::AntigravityStreamJson => {
@@ -1599,8 +1644,7 @@ fn native_command(
             push_flag_value(&mut args, "--output-format", "stream-json");
         }
         NativeProviderProtocol::OpenCodeAcp => {
-            args.extend(provider.get_spawn_args(&config, false));
-            args.push("acp".to_string());
+            args.extend(opencode_acp_args(&config));
         }
         NativeProviderProtocol::PiRpc => {
             let pi_args =
@@ -2048,6 +2092,56 @@ fn habitat_root(config: &AgentConfig) -> Option<PathBuf> {
         })
 }
 
+/// Arguments for `opencode acp`.
+///
+/// `acp` is its own command and accepts only `--print-logs`, `--log-level`,
+/// `--pure`, `--port` and `--hostname`. Reusing the interactive spawn args put
+/// `--model` (and `--agent`, `--auto`, `--session`) in front of it, so the CLI
+/// rejected the unknown option, printed its usage and exited before the
+/// initialize handshake could run. The model is not dropped: it is applied over
+/// the protocol with `session/set_model` once the session exists.
+fn opencode_acp_args(config: &AgentConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if config.debug.unwrap_or(false) {
+        args.push("--print-logs".to_string());
+    }
+    args.push("acp".to_string());
+    args
+}
+
+/// Move the selected Codex model onto the surface `app-server` honours.
+///
+/// `app-server` ignores `--model`: a thread started over it keeps whatever
+/// `config.toml` selects, so the operator's choice is silently discarded and
+/// the turn can run on an entirely different model. The `-c` config override is
+/// honoured, which is already how reasoning effort reaches the same command.
+fn codex_app_server_model_args(args: Vec<String>, config: &AgentConfig) -> Vec<String> {
+    let mut args = remove_flag_value(args, "--model");
+    if let Some(model) = config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        // Pushed directly rather than through `push_flag_value`: that helper
+        // skips a flag it has already seen, and `-c` is repeatable and normally
+        // already present for the reasoning effort override, so routing this
+        // through it would silently drop the model.
+        args.push("-c".to_string());
+        args.push(format!("model={}", toml_basic_string(model)));
+    }
+    args
+}
+
+/// Quote a value as a TOML basic string for a `-c key=value` override.
+///
+/// Local to this module because the provider's equivalent helper is private to
+/// the Codex provider and this file does not own it.
+fn toml_basic_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 fn push_flag(args: &mut Vec<String>, flag: &str) {
     if !args.iter().any(|value| value == flag) {
         args.push(flag.to_string());
@@ -2169,6 +2263,106 @@ mod tests {
         retry.interaction_id = "two".into();
         retry.message_id = "message-two".into();
         assert_eq!(canonical_hash(&request), canonical_hash(&retry));
+    }
+
+    /// `opencode acp` exits 1 and prints its usage when an interactive flag
+    /// such as `--model` precedes it, which is what stopped ACP negotiation
+    /// before initialize. The command must carry nothing it does not accept.
+    #[test]
+    fn opencode_acp_command_carries_no_interactive_flags() {
+        let mut config = AgentConfig {
+            provider: "opencode".to_string(),
+            model: Some("opencode/mimo-v2.5-free".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(opencode_acp_args(&config), vec!["acp".to_string()]);
+
+        config.debug = Some(true);
+        assert_eq!(
+            opencode_acp_args(&config),
+            vec!["--print-logs".to_string(), "acp".to_string()],
+            "--print-logs is one of the flags acp does accept"
+        );
+    }
+
+    /// `app-server` ignores `--model` and keeps the model from config.toml, so
+    /// the operator's selection has to move to the `-c` override it honours.
+    #[test]
+    fn codex_app_server_moves_the_model_onto_the_config_override() {
+        let config = AgentConfig {
+            provider: "codex".to_string(),
+            model: Some("gpt-5.4-mini".to_string()),
+            ..Default::default()
+        };
+        let args = codex_app_server_model_args(
+            vec![
+                "--model".into(),
+                "gpt-5.4-mini".into(),
+                "-c".into(),
+                "model_reasoning_effort=\"low\"".into(),
+                "--search".into(),
+            ],
+            &config,
+        );
+
+        assert!(
+            !args.contains(&"--model".to_string()),
+            "app-server ignores it"
+        );
+        assert_eq!(
+            args,
+            vec![
+                "-c".to_string(),
+                "model_reasoning_effort=\"low\"".to_string(),
+                "--search".to_string(),
+                "-c".to_string(),
+                "model=\"gpt-5.4-mini\"".to_string(),
+            ],
+            "effort and unrelated flags survive; the model moves to -c"
+        );
+    }
+
+    #[test]
+    fn codex_app_server_without_a_model_adds_no_override() {
+        let config = AgentConfig {
+            provider: "codex".to_string(),
+            model: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            codex_app_server_model_args(vec!["--search".into()], &config),
+            vec!["--search".to_string()]
+        );
+    }
+
+    /// A bootstrap stall in `initialize` and one in `thread/resume` have
+    /// entirely different causes, so the recorded diagnostic must name which.
+    #[test]
+    fn bootstrap_stage_names_the_request_rather_than_the_provider() {
+        assert_eq!(
+            bootstrap_stage(&serde_json::json!({"id": "x", "method": "initialize"})),
+            "initialize"
+        );
+        assert_eq!(
+            bootstrap_stage(&serde_json::json!({"id": "x", "method": "thread/resume"})),
+            "thread/resume"
+        );
+        assert_eq!(
+            bootstrap_stage(&serde_json::json!({"id": "x", "method": "session/new"})),
+            "session/new"
+        );
+        // Pi uses typed envelopes rather than a method name.
+        assert_eq!(
+            bootstrap_stage(&serde_json::json!({"id": "x", "type": "get_state"})),
+            "get_state"
+        );
+        // Unrecognized shapes must not leak request content.
+        assert_eq!(
+            bootstrap_stage(&serde_json::json!({"id": "x", "params": {"secret": "value"}})),
+            "bootstrap"
+        );
     }
 
     #[test]
