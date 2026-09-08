@@ -3,6 +3,8 @@ import { Group, Layer, Stage } from "react-konva";
 import { revealBetween } from "./gardenSpatialZoom";
 import type Konva from "konva";
 import { AgentUnit, AGENT_UNIT_NAME } from "./AgentUnit";
+import { canvasWorldViewport, pointInCanvasViewport, rectInCanvasViewport, routeInCanvasViewport } from "./canvasVisibility";
+import { crownPositions, CROWN_CAP } from "./skillGlyphs";
 import { DistrictLayer } from "./DistrictLayer";
 import { AutomationRoutesLayer } from "./AutomationRoutesLayer";
 import { agentDistrict, agentLabelWidths, districtBand, districtPopulations, situatedRoutes, type DistrictBand } from "./canvasHierarchy";
@@ -136,9 +138,21 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
     return id ? bands.get(id) === "workstream" : scale >= 0.7;
   };
   const routes = useMemo(() => situatedRoutes(automationProjections, agentUnits, districts), [automationProjections, agentUnits, districts]);
-  const visibleRoutes = continuousZoom ? routes : routes.filter((route) => route.points.some((point) => [...districts].some(([id, district]) => bands.get(id) === "workstream" && Math.hypot(point.x - district.origin.x, point.y - district.origin.y) <= district.radius)) || (districts.size === 0 && scale >= 0.7));
+  const paintViewport = canvasWorldViewport({ scale, position: cameraPosition }, size);
+  const visibleRoutes = routes.filter((route) => (continuousZoom || route.points.some((point) => [...districts].some(([id, district]) => bands.get(id) === "workstream" && Math.hypot(point.x - district.origin.x, point.y - district.origin.y) <= district.radius)) || (districts.size === 0 && scale >= 0.7))
+    && (routeInCanvasViewport(route.points.length === 1 ? [route.points[0], route.anchor] : route.points, paintViewport)
+      || pointInCanvasViewport(route.anchor, paintViewport, 200 / scale)
+      || route.presentation.markers.some((marker) => pointInCanvasViewport(marker.position, paintViewport, 200 / scale))));
   const visibleTerrainCells = (terrainCells ?? []).filter((cell) => (continuousZoom || bands.get(cell.districtId) === "workstream") &&
     (cell.isDir || (cell.rect.width * scale >= 100 && cell.rect.height * scale >= 40)));
+  const paintedTerrainCells = visibleTerrainCells.filter((cell) => rectInCanvasViewport(cell.rect, paintViewport));
+  const paintedAgents = agentUnits.filter((unit) => {
+    // Konva owns a drag's live position until drop; never cull it using its old authored position.
+    if (unit.ref.id === draggingAgentId) return true;
+    if (continuousZoom && scale >= 12 && !highlightedAgentIds?.has(unit.ref.id)) return false;
+    const crownRadius = Math.max(32, ...crownPositions(Math.min(unit.crown.length, CROWN_CAP.near) + 1).map((point) => Math.hypot(point.x, point.y) + 8));
+    return pointInCanvasViewport(unit.position, paintViewport, crownRadius);
+  });
   const [rovingKey, setRovingKey] = useState<string | null>(null);
   const [keyboardKey, setKeyboardKey] = useState<string | null>(null);
   const diveLatchRef = useRef<string | null>(null);
@@ -431,9 +445,9 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
   const pulsingKey = useMemo(
     () =>
       [
-        ...agentUnits.filter((unit) => isActiveAgentStatus(unit.status)).map((u) => u.ref.id),
+        ...paintedAgents.filter((unit) => isActiveAgentStatus(unit.status) && (!continuousZoom || scale * 32 < 150 || unit.ref.id === draggingAgentId)).map((u) => u.ref.id),
       ].join(","),
-    [agentUnits],
+    [paintedAgents, continuousZoom, scale, draggingAgentId],
   );
   useGardenPulse(layerRef, pulsingKey);
 
@@ -576,12 +590,12 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
       >
         <Layer ref={layerRef}>
           <Group opacity={continuousZoom ? 1 - revealBetween(scale, 4, 18) * .96 : 1}>
-          <DistrictLayer continuousZoom={continuousZoom} districts={districts} labels={districtLabels} populations={populations} bands={bands} scale={scale} selectedKey={keyboardKey ?? selectedKey} theme={theme}
+          <DistrictLayer viewport={paintViewport} continuousZoom={continuousZoom} districts={districts} labels={districtLabels} populations={populations} bands={bands} scale={scale} selectedKey={keyboardKey ?? selectedKey} theme={theme}
             onSelect={(id) => onSelect({ kind: "district", id })} onOpen={(id) => enterObject({ kind: "district", id })} />
           {terrainCells && terrainCells.length > 0 && terrainDistricts && (
             <Group opacity={continuousZoom ? revealBetween(scale, .35, .8) : 1}>
               <TerrainLayer
-                cells={visibleTerrainCells}
+                cells={paintedTerrainCells}
                 districts={terrainDistricts}
                 scale={scale}
                 theme={theme}
@@ -603,9 +617,9 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               )}
             </Group>
           )}
-          <AutomationRoutesLayer mode="routes" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} />
+          <AutomationRoutesLayer viewport={paintViewport} continuousZoom={continuousZoom} mode="routes" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} />
           </Group>
-          {agentUnits.filter((unit) => continuousZoom || !clusteredAgents.has(unit.ref.id)).map((unit) => (
+          {paintedAgents.filter((unit) => continuousZoom || !clusteredAgents.has(unit.ref.id)).map((unit) => (
             <AgentUnit
               key={unitKey(unit.ref)}
               unit={unit}
@@ -629,7 +643,7 @@ export const GardenCanvas: React.FC<GardenCanvasProps> = ({
               onDragEnd={handleDragAgent}
             />
           ))}
-          <Group opacity={continuousZoom ? 1 - revealBetween(scale, 4, 18) * .96 : 1}><AutomationRoutesLayer mode="markers" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} /></Group>
+          <Group opacity={continuousZoom ? 1 - revealBetween(scale, 4, 18) * .96 : 1}><AutomationRoutesLayer viewport={paintViewport} continuousZoom={continuousZoom} mode="markers" routes={visibleRoutes} theme={theme} scale={scale} selectedKey={keyboardKey ?? selectedKey} onSelect={onSelect} onOpen={enterObject} /></Group>
         </Layer>
       </Stage>
       {!compositionActive && <div className="garden-object-controls" aria-label="Garden objects">

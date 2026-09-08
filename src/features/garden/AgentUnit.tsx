@@ -72,10 +72,12 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
   const exteriorOpacity = continuousZoom && !dragging ? 1 - revealBetween(scale * 32, 70, 150) : 1;
   const bodyOpacity = continuousZoom ? revealBetween(scale * 32, 12, 28) : signal ? 0 : 1;
   const showBody = continuousZoom || !signal;
+  const crownOpacity = continuousZoom ? 1 - revealBetween(scale, 6, 12) : 1;
 
   return (
     <Group
       opacity={populationOpacity}
+      visible={populationOpacity > 0 || dragging}
       listening={populationOpacity > .1}
       x={unit.position.x}
       y={unit.position.y}
@@ -131,6 +133,9 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
         />
       )}
       <Circle
+        // The fading shell has a decorative hairline; a stage-sized perfect-draw
+        // buffer per inhabitant costs far more than its subtle edge overlap.
+        perfectDrawEnabled={false}
         opacity={exteriorOpacity * (continuousZoom ? bodyOpacity : 1)}
         radius={continuousZoom ? 4 / scale + (16 - 4 / scale) * bodyOpacity : signal ? 4 / scale : 16}
         hitStrokeWidth={signal ? 16 / scale : 12}
@@ -142,7 +147,7 @@ const AgentUnitImpl: React.FC<AgentUnitProps> = ({
       {showBody && <Circle opacity={exteriorOpacity * bodyOpacity} radius={4} x={10} y={10} fill={fill} listening={false} />}
       {showBody && <Text opacity={exteriorOpacity * bodyOpacity} text={agentMonogram(unit.label)} x={-14} y={continuousZoom ? -Math.min(22, 13 * scale) / (2 * scale) : -7} width={28}
         align="center" fontSize={continuousZoom ? Math.min(22, 13 * scale) / scale : 13} fontFamily={theme.font} fill={theme.label} listening={false} />}
-      {showBody && <Group opacity={continuousZoom ? 1 - revealBetween(scale, 6, 12) : 1}><SkillCrown
+      {showBody && crownOpacity > 0 && <Group opacity={crownOpacity}><SkillCrown
         crown={continuousZoom ? unit.crown : unit.crown.slice(0, 3)}
         scale={continuousZoom ? scale : undefined}
         convergence={continuousZoom ? revealBetween(scale, 4, 10) : 0}

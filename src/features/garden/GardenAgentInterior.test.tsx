@@ -31,10 +31,28 @@ beforeEach(() => {
 });
 
 describe("GardenAgentInterior", () => {
+  it("keeps memories with the same compact caption distinguishable by accessible name and tooltip", () => {
+    const prefix = "Preserve the same agent geography when inspecting ";
+    const records = [
+      { ...memory, memory_id: "one", text: `${prefix}successful executions.` },
+      { ...memory, memory_id: "two", text: `${prefix}failed executions.` },
+    ];
+    vi.mocked(useGardenAgentContents).mockReturnValue({
+      memories: { data: records, error: null, stale: false, loading: false },
+      conversations: { data: [], error: null, stale: false, loading: false }, refresh: vi.fn(),
+    });
+    render(<GardenAgentInterior {...props()} />);
+    for (const record of records) {
+      const button = screen.getByRole("button", { name: `${record.text} Revision 1` });
+      expect(button).toHaveAttribute("title", `${record.text} · Revision 1`);
+      expect(button.querySelector("strong")?.textContent).not.toContain("executions");
+    }
+  });
   it("keeps all five named regions and truthful provenance visible", async () => {
     render(<GardenAgentInterior {...props()} />);
-    expect(screen.getAllByRole("region").map((region) => within(region).getByRole("heading", { level: 3 }).textContent))
-      .toEqual(["Identity", "Capabilities", "Memory", "Active work", "Ports"]);
+    for (const name of ["Identity", "Capabilities", "Memory", "Active work", "Ports"]) {
+      expect(within(screen.getByRole("region", { name })).getByRole("heading", { level: 3 })).toHaveAccessibleName(name);
+    }
     expect(screen.getByText("Class-inherited · Copied; does not sync")).toBeInTheDocument();
     expect(screen.getByText("Agent-wide")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("No attributable items in the loaded Inbox.")).toBeInTheDocument());

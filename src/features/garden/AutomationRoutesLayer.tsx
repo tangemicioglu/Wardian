@@ -2,9 +2,13 @@ import { Arrow, Circle, Group, Rect, Text } from "react-konva";
 import type { SituatedRoute } from "./canvasHierarchy";
 import type { GardenEntityRef } from "./garden.types";
 import type { GardenTheme } from "./useGardenTheme";
+import { revealBetween } from "./gardenSpatialZoom";
+import { pointInCanvasViewport, rectInCanvasViewport, type CanvasWorldRect } from "./canvasVisibility";
 
 /** Derived attachments and execution paths; deliberately never draggable. */
-export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSelect, onOpen, mode = "all" }: {
+export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSelect, onOpen, mode = "all", viewport = null, continuousZoom = false }: {
+  viewport?: CanvasWorldRect | null;
+  continuousZoom?: boolean;
   routes: readonly SituatedRoute[];
   theme: GardenTheme;
   scale: number;
@@ -17,20 +21,30 @@ export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSel
   return <>{routes.map(({ input, points, anchor, presentation }) => {
     const ref: GardenEntityRef = { kind: "automation", id: input.id };
     const selected = selectedKey === `automation:${input.id}`;
+    const labelOpacity = selected || !continuousZoom ? 1 : revealBetween(scale, .8, 1.8);
+    const anchorVisible = pointInCanvasViewport(anchor, viewport, 200 / scale);
+    const markerRows = new Map<string, number>();
     return <Group key={input.id} onClick={() => onSelect(ref)} onTap={() => onSelect(ref)} onDblClick={() => onOpen(ref)}>
       {mode !== "markers" && <><Arrow points={(points.length === 1 ? [points[0], anchor] : points).flatMap((point) => [point.x, point.y])}
+        perfectDrawEnabled={false}
         stroke={selected ? theme.selection : theme.labelMuted} fill={theme.labelMuted}
         strokeWidth={(selected ? 2 : 1) / scale} hitStrokeWidth={24 / scale}
         dash={presentation.paused ? [7 / scale, 4 / scale, 1 / scale, 4 / scale] : !presentation.live ? [5 / scale, 4 / scale] : undefined}
         pointerLength={5 / scale} pointerWidth={5 / scale} />
-      <Circle x={anchor.x} y={anchor.y} radius={6 / scale} fill={theme.groundFile} stroke={selected ? theme.selection : theme.labelMuted} />
-      <Text x={anchor.x + 10 / scale} y={anchor.y - 6 / scale} text={presentation.summary}
-        fontFamily={theme.font} fontSize={12 / scale} fill={theme.label} /></>}
-      {mode !== "routes" && presentation.markers.map((marker, index) => {
+      {anchorVisible && <Circle perfectDrawEnabled={false} x={anchor.x} y={anchor.y} radius={6 / scale} fill={theme.groundFile} stroke={selected ? theme.selection : theme.labelMuted} />}
+      {anchorVisible && labelOpacity > 0 && <Text opacity={labelOpacity} x={anchor.x + 10 / scale} y={anchor.y - 6 / scale} text={presentation.summary}
+        width={200 / scale} wrap="none" ellipsis fontFamily={theme.font} fontSize={12 / scale} fill={theme.label} />}</>}
+      {mode !== "routes" && presentation.markers.map((marker) => {
+        const positionKey = `${marker.position.x}:${marker.position.y}`;
+        const labelRow = markerRows.get(positionKey) ?? 0;
+        markerRows.set(positionKey, labelRow + 1);
+        const labelRect = { x: marker.position.x + 28 / scale, y: marker.position.y + (-24 + labelRow * 16) / scale, width: 200 / scale, height: 16 / scale };
+        if (!pointInCanvasViewport(marker.position, viewport, 36 / scale)
+          && !(labelOpacity > 0 && rectInCanvasViewport(labelRect, viewport))) return null;
         const color = marker.attention === "failed" ? theme.change.deleted : marker.attention ? theme.change.modified : theme.labelMuted;
-        const labelRow = presentation.markers.slice(0, index).filter((other) => other.position.x === marker.position.x && other.position.y === marker.position.y).length;
         return <Group key={marker.key} name="automation-stage-marker" id={marker.key} x={marker.position.x} y={marker.position.y}>
           {marker.temporary && <Rect name="temporary-provider" x={-10 / scale} y={-10 / scale} width={20 / scale} height={20 / scale}
+            perfectDrawEnabled={false}
             cornerRadius={5 / scale} fill={theme.groundFile} stroke={color} strokeWidth={1.5 / scale} dash={[3 / scale, 3 / scale]} />}
           {marker.attention && <>
             {/* Covers the route at the actual assignment, producing a local interruption. */}
@@ -38,9 +52,9 @@ export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSel
             <Text x={16 / scale} y={-28 / scale} text={marker.attention === "failed" ? "×" : "!"}
               fontSize={18 / scale} fontFamily={theme.font} fill={color} />
           </>}
-          <Text x={28 / scale} y={(-24 + labelRow * 16) / scale} text={marker.label}
+          {labelOpacity > 0 && <Text opacity={labelOpacity} width={200 / scale} wrap="none" ellipsis x={28 / scale} y={(-24 + labelRow * 16) / scale} text={marker.label}
             fontFamily={theme.font} fontSize={12 / scale} fill={color}
-            shadowColor={theme.labelBackdrop} shadowBlur={4 / scale} shadowOpacity={1} />
+            shadowColor={theme.labelBackdrop} shadowBlur={4 / scale} shadowOpacity={1} />}
         </Group>;
       })}
     </Group>;

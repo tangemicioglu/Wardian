@@ -83,6 +83,9 @@ export const SkillCrown: React.FC<SkillCrownProps> = ({
             x={migration.x}
             y={migration.y}
             opacity={reveal?.opacity ?? 1}
+            // Opacity zero alone still draws Konva children and their buffers.
+            // Keep keyed marks positioned for reverse zoom, but skip invisible paint.
+            visible={!reveal || reveal.opacity > 0}
             listening={!reveal || reveal.opacity > 0}
             onMouseEnter={(event) => {
               event.target.getStage()?.container().style.setProperty("cursor", "pointer");
@@ -118,6 +121,9 @@ export const SkillCrown: React.FC<SkillCrownProps> = ({
               )}
               <Circle
                 radius={GLYPH_RADIUS}
+                // A simple disk needs no full-stage fill/stroke compositing buffer
+                // while its parent crown fades. Keep this local to the glyph shell.
+                perfectDrawEnabled={false}
                 fill={filled ? color : theme.labelBackdrop}
                 stroke={color}
                 strokeWidth={1}

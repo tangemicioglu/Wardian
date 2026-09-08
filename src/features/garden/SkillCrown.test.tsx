@@ -24,6 +24,23 @@ const props = { crown, detail: "mid" as const, theme, selectedEntryRef: "SKILLS/
 beforeEach(() => { captured.groups.length = 0; captured.circles.length = 0; vi.clearAllMocks(); });
 
 describe("SkillCrown", () => {
+  it("avoids shell compositing buffers and reversibly hides unrevealed keyed marks", () => {
+    const view = render(<SkillCrown {...props} scale={0.32} />);
+    for (const scale of [0.32, 0.75, 0.32]) {
+      captured.groups.length = 0;
+      captured.circles.length = 0;
+      view.rerender(<SkillCrown {...props} scale={scale} />);
+      const glyphs = captured.groups.filter(group => group.onClick);
+      expect(glyphs.map(({ x, y }) => ({ x, y }))).toEqual(crownPositions(13).slice(0, 12));
+      expect(glyphs.every(group => group.visible === ((group.opacity ?? 1) > 0))).toBe(true);
+      expect(glyphs[0].visible).toBe(scale === 0.75);
+      const shells = captured.circles.filter(circle => circle.fill && circle.stroke);
+      expect(shells).toHaveLength(12);
+      // Per-shape configuration; no global Konva or prototype override.
+      expect(shells.every(circle => circle.perfectDrawEnabled === false)).toBe(true);
+    }
+  });
+
   it("uses horizontal labels only for a total crown size of one and retains the migration fade", () => {
     const view = render(<SkillCrown {...props} crown={crown.slice(0, 1)} scale={3} />);
     const label = screen.getByText(crown[0].label);
@@ -100,7 +117,7 @@ describe("SkillCrown", () => {
       expect(marks.every((mark) => mark.scaleX === 1 * (1 - convergence) + 0.085 * convergence && mark.scaleY === mark.scaleX)).toBe(true);
       expect(screen.getByText(crown[0].label)).toHaveAttribute("data-opacity", String(1 - convergence));
       if (convergence === 1) {
-        expect(glyphs.map(({ x, y }) => ({ x, y }))).toEqual(crown.slice(0, 12).map((_, index) => ({ x: -9.5, y: -7.4 + index * 2.4 })));
+        expect(glyphs.map(({ x, y }) => ({ x, y }))).toEqual(crown.slice(0, 12).map((_, index) => ({ x: -9.5 + (index % 3) * 2.4, y: -7.4 + Math.floor(index / 3) * 3.25 })));
         expect(screen.getByText("+3")).toHaveAttribute("data-opacity", "0");
         const event = { cancelBubble: false } as Parameters<NonNullable<typeof glyphs[0]["onClick"]>>[0];
         glyphs[0].onClick!(event);

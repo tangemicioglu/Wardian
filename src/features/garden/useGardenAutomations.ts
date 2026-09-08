@@ -5,6 +5,7 @@ import type { Blueprint } from "../automations/builder/blueprintTypes";
 import type { RunReadResult, RunSummaryListResult } from "../automations/run/runTypes";
 import type { BlueprintListResult } from "../automations/automationTypes";
 import type { AutomationSchedule } from "../../types/automation";
+import { GardenAutomationCache } from "./gardenAutomationCache";
 import {
   projectSituatedAutomations, isVisibleGardenRun, GARDEN_AUTOMATION_RECENT_MS,
   type GardenBlueprintEvidence, type GardenRunEvidence, type GardenRunInvocation, type SituatedAutomationInput,
@@ -42,6 +43,7 @@ export interface GardenAutomationHookResult extends GardenAutomationInputsResult
   refresh: () => Promise<void>;
 }
 interface LoadOptions {
+  cache?: GardenAutomationCache;
   previousSources?: AutomationSourceEvidence;
   retainedProjectionIds?: readonly string[];
   signal?: AbortSignal;
@@ -52,11 +54,12 @@ interface LoadOptions {
   knownAgentIds?: ReadonlySet<string>;
 }
 
-/** Loads runtime evidence afresh; a same-path edit must not leave a stale blueprint. */
+/** Lists stay fresh; successful stable evidence may use a bounded per-hook cache. */
 export async function loadGardenAutomationInputs(
   invoker: GardenInvoke = invoke as GardenInvoke, blueprintOffset = 0, options: LoadOptions = {},
 ): Promise<GardenAutomationInputsResult> {
   const check = () => options.signal?.throwIfAborted();
+  const cache = options.cache?.begin(options.now ?? Date.now());
   const errors: string[] = [];
   const sourceErrors: Partial<Record<AutomationSource, string>> = {};
   const projectionErrors: Record<string, string[]> = {};
@@ -137,8 +140,10 @@ export async function loadGardenAutomationInputs(
   for (const run of retained) if (run.blueprint_path) paths.add(run.blueprint_path);
   await Promise.all([...paths].map(async (path) => {
     try {
-      const parsed = await read<{ blueprint?: Blueprint }>("automation_parse", { path });
+      const cached = cache?.blueprint(path);
+      const parsed = cached ? { blueprint: cached } : await read<{ blueprint?: Blueprint }>("automation_parse", { path });
       if (!parsed.blueprint) throw new Error("Blueprint unavailable");
+      if (!cached) cache?.putBlueprint(path, parsed.blueprint);
       blueprints.push({ blueprint: parsed.blueprint, path });
     } catch (failure) {
       check();
@@ -151,7 +156,14 @@ export async function loadGardenAutomationInputs(
       }
     }
   }));
+  const runIdentities = new Set<string>();
   const runs = await Promise.all(retained.map(async (summary): Promise<GardenRunEvidence> => {
+    // Include every summary field, including timestamps, path and assignments' schedule ID.
+    const identity = JSON.stringify(Object.entries(summary).sort(([a], [b]) => a.localeCompare(b)));
+    const terminal = summary.status === "completed" || summary.status === "failed";
+    if (terminal) runIdentities.add(identity);
+    const cached = terminal ? cache?.run(identity) : undefined;
+    if (cached) return { ...cached, summary };
     const [detail, invocation] = await Promise.all([
       read<RunReadResult>("automation_read_run", { blueprintId: summary.blueprint_id, runId: summary.run_id })
         .catch((failure) => { check(); errors.push(`Run ${summary.run_id}: ${String(failure)}`); return null; }),
@@ -166,7 +178,11 @@ export async function loadGardenAutomationInputs(
       const id = summary.schedule_id ? `schedule:${summary.schedule_id}` : `run:${summary.run_id}`;
       failProjection(id, `Run ${summary.run_id}: ${!detail ? "detail unavailable" : "invocation unavailable"}`);
     }
-    return { summary, detail, invocation };
+    const evidence = { summary, detail, invocation };
+    // Invocation is written at launch, but files remain editable. Cache it only with
+    // terminal evidence, bounded by TTL/manual invalidation; never cache partial reads.
+    if (terminal && detail?.state?.status === summary.status && invocation) cache?.putRun(identity, evidence);
+    return evidence;
   }));
   check();
   blueprints.sort((a, b) => a.blueprint.id.localeCompare(b.blueprint.id));
@@ -183,6 +199,8 @@ export async function loadGardenAutomationInputs(
     ].filter((message): message is string => !!message);
     if (affectedErrors.length) { item.stale = true; item.evidenceErrors = affectedErrors; }
   }
+  check();
+  cache?.commit(paths, runIdentities);
   return { automations, automationProjections: automations,
     sourceErrors, sourceEvidence: { blueprints: blueprintPages, runs: runPages, schedules },
     retainedAutomations, projectionErrors,
@@ -203,14 +221,16 @@ export function useGardenAutomations(enabled = true, options: { retainedProjecti
   const [error, setError] = useState<string | null>(null);
   const pages = useRef(1);
   const sources = useRef(emptySources);
+  const cache = useRef(new GardenAutomationCache());
   const controller = useRef<AbortController | null>(null);
   const inFlight = useRef(false);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   // Value-based dependency allows callers to pass an inline array without a reload loop.
   const retainedKey = JSON.stringify([...new Set(options.retainedProjectionIds)].sort());
-  const refresh = useCallback(async () => {
+  const reload = useCallback(async (invalidate = false) => {
     if (!enabledRef.current) return;
+    if (invalidate) cache.current.invalidate();
     controller.current?.abort();
     const request = new AbortController();
     controller.current = request;
@@ -218,7 +238,7 @@ export function useGardenAutomations(enabled = true, options: { retainedProjecti
     setLoading(true);
     try {
       const retainedProjectionIds = JSON.parse(retainedKey) as string[];
-      const next = await loadGardenAutomationInputs(invoke as GardenInvoke, 0, { signal: request.signal, pageCount: pages.current, retainedProjectionIds, previousSources: sources.current });
+      const next = await loadGardenAutomationInputs(invoke as GardenInvoke, 0, { cache: cache.current, signal: request.signal, pageCount: pages.current, retainedProjectionIds, previousSources: sources.current });
       if (request.signal.aborted || !enabledRef.current) return;
       sources.current = next.sourceEvidence;
       setError(next.errors.length ? next.errors.join("; ") : null);
@@ -244,24 +264,25 @@ export function useGardenAutomations(enabled = true, options: { retainedProjecti
       if (!request.signal.aborted) { inFlight.current = false; setLoading(false); }
     }
   }, [retainedKey]);
+  const refresh = useCallback(() => reload(true), [reload]);
   const loadMore = useCallback(async () => {
     if (!enabledRef.current || inFlight.current || !result.truncated) return;
     pages.current += 1;
-    await refresh();
-  }, [result.truncated, refresh]);
+    await reload();
+  }, [result.truncated, reload]);
   useEffect(() => {
-    if (!enabled) { controller.current?.abort(); inFlight.current = false; setLoading(false); return; }
+    if (!enabled) { controller.current?.abort(); cache.current.invalidate(); inFlight.current = false; setLoading(false); return; }
     let disposed = false;
     const disposers: (() => void)[] = [];
     for (const event of ["schedules-updated", "automation-inbox-updated", "library-changed"]) {
-      void listen(event, () => { if (!disposed) void refresh(); }).then((unlisten) => {
+      void listen(event, () => { if (!disposed) void reload(event === "library-changed"); }).then((unlisten) => {
         if (disposed) unlisten(); else disposers.push(unlisten);
       }).catch((failure) => { if (!disposed) setError(`Automation events: ${String(failure)}`); });
     }
-    void refresh();
-    const interval = setInterval(() => { if (!inFlight.current) void refresh(); }, 15_000);
+    void reload();
+    const interval = setInterval(() => { if (!inFlight.current) void reload(); }, 15_000);
     return () => { disposed = true; controller.current?.abort(); inFlight.current = false; clearInterval(interval); disposers.forEach((dispose) => dispose()); };
-  }, [enabled, refresh]);
+  }, [enabled, reload]);
   const selectedIds = new Set(options.retainedProjectionIds);
   return { ...result, retainedAutomations: result.retainedAutomations.filter((item) => selectedIds.has(item.id)), loading, error, loadMore, refresh };
 }

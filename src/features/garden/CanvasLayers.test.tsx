@@ -21,6 +21,30 @@ const districts = new Map([["d", { origin: { x: 0, y: 0 }, radius: 100, roots: [
 const agents: GardenAgentUnit[] = ["a", "b"].map((id, index) => ({ ref: { kind: "agent", id }, label: id, status: index ? "Error" : "Idle", color: "", crown: [], position: { x: index * 10, y: 0 } }));
 
 describe("canvas aggregate and route paint", () => {
+  it("culls offscreen districts while retaining ground enclosing the viewport", () => {
+    const { rerender } = render(<DistrictLayer districts={districts} scale={1} selectedKey={null} theme={theme}
+      viewport={{ x: 500, y: 500, width: 100, height: 100 }} onSelect={vi.fn()} onOpen={vi.fn()} />);
+    expect(document.querySelector('[data-shape="Circle"]')).toBeNull();
+    rerender(<DistrictLayer districts={districts} scale={10} selectedKey={null} theme={theme}
+      viewport={{ x: -5, y: -5, width: 10, height: 10 }} onSelect={vi.fn()} onOpen={vi.fn()} />);
+    expect(document.querySelector('[data-shape="Circle"]')).not.toBeNull();
+  });
+
+  it("keeps distant route hits but reveals only the selected route's text", () => {
+    const input: CanvasAutomationInput = { id: "quiet", label: "Quiet flow", nodeCount: 2, agentIds: ["a", "b"], runStatus: "none" };
+    const routes = situatedRoutes([input], agents, districts);
+    const onSelect = vi.fn();
+    const { container, rerender } = render(<AutomationRoutesLayer routes={routes} theme={theme} scale={.4} continuousZoom
+      selectedKey={null} onSelect={onSelect} onOpen={vi.fn()} />);
+    expect(container.querySelector('[data-shape="Arrow"]')).not.toBeNull();
+    expect(screen.queryByText(routes[0].presentation.summary)).not.toBeInTheDocument();
+    fireEvent.click(container.querySelector('[data-shape="Group"]')!);
+    expect(onSelect).toHaveBeenCalledWith({ kind: "automation", id: "quiet" });
+    rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={.4} continuousZoom
+      selectedKey="automation:quiet" onSelect={onSelect} onOpen={vi.fn()} />);
+    expect(screen.getByText(routes[0].presentation.summary)).toBeInTheDocument();
+  });
+
   it("paints aggregate status and one population with selection/open semantics at Habitat", () => {
     const bands = new Map([["d", "habitat" as const]]);
     const onSelect = vi.fn(); const onOpen = vi.fn();

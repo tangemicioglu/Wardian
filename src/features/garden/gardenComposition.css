@@ -56,3 +56,9 @@
 .garden-recovery-notice { position: absolute; top: 62px; left: 16px; z-index: 30; max-width: calc(100% - 32px); padding: 8px 12px; border-radius: 12px; background: var(--color-wardian-bg); color: var(--color-wardian-text-muted); font-size: 12px; }
 .garden-spatial-contents:focus-visible { outline: 2px solid var(--color-wardian-accent); outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) { .garden-spatial-cell.garden-composition { transition: none; } }
+.garden-run-stages { gap: 20px; }
+.garden-stage-object { position: relative; align-items: center; text-align: center; background: transparent; border: 0; padding: 12px 8px; }
+.garden-stage-node { display: grid; place-items: center; width: 46px; height: 46px; border: 2px solid; border-radius: 43% 49% 46% 42%; font-size: 15px; font-style: normal; color: var(--color-wardian-text-muted); background: var(--color-wardian-card); }
+.garden-stage-object::before { content: ""; position: absolute; top: 35px; left: calc(50% + 28px); width: calc(100% - 36px); height: 1px; background: var(--color-wardian-border); pointer-events: none; }
+.garden-stage-object:last-child::before { display: none; }
+.garden-stage-owner { opacity: var(--garden-object-detail, 1); }

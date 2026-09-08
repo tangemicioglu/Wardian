@@ -12,6 +12,7 @@ import { GardenCanvas } from "../features/garden/GardenCanvas";
 import { unitKey, type GardenPosition, type GardenEntityRef } from "../features/garden/garden.types";
 import { enterGardenObject, gardenRecordKind, type GardenNavigationFrame, type GardenCamera, type GardenTimeLens } from "../features/garden/gardenNavigation";
 import { GardenAgentInterior } from "../features/garden/GardenAgentInterior";
+import { createGardenContentsCache } from "../features/garden/useGardenAgentContents";
 import { GardenWorkspaceInterior } from "../features/garden/GardenWorkspaceInterior";
 import { GardenRecord } from "../features/garden/GardenRecord";
 import { GardenAutomationInterior } from "../features/garden/GardenAutomationInterior";
@@ -150,6 +151,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
   );
   const [trail, setTrail] = useState<GardenNavigationFrame[]>(restoredTrail);
   const [camera, setCamera] = useState<GardenCamera | undefined>(initialSurfaceState?.camera);
+  const [contentsCache] = useState(createGardenContentsCache);
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const motion = useGardenCameraMotion(camera, setCamera);
@@ -172,9 +174,18 @@ export const GardenView: React.FC<GardenViewProps> = ({
   const compositionAutomations = [...new Map([...automationInputs, ...retainedAutomations].map((item) => [item.id, item])).values()];
   const onSurfaceStateChangeRef = useRef(onSurfaceStateChange);
   onSurfaceStateChangeRef.current = onSurfaceStateChange;
+  const surfaceSnapshot = useRef({ selected_unit_key: selectedKey, trail, camera, time_lens: timeLens });
+  surfaceSnapshot.current = { selected_unit_key: selectedKey, trail, camera, time_lens: timeLens };
+  // Selection and navigation persist immediately; a moving camera settles once
+  // the gesture ends instead of causing Workbench/window IPC on every frame.
   useEffect(() => {
-    onSurfaceStateChangeRef.current?.({ selected_unit_key: selectedKey, trail, camera, time_lens: timeLens });
-  }, [selectedKey, trail, camera, timeLens]);
+    onSurfaceStateChangeRef.current?.(surfaceSnapshot.current);
+  }, [selectedKey, trail, timeLens]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => onSurfaceStateChangeRef.current?.(surfaceSnapshot.current), 250);
+    return () => window.clearTimeout(timer);
+  }, [camera]);
+  useEffect(() => () => { onSurfaceStateChangeRef.current?.(surfaceSnapshot.current); }, []);
 
   const projection = useMemo(
     () =>
@@ -673,7 +684,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
       )}
       {automationsTruncated && (
         <div className="absolute bottom-14 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          <span>Some automations are omitted because the catalog is limited to the first 500; pages are capped at 500.</span>{' '}
+          <span>More automation definitions or run history are available.</span>{' '}
           {automationsTruncated && (
             <button type="button" className="font-semibold underline" onClick={() => void loadMoreAutomations()}>
               Load next page
@@ -744,6 +755,7 @@ export const GardenView: React.FC<GardenViewProps> = ({
             focused={currentFrame?.ref.kind === "agent" && currentFrame.ref.id === unit.ref.id}
             label={unit.label} status={gardenAgentStatusColor(unit.status)} onSelect={() => selectObject(unit.ref)} onEnter={() => enterObject(unit.ref)}>
             <GardenAgentInterior agent={agent} status={unit.status} crown={unit.crown} agents={filteredAgents} teams={teams}
+              projectedWidth={screen.width} contentsCache={contentsCache}
               automations={automationInputs} selectedKey={activeSelectionKey} onSelect={selectObject} onEnter={enterObject} onOpenAgent={openCanonicalAgent} />
           </GardenSpatialCell>;
         })}

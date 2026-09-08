@@ -22,8 +22,9 @@ async function wheel(page: Page, cell: Locator, delta: number) {
 }
 
 test.describe("Garden continuous world zoom", () => {
+  let bridge: Awaited<ReturnType<typeof installGardenCompositionMock>>;
   test.beforeEach(async ({ page }) => {
-    await installGardenCompositionMock(page);
+    bridge = await installGardenCompositionMock(page);
     await page.goto("/");
     await expect(garden(page).locator("canvas").first()).toBeVisible();
     await expect(garden(page).locator(`[data-garden-object="agent:${GARDEN_AGENT}"]`)).toBeAttached();
@@ -40,6 +41,8 @@ test.describe("Garden continuous world zoom", () => {
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     }
     await expect(cell).toBeAttached();
+    expect(await bridge.calls("memory_list")).toHaveLength(0);
+    expect(await bridge.calls("list_conversations")).toHaveLength(0);
     const world = await cell.getAttribute("data-garden-world");
     const start = await box(cell);
     const initialZoom = await garden(page).getByTestId("garden-zoom-level").textContent();
@@ -75,6 +78,7 @@ test.describe("Garden continuous world zoom", () => {
     await garden(page).locator(`[data-garden-object="agent:${GARDEN_AGENT}"]`).press("Enter");
     const memory = garden(page).getByRole("button", { name: /Keep the five agent regions/ });
     await memory.click();
+    expect(await bridge.calls("memory_get")).toHaveLength(0);
     const cell = garden(page).locator('[data-garden-cell^="memory:"]');
     await expect(cell).toBeAttached();
     const world = await cell.getAttribute("data-garden-world");
@@ -96,6 +100,8 @@ test.describe("Garden continuous world zoom", () => {
     expect(aspects.filter((aspect) => aspect > initialAspect + .01 && aspect < .77).length).toBeGreaterThan(1);
     expect(aspects.at(-1)).toBeCloseTo(.78, 2);
     await expect(garden(page).getByRole("article", { name: "memory record" })).toContainText("conversation-design:turn:4");
+    // Selection must not keep an enlarged parent caption visible behind its record.
+    await expect(garden(page).locator('[data-garden-cell^="agent:"] [data-garden-ref^="memory:"][aria-pressed="true"] strong')).toHaveCSS("opacity", "0");
     await expect(garden(page).getByTestId("garden-selection-summary").getByRole("button", { name: "Open record", exact: true })).toHaveCount(0);
     // The disappearing child cannot be measured after the final reverse notch.
     for (let index = 0; index < 100 && await cell.count(); index++) {
@@ -108,4 +114,26 @@ test.describe("Garden continuous world zoom", () => {
     await expect(breadcrumb(page).getByRole("button").last()).toHaveText("Moss Designer");
     await expect(garden(page).getByRole("region", { name: "Memory", exact: true })).toBeVisible();
   });
+});
+
+test("dense memory objects retain individual identity and scroll inside their organelle", async ({ page }) => {
+  await installGardenCompositionMock(page, { memoryCount: 34 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+  await garden(page).locator(`[data-garden-object="agent:${GARDEN_AGENT}"]`).press("Enter");
+  const cell = agentCell(page);
+  const region = cell.getByRole("region", { name: "Memory", exact: true });
+  await expect(region.locator('[data-garden-ref^="memory:"]')).toHaveCount(34);
+  const before = await box(cell);
+  const last = region.locator('[data-garden-ref="memory:dense-memory-33"]');
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  await expect(last).toHaveAttribute("aria-pressed", "true");
+  expect((await box(cell)).x).toBeCloseTo(before.x, 0);
+  expect((await box(cell)).width).toBeCloseTo(before.width, 0);
+  const first = region.getByRole("button", { name: /Keep the five agent regions/ });
+  await first.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "e2e/screenshots/garden/2026-09-08-unfolding/dense-memory-objects.png" });
+  await first.press("Enter");
+  await expect(garden(page).getByRole("article", { name: "memory record" })).toContainText("conversation-design:turn:4");
 });

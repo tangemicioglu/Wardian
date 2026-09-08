@@ -37,7 +37,7 @@ const schedule: AutomationSchedule = {
 };
 
 /** All data is synthetic. The shared bridge records calls and implements file resources and CAS persistence. */
-export async function installGardenCompositionMock(page: Page) {
+export async function installGardenCompositionMock(page: Page, options: { memoryCount?: number } = {}) {
   return installWorkbenchIpcMock(page, {
     load_result: { source: "primary", notice: null, durable_revision: 0, durable_token: "garden-token",
       document: makeWorkbenchDocument({ surfaces: [makeWorkbenchSurface("garden-main", "garden")],
@@ -54,7 +54,10 @@ export async function installGardenCompositionMock(page: Page) {
       { path: `${GARDEN_ROOT}/README.md`, content: "Unchanged workspace introduction." },
     ],
     responses: {
-      memory_list: [memory, { ...memory, memory_id: "memory-current", kind: "current", workspace: null, text: "Collect narrow viewport evidence.", revision_id: "current-1", revision: 1 }],
+      memory_list: options.memoryCount ? Array.from({ length: options.memoryCount }, (_, index) => index === 0 ? memory : {
+        ...memory, memory_id: `dense-memory-${index}`, revision_id: `dense-revision-${index}`,
+        text: `Memory ${index}: Preserve the agent geography and inspect the supporting evidence.`,
+      }) : [memory, { ...memory, memory_id: "memory-current", kind: "current", workspace: null, text: "Collect narrow viewport evidence.", revision_id: "current-1", revision: 1 }],
       memory_get: memory,
       memory_history: [{ ...memory, revision: 1, revision_id: "revision-1", status: "superseded", text: "Keep agent regions stable." }, memory],
       list_conversations: { schema: 1, conversations: [{ schema: 1, conversation_id: "conversation-design", agent_id: GARDEN_AGENT, agent_name: "Moss Designer", agent_class: "Designer", workspace: GARDEN_ROOT, provider: "claude", provider_session_ids: [], started_at: timestamp, ended_at: null, status: "open", boundary_reason: "spawn", first_prompt_excerpt: "Inspect the cutaway", last_record_excerpt: "Draft ready for evidence review.", record_count: 8, turn_count: 4, has_turns: true, lifecycle_only: false, artifact_count: 2, path: "/synthetic/conversations/design" }] },

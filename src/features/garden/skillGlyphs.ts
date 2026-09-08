@@ -88,8 +88,8 @@ export const GLYPH_RADIUS = 6.5;
 export function crownConvergence(position: { x: number; y: number }, index: number, convergence = 0) {
   const progress = Number.isFinite(convergence) ? Math.max(0, Math.min(1, convergence)) : 0;
   return {
-    x: position.x * (1 - progress) + -9.5 * progress,
-    y: position.y * (1 - progress) + (-7.4 + index * 2.4) * progress,
+    x: position.x * (1 - progress) + (-9.5 + (index % 3) * 2.4) * progress,
+    y: position.y * (1 - progress) + (-7.4 + Math.floor(index / 3) * 3.25) * progress,
     glyphScale: 1 * (1 - progress) + 0.085 * progress,
     labelOpacity: 1 - progress,
   };

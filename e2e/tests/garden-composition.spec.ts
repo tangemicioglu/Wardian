@@ -40,7 +40,9 @@ test.describe("Garden semantic composition", () => {
       await expect(garden(page).getByRole("region", { name, exact: true })).toBeVisible();
       await expect(garden(page).getByRole("heading", { name, exact: true })).toBeInViewport();
     }
-    await expect(garden(page).getByRole("region", { name: "Ports", exact: true }).getByRole("button", { name: /synthetic\/garden/ })).toBeInViewport({ ratio: 1 });
+    // Transformed edges can produce 0.9999993 from IntersectionObserver even
+    // when fully inside; allow subpixel rounding, not a clipped port.
+    await expect(garden(page).getByRole("region", { name: "Ports", exact: true }).getByRole("button", { name: /synthetic\/garden/ })).toBeInViewport({ ratio: .9999 });
     await expect(garden(page).getByTestId("garden-selection-summary").getByRole("button", { name: "Enter", exact: true })).toHaveCount(0);
     await expect(garden(page).getByRole("region", { name: "Active work", exact: true })).toContainText("Draft ready for evidence review.");
     await expect(garden(page).getByRole("region", { name: "Capabilities" })).toContainText("Interface Review");
@@ -183,7 +185,7 @@ test.describe("Garden semantic composition", () => {
     const flow = garden(page).getByRole("region", { name: "Automation composition" });
     await expect(flow).toContainText("2 assigned agents");
     const lane = flow.getByRole("region", { name: `Run ${GARDEN_RUN}`, exact: true });
-    await expect(lane.getByRole("button", { name: /^Stage \d/ })).toHaveText([/Stage 1.*Draft interface.*completed.*Moss Designer/, /Stage 2.*Review evidence.*running.*Fern Reviewer/]);
+    await expect(lane.locator('[data-garden-ref^="stage:"]')).toHaveText([/1.*Draft interface.*completed.*Moss Designer/, /2.*Review evidence.*running.*Fern Reviewer/]);
     await capture(page, "07-run-flow");
     await lane.getByRole("button", { name: /Draft interface/ }).press("Enter");
     await expect(garden(page).getByRole("article")).toContainText("cutaway-preview");

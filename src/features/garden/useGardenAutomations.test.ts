@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { loadGardenAutomationInputs, useGardenAutomations } from "./useGardenAutomations";
+import { GardenAutomationCache, GARDEN_BLUEPRINT_CACHE_MS, GARDEN_RUN_CACHE_MS, GARDEN_AUTOMATION_CACHE_LIMIT } from "./gardenAutomationCache";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -22,6 +23,160 @@ function responder(command: string): Promise<unknown> {
   return Promise.reject(new Error(command));
 }
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(invoke).mockImplementation(responder); vi.mocked(listen).mockResolvedValue(() => undefined); });
+
+describe("bounded refresh caching", () => {
+  const now = Date.parse("2026-09-08T00:00:00Z");
+  const ended = { ...summary, status: "completed", updated_at: new Date(now).toISOString() };
+  const completedResponder = async (command: string) => {
+    if (command === "automation_list_runs") return { runs: [ended], truncated: false, next_offset: null };
+    if (command === "automation_read_run") return { blueprint, events: [], state: { status: "completed", nodes: { task: "completed" } } };
+    return responder(command);
+  };
+  it("reduces 46 terminal runs from 141 reads to the three fresh catalogs", async () => {
+    const cache = new GardenAutomationCache();
+    const invoker = vi.fn(async (command: string) => {
+      if (command === "automation_list_blueprints") return { blueprints: Array.from({ length: 46 }, (_, i) => ({ id: `b${i}`, path: `/b${i}.md` })), truncated: false, next_offset: null };
+      if (command === "automation_list_runs") return { runs: Array.from({ length: 46 }, (_, i) => ({ ...ended, run_id: `r${i}`, path: `/r${i}` })), truncated: false, next_offset: null };
+      return completedResponder(command);
+    });
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(invoker).toHaveBeenCalledTimes(141);
+    invoker.mockClear();
+    await loadGardenAutomationInputs(invoker, 0, { cache, now: now + 15_000 });
+    expect(invoker.mock.calls.map(([command]) => command).sort()).toEqual(["automation_list_blueprints", "automation_list_runs", "schedule_list"]);
+  });
+  it("expires same-path definitions and terminal evidence without extending TTL on hits", async () => {
+    const cache = new GardenAutomationCache();
+    const invoker = vi.fn(completedResponder);
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    invoker.mockClear();
+    await loadGardenAutomationInputs(invoker, 0, { cache, now: now + GARDEN_BLUEPRINT_CACHE_MS });
+    expect(invoker.mock.calls.map(([command]) => command)).toContain("automation_parse");
+    expect(invoker.mock.calls.map(([command]) => command)).not.toContain("automation_read_run");
+    invoker.mockClear();
+    await loadGardenAutomationInputs(invoker, 0, { cache, now: now + GARDEN_RUN_CACHE_MS });
+    expect(invoker.mock.calls.map(([command]) => command)).toContain("automation_read_run");
+    expect(invoker.mock.calls.map(([command]) => command)).toContain("read_file_preview");
+  });
+  it("rereads live runs and invalidates terminal evidence when any summary field changes", async () => {
+    const cache = new GardenAutomationCache();
+    let run = { ...ended };
+    const invoker = vi.fn(async (command: string) => command === "automation_list_runs"
+      ? { runs: [run], truncated: false, next_offset: null } : completedResponder(command));
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    run = { ...run, node_count: 2 };
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    run = { ...run, status: "running" };
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(invoker.mock.calls.filter(([command]) => command === "automation_read_run")).toHaveLength(4);
+    expect(invoker.mock.calls.filter(([command]) => command === "read_file_preview")).toHaveLength(4);
+    expect(invoker.mock.calls.filter(([command]) => command === "automation_parse")).toHaveLength(1);
+  });
+  it("does not cache failed or mismatched terminal evidence, and retries expired parse failures", async () => {
+    const cache = new GardenAutomationCache();
+    let fail = false;
+    const invoker = vi.fn(async (command: string) => {
+      if (fail && command === "automation_parse") throw new Error("parse offline");
+      if (command === "automation_read_run") return responder(command); // running detail under terminal summary
+      return completedResponder(command);
+    });
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    fail = true;
+    const failed = await loadGardenAutomationInputs(invoker, 0, { cache, now: now + GARDEN_BLUEPRINT_CACHE_MS });
+    expect(failed.errors.join()).toContain("parse offline");
+    fail = false;
+    const recovered = await loadGardenAutomationInputs(invoker, 0, { cache, now: now + GARDEN_BLUEPRINT_CACHE_MS + 1 });
+    expect(recovered.errors).toEqual([]);
+    expect(invoker.mock.calls.filter(([command]) => command === "automation_parse")).toHaveLength(3);
+    expect(invoker.mock.calls.filter(([command]) => command === "automation_read_run")).toHaveLength(3);
+  });
+  it("does not publish cache writes from an aborted refresh", async () => {
+    const cache = new GardenAutomationCache();
+    const controller = new AbortController();
+    const invoker = vi.fn(async (command: string) => {
+      if (command === "read_file_preview") controller.abort();
+      return completedResponder(command);
+    });
+    await expect(loadGardenAutomationInputs(invoker, 0, { cache, now, signal: controller.signal })).rejects.toThrow();
+    invoker.mockImplementation(completedResponder);
+    invoker.mockClear();
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(invoker).toHaveBeenCalledTimes(6);
+  });
+  it("retries incomplete invocation evidence rather than caching a partial success", async () => {
+    const cache = new GardenAutomationCache();
+    let fail = true;
+    const invoker = vi.fn(async (command: string) => {
+      if (command === "read_file_preview" && fail) throw new Error("invocation unavailable");
+      return completedResponder(command);
+    });
+    const failed = await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(failed.projectionErrors["schedule:daily"]).toEqual(["Run r1: invocation unavailable"]);
+    fail = false;
+    const recovered = await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(recovered.errors).toEqual([]);
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    expect(invoker.mock.calls.filter(([command]) => command === "read_file_preview")).toHaveLength(2);
+    expect(invoker.mock.calls.filter(([command]) => command === "automation_read_run")).toHaveLength(2);
+  });
+  it("caches retained historical evidence without changing population or paging, then prunes on deselection", async () => {
+    const cache = new GardenAutomationCache();
+    const old = { ...ended, schedule_id: null, updated_at: "2020-01-01T00:00:00Z" };
+    const invoker = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "automation_list_runs") return args?.offset
+        ? { runs: [old], truncated: false, next_offset: null }
+        : { runs: [], truncated: true, next_offset: 200 };
+      return completedResponder(command);
+    });
+    const options = { cache, now, retainedProjectionIds: ["run:r1"] };
+    await loadGardenAutomationInputs(invoker, 0, options);
+    invoker.mockClear();
+    const second = await loadGardenAutomationInputs(invoker, 0, options);
+    expect(second.retainedAutomations.map((item) => item.id)).toEqual(["run:r1"]);
+    expect(second.automations.some((item) => item.id === "run:r1")).toBe(false);
+    expect(second.runsNextOffset).toBe(200);
+    expect(invoker.mock.calls.some(([command]) => command === "automation_read_run")).toBe(false);
+    await loadGardenAutomationInputs(invoker, 0, { cache, now });
+    invoker.mockClear();
+    await loadGardenAutomationInputs(invoker, 0, options);
+    expect(invoker.mock.calls.some(([command]) => command === "automation_read_run")).toBe(true);
+  });
+  it("bounds entries, prunes absent paths, and rejects invalidated in-flight transactions", () => {
+    const cache = new GardenAutomationCache();
+    const tx = cache.begin(now);
+    const paths = new Set(Array.from({ length: GARDEN_AUTOMATION_CACHE_LIMIT + 1 }, (_, i) => String(i)));
+    for (const path of paths) tx.putBlueprint(path, blueprint);
+    tx.commit(paths, new Set());
+    expect(cache.begin(now).blueprint("0")).toBeUndefined();
+    expect(cache.begin(now).blueprint("1")).toEqual(blueprint);
+    cache.begin(now).commit(new Set(["1"]), new Set());
+    expect(cache.begin(now).blueprint("2")).toBeUndefined();
+    const pending = cache.begin(now);
+    pending.putBlueprint("old", blueprint);
+    cache.invalidate();
+    pending.commit(new Set(["old"]), new Set());
+    expect(cache.begin(now).blueprint("old")).toBeUndefined();
+  });
+  it("keeps caches on ordinary events but invalidates on library events and manual refresh", async () => {
+    const callbacks = new Map<string, () => void>();
+    vi.mocked(listen).mockImplementation(async (name, callback) => {
+      callbacks.set(name, () => callback({ event: name, id: 1, payload: null }));
+      return () => undefined;
+    });
+    const { result, unmount } = renderHook(() => useGardenAutomations());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const parses = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "automation_parse").length;
+    expect(parses()).toBe(1);
+    await act(async () => callbacks.get("schedules-updated")?.());
+    expect(parses()).toBe(1);
+    await act(async () => callbacks.get("library-changed")?.());
+    expect(parses()).toBe(2);
+    await act(async () => result.current.refresh());
+    expect(parses()).toBe(3);
+    unmount();
+  });
+});
 
 describe("loadGardenAutomationInputs", () => {
   it("reads durable invocation assignments and stage state instead of pooling blueprint agents", async () => {

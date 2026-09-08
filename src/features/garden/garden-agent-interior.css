@@ -80,10 +80,10 @@
 .garden-agent-interior-ports .garden-agent-interior-select::before { content: ""; position: absolute; top: 12px; left: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--color-wardian-accent); opacity: var(--garden-regions, 1); }
 /* Fade text independently of silhouettes. Parent sets inert below readable detail. */
 .garden-agent-interior-region > h3,
-.garden-agent-interior-scroll > :not(.garden-agent-interior-record),
+.garden-agent-interior-scroll > :is(p, details),
 .garden-agent-interior-select > :not(.garden-agent-interior-glyph) { opacity: var(--garden-detail, 1); }
 /* Memory groups already fade as a unit; avoid multiplying the camera's opacity. */
-.garden-agent-interior-memory-kind .garden-agent-interior-select > * { opacity: 1; }
+.garden-agent-interior-memory-kind > h4, .garden-agent-interior-scope > h5 { opacity: var(--garden-detail, 1); }
 .garden-agent-interior-glyph b { font-weight: inherit; opacity: var(--garden-detail, 1); }
 /* Reserve the nucleus action outside the scrollable configuration and evidence. */
 .garden-agent-interior-primary-action { flex: none; padding-top: 6px; opacity: var(--garden-detail, 1); }
@@ -104,3 +104,41 @@
 .garden-agent-interior-ports .garden-agent-interior-record { width: 100%; margin: 0 0 6px; }
 .garden-agent-interior-ports .garden-agent-interior-select { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }
 .garden-agent-interior-ports .garden-agent-interior-select span { margin: 0; white-space: nowrap; }
+/* Objects keep their footprint while labels arrive; prose lives in the record. */
+.garden-object-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 4px; }
+.garden-object-grid .garden-agent-interior-record { margin: 0; min-width: 0; }
+.garden-object-grid .garden-agent-interior-select { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 6px; height: 84px; padding: 5px 2px; text-align: center; }
+.garden-object-grid .garden-agent-interior-select strong { font-size: 12px; line-height: 1.25; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; opacity: var(--garden-object-detail, 1); }
+.garden-object-grid .garden-agent-interior-select span { display: none; }
+.garden-object-grid .garden-agent-interior-select:is(:hover, :focus-visible, [aria-pressed="true"]) strong { opacity: var(--garden-context, 1); }
+.garden-object-grid .garden-agent-interior-glyph { flex: none; width: 34px; height: 34px; font-size: 15px; }
+.garden-agent-interior-glyph b { opacity: 1; }
+.garden-object-mark { display: block; flex: none; opacity: var(--garden-regions, 1) !important; font-style: normal; }
+.garden-object-mark-memory { width: 34px; height: 26px; margin: 4px 0; border: 1.5px solid var(--color-wardian-accent); border-radius: 65% 35% 60% 40%; background: color-mix(in srgb, var(--color-wardian-accent) 14%, var(--color-wardian-bg)); position: relative; }
+.garden-object-mark-memory::after { content: ""; position: absolute; left: 8px; right: 8px; top: 12px; height: 1px; transform: rotate(-25deg); background: var(--color-wardian-accent); opacity: .6; }
+.garden-memory-objects .garden-agent-interior-record:nth-child(even) .garden-object-mark-memory { border-radius: 35% 65% 40% 60%; }
+.garden-agent-interior-memory-kind h4 { font-size: 13px; margin: 8px 0 2px; }
+.garden-agent-interior-scope h5 { font-size: 11px; margin-bottom: 8px; }
+.garden-agent-interior-memory .garden-agent-interior-scroll { padding-right: 2px; }
+.garden-memory-dormant { display: flex; gap: 14px; padding: 30px 6px; opacity: var(--garden-regions, 1); }
+.garden-memory-dormant i { width: 35px; height: 65px; border: 1px dashed var(--color-wardian-border); border-radius: 50%; }
+.garden-object-mark-automation { width: 100%; height: 32px; }
+.garden-object-mark-automation svg { width: 100%; height: 100%; overflow: visible; }
+.garden-object-mark-automation path { fill: none; stroke: currentColor; stroke-width: 1; opacity: .4; }
+.garden-object-mark-automation circle { fill: var(--color-wardian-bg); stroke: currentColor; stroke-width: 1.5; }
+.garden-object-automation .garden-agent-interior-select { padding: 6px 8px; }
+.garden-object-automation strong { font-size: 14px; }
+.garden-object-automation .garden-agent-interior-select span { font-size: 12px; }
+.garden-work-evidence > summary { font-size: 13px; }
+.garden-agent-interior-ports .garden-agent-interior-select { grid-template-columns: 24px minmax(0, 1fr) auto; padding-left: 0; gap: 8px; }
+.garden-agent-interior-ports .garden-agent-interior-select::before { display: none; }
+.garden-object-mark-agent, .garden-object-mark-workspace { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--color-wardian-accent); border-radius: 50%; font-size: 10px; }
+.garden-object-mark-workspace { border-radius: 5px; font-size: 17px; }
+.garden-agent-interior-ports .garden-agent-interior-select strong { font-size: 14px; }
+.garden-agent-interior-ports .garden-agent-interior-select span { font-size: 11px; }
+/* The seed itself is the source plane; its caption never enlarges that anchor. */
+.garden-object-grid .garden-agent-interior-record { height: 84px; align-items: flex-start; }
+.garden-object-grid .garden-agent-interior-select { position: relative; height: 40px; }
+.garden-object-grid .garden-agent-interior-select strong { position: absolute; top: 44px; left: 0; right: 0; }
+.garden-region-count { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--color-wardian-text-muted); font-variant-numeric: tabular-nums; }
+.garden-agent-interior-primary-action > details { margin: 0; max-height: 90px; overflow: auto; scrollbar-width: thin; }

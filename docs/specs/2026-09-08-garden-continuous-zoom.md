@@ -5,6 +5,7 @@
 - **Design intent:** [Garden Semantic Zoom Composition](./2026-08-30-garden-semantic-zoom-composition.md)
 - **Historical implementation:** [September 7 contract](./2026-09-07-garden-composition-implementation.md)
 - **User documentation:** [Garden](../guide/garden.md)
+- **Later refinement:** [Object unfolding and bounded rendering](./2026-09-08-garden-object-unfolding.md)
 
 ## Correction and Precedence
 

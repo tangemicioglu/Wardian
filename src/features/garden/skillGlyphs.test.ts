@@ -273,12 +273,12 @@ describe("gardenDetailForScale", () => {
 });
 
 describe("continuous crown disclosure", () => {
-  it("interpolates each stable slot continuously into its Capabilities row", () => {
+  it("interpolates each stable slot continuously into its Capabilities grid", () => {
     crownPositions(13).forEach((position, index) => {
       const start = crownConvergence(position, index);
       expect(start).toEqual({ ...position, glyphScale: 1, labelOpacity: 1 });
       const end = crownConvergence(position, index, 1);
-      expect(end).toEqual({ x: -9.5, y: -7.4 + index * 2.4, glyphScale: 0.085, labelOpacity: 0 });
+      expect(end).toEqual({ x: -9.5 + (index % 3) * 2.4, y: -7.4 + Math.floor(index / 3) * 3.25, glyphScale: 0.085, labelOpacity: 0 });
       expect(GLYPH_RADIUS * end.glyphScale).toBeCloseTo(0.5525);
       const middle = crownConvergence(position, index, 0.5);
       for (const key of ["x", "y", "glyphScale", "labelOpacity"] as const) {

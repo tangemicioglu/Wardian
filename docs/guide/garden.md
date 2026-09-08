@@ -62,7 +62,15 @@ surrounding geography connected.
 
 ![Agent cell with Identity, Capabilities, Memory, Active work, and Ports anchored inside its membrane](../assets/screenshots/garden/agent-cutaway.png)
 
-*Zoom into an agent cell to read its regions and records in place.*
+*Zoom into an agent cell to reveal contained objects, then approach a record to read it.*
+
+Skills appear as glyphs, memories as individual seeds, routines as execution
+nodes, and connections as endpoints. Short labels emerge as you approach;
+hovering, focusing or selecting an object reveals its label fully. Memory
+seeds keep Stable/Current and scope grouping; enter one for its full text and
+evidence. **Sessions & Inbox** reveals conversation and notification details.
+Skill provenance remains in its accessible label and hover description, with
+canonical details available through the skill record.
 
 Entering an agent, workspace, automation, or record brings it to a readable
 scale. On a small or short viewport, the outer plane or membrane may extend
@@ -209,7 +217,9 @@ not support manual placement.
 
 ## Loading and Unavailable Data
 
-Memory and conversations load independently inside their fixed regions.
+Memory and conversations load independently as an agent approaches inspection
+scale. Distant previews do not read every agent's contents. Recently read
+snapshots are retained briefly within that Garden surface for reverse travel.
 **Refresh contents** retries these reads; a retained snapshot is labelled stale.
 Records provide **Retry** when reads fail, including unavailable or restricted
 files. Directory and activity failures are reported in workspace composition.
@@ -239,3 +249,5 @@ cells, visits, and settled geometry in browser storage. Each Workbench Garden
 surface persists its selection, breadcrumb trail (including return cameras),
 current camera, and time lens in Workbench state. These are view preferences,
 not copies of agent configuration, memory, file contents, or automation truth.
+Camera saves settle after a zoom or pan gesture; leaving the surface flushes
+the latest position.

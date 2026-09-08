@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { GardenCamera, GardenEntityRef } from "./garden.types";
 import { CELL_WIDTH, projectBounds, recordPlaneBounds, revealBetween, type GardenWorldBounds } from "./gardenSpatialZoom";
 import { agentMonogram } from "./agentMonogram";
@@ -31,6 +31,10 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
   const detail = nearDetail * context;
   const readable = screen.width >= 540 && context > .1 && activation > .5;
   const navigable = screen.width >= 70 && context > .1;
+  const [readerMounted, setReaderMounted] = useState(screen.width >= 360 && activation > .5);
+  useEffect(() => {
+    setReaderMounted((previous) => screen.width >= (previous ? 280 : 360) && activation > .5);
+  }, [screen.width, activation]);
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => { if (focused && navigable) root.current?.focus({ preventScroll: true }); }, [focused, navigable]);
   const style = {
@@ -38,7 +42,8 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
     transform: `scale(${screen.width / CELL_WIDTH})`, opacity: shell * activation,
     // Coarse agent previews are visual only; Konva owns placement dragging.
     pointerEvents: activation > .5 && (target.kind !== "agent" || screen.width >= 280) ? "auto" : "none",
-    "--garden-status": status, "--garden-regions": regions, "--garden-detail": detail,
+    "--garden-status": status, "--garden-regions": regions, "--garden-detail": detail, "--garden-context": context,
+    "--garden-object-detail": revealBetween(screen.width, 400, 800) * context,
     "--garden-shell-radius": target.kind === "agent" ? "50%" : "28px",
   } as CSSProperties;
   return <div ref={root} tabIndex={-1} className={`garden-spatial-cell garden-composition garden-spatial-${target.kind}`}
@@ -61,7 +66,7 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
         left: "50%", right: "auto", transform: "translateX(-50%)",
         maxHeight: Math.max(100, (viewport.height - 170) * CELL_WIDTH / screen.width - 80),
       }}>
-      {children}
+      {target.kind === "agent" || readerMounted ? children : null}
     </div>
   </div>;
 }

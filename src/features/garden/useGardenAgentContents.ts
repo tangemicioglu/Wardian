@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentConfig } from "../../types";
 
@@ -72,53 +72,88 @@ export function readGardenMemoryHistory(memoryId: string): Promise<GardenMemoryR
   return invoke("memory_history", { memoryId });
 }
 
-function emptyState<T>(): GardenContentState<T> {
-  return { data: null, loading: true, error: null, stale: false };
+const CACHE_TTL = 30_000;
+const CACHE_LIMIT = 128;
+
+interface CacheEntry<T> {
+  value: GardenContentState<T>;
+  updatedAt: number;
+  pending?: Promise<GardenContentState<T>>;
 }
 
-function useCanonicalRead<T>(key: string, read: () => Promise<T>, revision: number): GardenContentState<T> {
+/** Bounded caches owned by one Garden view; never shared across application sessions. */
+export interface GardenContentsCache {
+  memories: Map<string, CacheEntry<GardenMemoryRecord[]>>;
+  conversations: Map<string, CacheEntry<GardenConversationEntry[]>>;
+}
+
+/** Allocate once per Garden view and pass to its canonical readers. */
+export function createGardenContentsCache(): GardenContentsCache {
+  return { memories: new Map(), conversations: new Map() };
+}
+
+function emptyState<T>(loading = true): GardenContentState<T> {
+  return { data: null, loading, error: null, stale: false };
+}
+
+function useCanonicalRead<T>(key: string, read: () => Promise<T>, revision: number, enabled: boolean,
+  cache: Map<string, CacheEntry<T>>): GardenContentState<T> {
   const [snapshot, setSnapshot] = useState<{ key: string; value: GardenContentState<T> }>(() => ({ key, value: emptyState<T>() }));
+  const consumedRevision = useRef(0);
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
-    let pending = false;
-    const refresh = async () => {
-      if (pending) return;
-      pending = true;
-      setSnapshot((previous) => ({ key, value: {
-        ...(previous.key === key ? previous.value : emptyState<T>()),
-        loading: true,
-        error: null,
-        stale: previous.key === key && previous.value.data !== null,
-      } }));
-      try {
-        const data = await read();
-        if (active) setSnapshot({ key, value: { data, loading: false, error: null, stale: false } });
-      } catch (error) {
-        if (active) setSnapshot((previous) => ({ key, value: {
-          ...previous.value,
-          loading: false,
-          error: String(error),
-          stale: previous.value.data !== null,
-        } }));
-      } finally {
-        pending = false;
+    const refresh = async (force = false) => {
+      let entry = cache.get(key);
+      if (entry) {
+        cache.delete(key);
+        cache.set(key, entry);
+      } else {
+        entry = { value: emptyState<T>(), updatedAt: 0 };
+        cache.set(key, entry);
+        if (cache.size > CACHE_LIMIT) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
       }
+      if (!force && !entry.pending && entry.value.data !== null && !entry.value.stale && Date.now() - entry.updatedAt < CACHE_TTL) {
+        setSnapshot({ key, value: entry.value });
+        return;
+      }
+      if (!entry.pending) {
+        const target = entry;
+        target.value = { ...target.value, loading: true, error: null, stale: target.value.data !== null };
+        target.pending = Promise.resolve().then(read).then((data) => {
+          target.updatedAt = Date.now();
+          target.value = { data, loading: false, error: null, stale: false };
+          return target.value;
+        }, (error: unknown) => {
+          target.value = { ...target.value, loading: false, error: String(error), stale: target.value.data !== null };
+          return target.value;
+        }).finally(() => { target.pending = undefined; });
+      }
+      setSnapshot({ key, value: entry.value });
+      const value = await entry.pending ?? entry.value;
+      if (active) setSnapshot({ key, value });
     };
-    void refresh();
-    // These commands have no frontend invalidation subscription. Refresh only
-    // while the cutaway is mounted; each region settles independently.
-    const timer = window.setInterval(() => { void refresh(); }, 30_000);
+    const force = consumedRevision.current !== revision;
+    consumedRevision.current = revision;
+    void refresh(force);
+    const timer = window.setInterval(() => { void refresh(); }, CACHE_TTL);
     return () => { active = false; window.clearInterval(timer); };
-  }, [key, read, revision]);
+  }, [key, read, revision, enabled, cache]);
   // Never flash the previous agent's private contents before effects run.
-  return snapshot.key === key ? snapshot.value : emptyState<T>();
+  const value = snapshot.key === key ? snapshot.value : emptyState<T>(enabled);
+  return enabled ? value : { ...value, loading: false };
 }
 
 /** Lazy cutaway contents. Does not change Library, Inbox, or Workbench selection. */
-export function useGardenAgentContents(agent: AgentConfig) {
+export function useGardenAgentContents(agent: AgentConfig, enabled = true, cache?: GardenContentsCache) {
   const agentId = agent.session_id;
   const workspace = agent.git_worktree_folder || agent.folder;
   const [revision, setRevision] = useState(0);
+  const [localCache] = useState(createGardenContentsCache);
+  const contentsCache = cache ?? localCache;
   const readMemories = useCallback(() => invoke<GardenMemoryRecord[]>("memory_list", {
     agentId, workspace: workspace || null,
   }), [agentId, workspace]);
@@ -129,8 +164,9 @@ export function useGardenAgentContents(agent: AgentConfig) {
     return result.conversations.filter((entry) => entry.agent_id === agentId)
       .sort((left, right) => right.started_at.localeCompare(left.started_at));
   }, [agentId]);
-  const memories = useCanonicalRead(JSON.stringify([agentId, workspace]), readMemories, revision);
-  const conversations = useCanonicalRead(agentId, readConversations, revision);
+  const memories = useCanonicalRead(JSON.stringify([agentId, workspace || null]), readMemories, revision, enabled, contentsCache.memories);
+  // The archive command is agent-scoped, independent of the selected workspace.
+  const conversations = useCanonicalRead(agentId, readConversations, revision, enabled, contentsCache.conversations);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
   return { memories, conversations, refresh };
 }
