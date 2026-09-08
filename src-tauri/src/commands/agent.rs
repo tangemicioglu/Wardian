@@ -4339,10 +4339,10 @@ pub async fn rename_agent(
 }
 
 #[tauri::command]
-pub async fn update_agent_config(
+pub async fn update_agent_config<R: tauri::Runtime>(
     new_config: AgentConfig,
     state: State<'_, AppState>,
-    _app: AppHandle,
+    _app: AppHandle<R>,
 ) -> Result<(), String> {
     manager::log_debug(&format!(
         "[WARDIAN] update_agent_config called for session: {}",
