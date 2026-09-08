@@ -81,6 +81,11 @@ test.describe("Garden continuous world zoom", () => {
     expect(await bridge.calls("memory_get")).toHaveLength(0);
     const cell = garden(page).locator('[data-garden-cell^="memory:"]');
     await expect(cell).toBeAttached();
+    const seed = await box(memory.locator(".garden-object-mark-memory"));
+    const initialPlane = await box(cell);
+    expect(initialPlane.width).toBeCloseTo(seed.width, 0);
+    expect(initialPlane.x + initialPlane.width / 2).toBeCloseTo(seed.x + seed.width / 2, 0);
+    expect(initialPlane.y + initialPlane.height / 2).toBeCloseTo(seed.y + seed.height / 2, 0);
     const world = await cell.getAttribute("data-garden-world");
     const initialAspect = (await box(cell)).height / (await box(cell)).width;
     const aspects: number[] = [];
@@ -93,15 +98,18 @@ test.describe("Garden continuous world zoom", () => {
       expect(after.y + after.height / 2).toBeCloseTo(y + (before.y + before.height / 2 - y) * 1.05, 0);
       expect(after.height).toBeGreaterThan(before.height);
       expect(after.height - before.height).toBeLessThan(after.width * .12);
+      if (after.width >= 420) await expect(cell.locator(":scope > .garden-spatial-caption")).toHaveCSS("opacity", "0");
       aspects.push(after.height / after.width);
       await expect(cell).toHaveAttribute("data-garden-world", world!);
       steps++;
     }
-    expect(aspects.filter((aspect) => aspect > initialAspect + .01 && aspect < .77).length).toBeGreaterThan(1);
+    const morphProgress = aspects.map((aspect) => (aspect - initialAspect) / (.78 - initialAspect));
+    expect(morphProgress.filter((progress) => progress > .1 && progress < .9).length).toBeGreaterThan(1);
     expect(aspects.at(-1)).toBeCloseTo(.78, 2);
     await expect(garden(page).getByRole("article", { name: "memory record" })).toContainText("conversation-design:turn:4");
     // Selection must not keep an enlarged parent caption visible behind its record.
     await expect(garden(page).locator('[data-garden-cell^="agent:"] [data-garden-ref^="memory:"][aria-pressed="true"] strong')).toHaveCSS("opacity", "0");
+    await expect(garden(page).locator('[data-garden-cell^="agent:"] [data-garden-ref^="memory:"][aria-pressed="true"]')).toHaveCSS("opacity", "0");
     await expect(garden(page).getByTestId("garden-selection-summary").getByRole("button", { name: "Open record", exact: true })).toHaveCount(0);
     // The disappearing child cannot be measured after the final reverse notch.
     for (let index = 0; index < 100 && await cell.count(); index++) {

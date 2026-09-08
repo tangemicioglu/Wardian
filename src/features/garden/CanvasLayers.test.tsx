@@ -3,9 +3,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-konva", () => {
-  type Props = { children?: ReactNode; text?: string; name?: string; id?: string; x?: number; y?: number; points?: number[]; dash?: number[]; onClick?: () => void; onDblClick?: () => void };
+  type Props = { children?: ReactNode; text?: string; name?: string; id?: string; x?: number; y?: number; points?: number[]; dash?: number[]; opacity?: number; listening?: boolean; visible?: boolean; onClick?: () => void; onDblClick?: () => void };
   const shape = (kind: string) => (props: Props) => <div data-shape={kind} data-name={props.name} data-id={props.id}
     data-x={props.x} data-y={props.y} data-points={props.points?.join(",")} data-dash={props.dash?.join(",")}
+    data-opacity={props.opacity} data-listening={props.listening} data-visible={props.visible}
     onClick={props.onClick} onDoubleClick={props.onDblClick}>{props.text}{props.children}</div>;
   return { Group: shape("Group"), Circle: shape("Circle"), Rect: shape("Rect"), Arrow: shape("Arrow"), Text: shape("Text") };
 });
@@ -30,19 +31,55 @@ describe("canvas aggregate and route paint", () => {
     expect(document.querySelector('[data-shape="Circle"]')).not.toBeNull();
   });
 
-  it("keeps distant route hits but reveals only the selected route's text", () => {
+  it("smoothly fades ordinary connections and removes zero-opacity route hit regions", () => {
     const input: CanvasAutomationInput = { id: "quiet", label: "Quiet flow", nodeCount: 2, agentIds: ["a", "b"], runStatus: "none" };
     const routes = situatedRoutes([input], agents, districts);
     const onSelect = vi.fn();
-    const { container, rerender } = render(<AutomationRoutesLayer routes={routes} theme={theme} scale={.4} continuousZoom
+    const { container, rerender } = render(<AutomationRoutesLayer routes={routes} theme={theme} scale={.32} continuousZoom
       selectedKey={null} onSelect={onSelect} onOpen={vi.fn()} />);
-    expect(container.querySelector('[data-shape="Arrow"]')).not.toBeNull();
+    const routePart = () => container.querySelector('[data-name="automation-route"]')!;
+    for (const [scale, opacity] of [[.32, 0], [.45, 0], [.825, .5], [1.2, 1], [.825, .5], [.32, 0]]) {
+      rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={scale} continuousZoom
+        selectedKey={null} onSelect={onSelect} onOpen={vi.fn()} />);
+      expect(Number(routePart().getAttribute("data-opacity"))).toBeCloseTo(opacity);
+      expect(routePart()).toHaveAttribute("data-listening", String(opacity > 0));
+      expect(routePart()).toHaveAttribute("data-visible", String(opacity > 0));
+      expect(routePart().querySelector('[data-shape="Arrow"]')).not.toBeNull();
+      expect(routePart().querySelector('[data-shape="Circle"]')).not.toBeNull();
+    }
     expect(screen.queryByText(routes[0].presentation.summary)).not.toBeInTheDocument();
-    fireEvent.click(container.querySelector('[data-shape="Group"]')!);
-    expect(onSelect).toHaveBeenCalledWith({ kind: "automation", id: "quiet" });
-    rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={.4} continuousZoom
+    rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={.32} continuousZoom
       selectedKey="automation:quiet" onSelect={onSelect} onOpen={vi.fn()} />);
+    expect(routePart()).toHaveAttribute("data-opacity", "1");
+    expect(routePart()).toHaveAttribute("data-listening", "true");
     expect(screen.getByText(routes[0].presentation.summary)).toBeInTheDocument();
+    fireEvent.click(routePart().querySelector('[data-shape="Arrow"]')!);
+    expect(onSelect).toHaveBeenCalledWith({ kind: "automation", id: "quiet" });
+    rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={.32}
+      selectedKey={null} onSelect={onSelect} onOpen={vi.fn()} />);
+    expect(routePart()).toHaveAttribute("data-opacity", "1");
+    expect(routePart()).toHaveAttribute("data-listening", "true");
+    expect(screen.getByText(routes[0].presentation.summary)).toBeInTheDocument();
+  });
+
+  it("retains local attention hits outside the invisible route group in both paint modes", () => {
+    const input: CanvasAutomationInput = { id: "attention", label: "Attention", nodeCount: 1, agentIds: ["a"], runStatus: "failed",
+      stages: [{ nodeId: "step", agentId: "a", status: "failed" }] };
+    const routes = situatedRoutes([input], agents, districts);
+    const onSelect = vi.fn(); const onOpen = vi.fn();
+    const { container, rerender } = render(<AutomationRoutesLayer routes={routes} theme={theme} scale={.32} continuousZoom
+      selectedKey={null} onSelect={onSelect} onOpen={onOpen} />);
+    for (const mode of ["all", "markers"] as const) {
+      rerender(<AutomationRoutesLayer routes={routes} theme={theme} scale={.32} continuousZoom mode={mode}
+        selectedKey={null} onSelect={onSelect} onOpen={onOpen} />);
+      const attention = container.querySelector('[data-name="stage-attention"]')!;
+      expect(attention).not.toBeNull();
+      expect(attention.closest('[data-listening="false"]')).toBeNull();
+      expect(attention.closest('[data-name="automation-route"]')).toBeNull();
+      fireEvent.click(attention); fireEvent.doubleClick(attention);
+      expect(onSelect).toHaveBeenLastCalledWith({ kind: "automation", id: "attention" });
+      expect(onOpen).toHaveBeenLastCalledWith({ kind: "automation", id: "attention" });
+    }
   });
 
   it("paints aggregate status and one population with selection/open semantics at Habitat", () => {

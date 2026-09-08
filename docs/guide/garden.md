@@ -157,6 +157,9 @@ Garden breadcrumb, even after the run leaves the map's activity window. This
 does not put old runs back on the map. Historical evidence also remains
 available in Automation Monitor.
 
+Ordinary connections recede at the habitat overview and return as you zoom
+closer. A selected route stays visible, as do local attention indicators.
+
 Enter a routine or route to inspect its schedule and separate run lanes. A
 stage record shows assignment, state, inputs, and recorded outputs/events;
 temporary providers are labelled as temporary assignments. **Open automation
@@ -226,8 +229,11 @@ files. Directory and activity failures are reported in workspace composition.
 Automation data can be incomplete or stale; its notice provides **Retry** and
 details. A failed projection refresh keeps that routine's known snapshot marked
 stale while unrelated routines continue updating. Map expiry still applies;
-retained evidence for an open composition is separate. Use the paging actions
-before assuming a loaded catalog is complete.
+retained evidence for an open composition is separate. Open **Map coverage**
+beside navigation to check additional automation definitions, run records or
+folder contents. Checking more runs may leave the map unchanged: only active
+runs and runs updated within 24 hours appear. Some active or recent runs can
+still be beyond the loaded window, so incomplete coverage is named explicitly.
 
 An agent removed from the roster, unavailable routine evidence, or an
 unavailable saved stage keeps a return path through the breadcrumb. An empty or

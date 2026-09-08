@@ -27,6 +27,7 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
   const activation = revealFromScale ? revealBetween(camera.scale / revealFromScale, 1, 1.25) : 1;
   const regions = revealBetween(screen.width, 120, 300);
   const nearDetail = revealBetween(screen.width, 420, 720);
+  const membrane = revealBetween(screen.width, 180, 540);
   const context = target.kind === "agent" || receding ? 1 - revealBetween(screen.width, 1400, 2400) : 1;
   const detail = nearDetail * context;
   const readable = screen.width >= 540 && context > .1 && activation > .5;
@@ -44,7 +45,9 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
     pointerEvents: activation > .5 && (target.kind !== "agent" || screen.width >= 280) ? "auto" : "none",
     "--garden-status": status, "--garden-regions": regions, "--garden-detail": detail, "--garden-context": context,
     "--garden-object-detail": revealBetween(screen.width, 400, 800) * context,
-    "--garden-shell-radius": target.kind === "agent" ? "50%" : "28px",
+    // Memory keeps the seed's asymmetric boundary as it grows into a reading plane.
+    "--garden-shell-radius": target.kind === "agent" ? "50%" : target.kind === "memory"
+      ? `${65 - 59 * membrane}% ${35 - 29 * membrane}% ${60 - 54 * membrane}% ${40 - 34 * membrane}%` : "28px",
   } as CSSProperties;
   return <div ref={root} tabIndex={-1} className={`garden-spatial-cell garden-composition garden-spatial-${target.kind}`}
     data-garden-cell={`${target.kind}:${target.id}`} data-garden-detail={detail.toFixed(3)}
@@ -55,7 +58,7 @@ export function GardenSpatialCell({ target, bounds, camera, label, status, focus
       opacity: 1 - revealBetween(screen.width, 300, 600), top: `${50 - 8 * revealBetween(screen.width, 180, 420)}%`,
       fontSize: Math.min(22, screen.width * .24) * CELL_WIDTH / screen.width,
     }}>{agentMonogram(label)}</div>}
-    <div className="garden-spatial-caption" style={{ opacity: (1 - nearDetail) * context * revealBetween(screen.width, 180, 300),
+    <div className="garden-spatial-caption" style={{ opacity: (1 - revealBetween(screen.width, 300, 420)) * context * revealBetween(screen.width, 180, 300),
       fontSize: 14 * CELL_WIDTH / screen.width }} aria-hidden="true">{label}</div>
     <div className="garden-spatial-contents" inert={!readable} aria-hidden={!readable}
       tabIndex={target.kind !== "agent" && readable ? 0 : undefined}

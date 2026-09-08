@@ -4,6 +4,12 @@
 .garden-navigation nav, .garden-time-lens { pointer-events: auto; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 5px 8px; border: 1px solid var(--color-wardian-border); border-radius: 18px; background: var(--color-wardian-bg); color: var(--color-wardian-text); }
 .garden-navigation button, .garden-time-lens button { font-size: 12px; padding: 5px 8px; border-radius: 12px; }
 .garden-time-lens { margin-left: auto; }
+.garden-coverage { position: absolute; top: calc(100% + 8px); right: 0; max-width: min(320px, 100%); pointer-events: auto; color: var(--color-wardian-text); font-size: 12px; }
+.garden-coverage > summary { width: fit-content; margin-left: auto; padding: 6px 12px; border: 1px solid var(--color-wardian-border); border-radius: 16px; background: var(--color-wardian-bg); cursor: pointer; }
+.garden-coverage > div { margin-top: 6px; padding: 14px; border: 1px solid var(--color-wardian-border); border-radius: 16px; background: var(--color-wardian-bg); max-height: 50vh; overflow: auto; }
+.garden-coverage p { margin: 0 0 10px; line-height: 1.5; color: var(--color-wardian-text-muted); }
+.garden-coverage button { padding: 6px 10px; border: 1px solid var(--color-wardian-border); border-radius: 10px; }
+.garden-coverage button:disabled { opacity: .5; cursor: wait; }
 .garden-time-lens [aria-pressed=true] { background: var(--color-wardian-card); box-shadow: inset 0 0 0 1px var(--color-wardian-accent); }
 .garden-composition { position: absolute; inset: 64px clamp(12px, 4cqw, 64px) 86px; z-index: 20; padding: clamp(18px, 3cqw, 40px); overflow: auto; overscroll-behavior: contain; border: 2px solid var(--garden-status, var(--color-wardian-border)); border-radius: 9% 12% 8% 11% / 13% 10% 14% 9%; background: var(--color-wardian-bg); box-shadow: 0 0 0 8px color-mix(in srgb, var(--garden-status, var(--color-wardian-border)) 12%, transparent); animation: garden-enter 180ms ease-out; }
 .garden-composition:focus { outline: none; }
@@ -44,6 +50,9 @@
   overflow: hidden; pointer-events: auto;
 }
 .garden-spatial-agent.garden-composition { border-color: color-mix(in srgb, var(--garden-status) 55%, var(--color-wardian-border)); }
+.garden-spatial-memory.garden-composition { border-color: var(--color-wardian-accent); background: color-mix(in srgb, var(--color-wardian-accent) 6%, var(--color-wardian-bg)); }
+/* The selected seed hands its silhouette and outline over to the growing record. */
+.garden-spatial-agent .garden-agent-interior-select[aria-pressed="true"] { opacity: var(--garden-context, 1); }
 .garden-spatial-contents { position: absolute; inset: 40px; overflow: auto; overscroll-behavior: contain; }
 .garden-spatial-agent > .garden-spatial-contents { inset: 100px 60px; overflow: visible; }
 .garden-spatial-agent .garden-agent-interior h3 { font-size: 20px; margin: 0 0 10px; font-weight: 500; }

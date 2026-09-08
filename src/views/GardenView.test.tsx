@@ -171,13 +171,18 @@ describe("GardenView", () => {
     expect(screen.getByTestId("garden-selection-summary")).toHaveTextContent("Select to inspect");
   });
 
-  it("shows when the automation catalog is partial", () => {
-    gardenAutomationSpy.mockReturnValue({
+  it.each([
+    { nextOffset: 500, runsNextOffset: null, action: "Load more definitions", copy: "More automation definitions are available." },
+    { nextOffset: null, runsNextOffset: 200, action: "Check more runs", copy: "Some run records loaded. Some active or recent runs may be missing." },
+    { nextOffset: 500, runsNextOffset: 200, action: "Expand map coverage", copy: "More automation definitions are available." },
+  ])("explains partial map coverage with $action", ({ nextOffset, runsNextOffset, action, copy }) => {
+    const loadMore = vi.fn();
+    gardenAutomationSpy.mockReturnValue(Object.assign({
       automations: [{ id: "w1", label: "Build", runStatus: "none", nodeCount: 1 }],
       truncated: true,
-      nextOffset: 500,
-      loadMore: vi.fn(),
-    });
+      nextOffset,
+      loadMore,
+    }, { runsNextOffset }));
     const agents = [{ session_id: "a1", session_name: "Alpha" } as AgentConfig];
 
     render(
@@ -194,7 +199,13 @@ describe("GardenView", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("More automation definitions or run history are available.");
+    const coverage = screen.getByText("Map coverage").closest("details")!;
+    expect(coverage).not.toHaveAttribute("open");
+    act(() => screen.getByText("Map coverage").click());
+    expect(screen.getByText(copy)).toBeVisible();
+    act(() => screen.getByRole("button", { name: action }).click());
+    expect(loadMore).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Load next page")).not.toBeInTheDocument();
   });
 
 

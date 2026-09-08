@@ -12,17 +12,18 @@
 /* Stable 780 × 700 contents, inset 60px / 100px in the 900px circular cell.
    Camera owns scale; region geography never responds to viewport breakpoints. */
 .garden-agent-interior-identity { left: 37%; top: 29%; width: 26%; height: 42%; --region-radius: 43% 47% 42% 46%; }
-.garden-agent-interior-capabilities { left: 10%; top: 9%; width: 32%; height: 27%; --region-radius: 38% 48% 36% 42%; }
+.garden-agent-interior-capabilities { left: 10%; top: 9%; width: 32%; height: 29%; --region-radius: 38% 48% 36% 42%; }
 .garden-agent-interior-memory { left: 65%; top: 19%; width: 30%; height: 54%; --region-radius: 43% 49% 46% 38%; }
 .garden-agent-interior-active-work { left: 7%; top: 43%; width: 27%; height: 34%; --region-radius: 40% 34% 45% 48%; }
-.garden-agent-interior-ports { left: 26%; top: 76%; width: 48%; height: 20%; --region-radius: 42% 38% 48% 44%; }
+.garden-agent-interior-ports { left: 26%; top: 75%; width: 48%; height: 22%; --region-radius: 42% 38% 48% 44%; }
 .garden-agent-interior-region {
   position: absolute;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   min-width: 0;
-  padding: 18px 20px;
+  /* Keep rectangular content inside the organic outline's curved shoulders. */
+  padding: 24px 28px;
   isolation: isolate;
 }
 .garden-agent-interior-region::before {
@@ -35,8 +36,8 @@
   opacity: var(--garden-regions, 1);
   pointer-events: none;
 }
-.garden-agent-interior-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--color-wardian-border) transparent; padding: 2px 5px 6px 2px; }
-.garden-agent-interior h3 { margin: 0 0 10px; font-size: 20px; font-weight: 500; color: var(--color-wardian-text-muted); }
+.garden-agent-interior-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--color-wardian-border) transparent; padding: 2px 4px 6px; scrollbar-gutter: stable both-edges; }
+.garden-agent-interior h3 { display: flex; flex: none; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 0 6px; text-align: center; margin: 0 0 10px; font-size: 20px; font-weight: 500; color: var(--color-wardian-text-muted); }
 .garden-agent-interior h4 { margin: 14px 0 6px; font-size: 18px; font-weight: 500; }
 .garden-agent-interior h5 { margin: 0 0 4px; color: var(--color-wardian-text-muted); font-size: 17px; font-weight: 400; }
 .garden-agent-interior p { margin: 0.5rem 0; }
@@ -73,7 +74,8 @@
 .garden-agent-interior-skill .garden-agent-interior-select { display: grid; grid-template-columns: 32px minmax(0, 1fr); column-gap: 10px; align-items: center; }
 .garden-agent-interior-skill .garden-agent-interior-select span { grid-column: 2; }
 .garden-agent-interior-glyph { grid-row: span 2; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 42% 48% 44% 46%; font-style: normal; font-size: 17px; font-weight: 500; background: hsl(var(--garden-skill-hue) 55% 45%); color: var(--color-wardian-bg); opacity: var(--garden-regions, 1); }
-.garden-agent-interior-ports { padding: 10px 18px; }
+.garden-agent-interior-capabilities { padding: 20px 28px; }
+.garden-agent-interior-ports { padding: 12px 38px; }
 .garden-agent-interior-ports h3 { margin-bottom: 4px; }
 .garden-agent-interior-ports .garden-agent-interior-record { display: inline-flex; width: 150px; margin: 0 12px 4px 0; vertical-align: top; }
 .garden-agent-interior-ports .garden-agent-interior-select { padding-left: 12px; position: relative; }
@@ -87,17 +89,18 @@
 .garden-agent-interior-glyph b { font-weight: inherit; opacity: var(--garden-detail, 1); }
 /* Reserve the nucleus action outside the scrollable configuration and evidence. */
 .garden-agent-interior-primary-action { flex: none; padding-top: 6px; opacity: var(--garden-detail, 1); }
-.garden-agent-interior-primary-action .garden-agent-interior-action { width: 100%; padding: 4px 0; font-size: 17px; white-space: nowrap; }
+.garden-agent-interior-primary-action .garden-agent-interior-action { display: block; box-sizing: border-box; width: 100%; max-width: 100%; margin-inline: auto; padding: 4px 8px; font-size: 16px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; text-align: center; }
 .garden-agent-interior-identity .garden-agent-interior-scroll { flex: 1; }
-.garden-agent-interior .garden-agent-interior-identity { padding: 12px 18px; }
+.garden-agent-interior .garden-agent-interior-identity { padding: 18px 20px; }
 .garden-agent-interior-identity .garden-agent-interior-disclosure { margin: 4px 0; }
+.garden-agent-interior-identity .garden-agent-interior-disclosure > summary { text-align: center; list-style-position: inside; overflow-wrap: anywhere; }
 .garden-agent-interior-identity .garden-agent-interior-sigil { width: 32px; height: 32px; margin-bottom: 4px; }
 .garden-agent-interior-identity .garden-agent-interior-record { margin: 0; }
 .garden-agent-interior-identity .garden-agent-interior-select { padding: 2px 4px; }
 .garden-agent-interior-identity .garden-agent-interior-select strong,
 .garden-agent-interior-ports .garden-agent-interior-select strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.garden-agent-interior-identity .garden-agent-interior-select span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.garden-agent-interior-active-work { padding: 12px 16px; }
+.garden-agent-interior-identity .garden-agent-interior-select span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: 15px; line-height: 1.3; }
+.garden-agent-interior-active-work { padding: 18px 28px; }
 .garden-agent-interior-conversation { line-height: 1.4; scroll-margin-block: 8px; }
 .garden-agent-interior-conversation > strong { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .garden-agent-interior-conversation > small { display: block; font-size: 17px; }
@@ -119,7 +122,9 @@
 .garden-memory-objects .garden-agent-interior-record:nth-child(even) .garden-object-mark-memory { border-radius: 35% 65% 40% 60%; }
 .garden-agent-interior-memory-kind h4 { font-size: 13px; margin: 8px 0 2px; }
 .garden-agent-interior-scope h5 { font-size: 11px; margin-bottom: 8px; }
-.garden-agent-interior-memory .garden-agent-interior-scroll { padding-right: 2px; }
+.garden-agent-interior-memory .garden-agent-interior-scroll { padding-inline: 4px; }
+.garden-agent-interior-memory .garden-agent-interior-scroll,
+.garden-agent-interior-active-work .garden-agent-interior-scroll { padding-bottom: 18px; mask-image: linear-gradient(to bottom, currentColor calc(100% - 16px), transparent); }
 .garden-memory-dormant { display: flex; gap: 14px; padding: 30px 6px; opacity: var(--garden-regions, 1); }
 .garden-memory-dormant i { width: 35px; height: 65px; border: 1px dashed var(--color-wardian-border); border-radius: 50%; }
 .garden-object-mark-automation { width: 100%; height: 32px; }
@@ -140,5 +145,5 @@
 .garden-object-grid .garden-agent-interior-record { height: 84px; align-items: flex-start; }
 .garden-object-grid .garden-agent-interior-select { position: relative; height: 40px; }
 .garden-object-grid .garden-agent-interior-select strong { position: absolute; top: 44px; left: 0; right: 0; }
-.garden-region-count { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--color-wardian-text-muted); font-variant-numeric: tabular-nums; }
+.garden-region-count { margin-left: 0; font-size: 12px; font-weight: 400; color: var(--color-wardian-text-muted); font-variant-numeric: tabular-nums; }
 .garden-agent-interior-primary-action > details { margin: 0; max-height: 90px; overflow: auto; scrollbar-width: thin; }

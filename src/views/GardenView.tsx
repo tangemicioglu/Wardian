@@ -164,6 +164,10 @@ export const GardenView: React.FC<GardenViewProps> = ({
     automations: automationInputs,
     retainedAutomations = [],
     truncated: automationsTruncated,
+    nextOffset: definitionsNextOffset,
+    runsNextOffset,
+    sourceEvidence: automationSources,
+    loading: automationLoading,
     loadMore: loadMoreAutomations,
     error: automationError,
     refresh: refreshAutomations,
@@ -440,7 +444,9 @@ export const GardenView: React.FC<GardenViewProps> = ({
     const element = matches.find((item) => item === document.activeElement || item.contains(document.activeElement)) ?? matches[0];
     const root = viewRef.current?.getBoundingClientRect();
     if (element && root && camera) {
-      const rect = element.getBoundingClientRect();
+      // A memory unfolds from its visible seed, independent of caption or hit-target padding.
+      const source = ref.kind === "memory" ? element.querySelector(".garden-object-mark-memory") ?? element : element;
+      const rect = source.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) return { x: (rect.left - root.left - camera.position.x) / camera.scale,
         y: (rect.top - root.top - camera.position.y) / camera.scale, width: rect.width / camera.scale, height: rect.height / camera.scale };
     }
@@ -539,8 +545,12 @@ export const GardenView: React.FC<GardenViewProps> = ({
         setTrail(enterGardenObject(trail, candidate)); setCandidate(null);
       }
     }
-    if (event.deltaY > 0 && currentFrame?.bounds && currentFrame.ref.kind !== "district" && currentFrame.bounds.width * next.scale < 140) {
-      setTrail(trail.slice(0, -1));
+    if (event.deltaY > 0 && currentFrame?.bounds && currentFrame.ref.kind !== "district") {
+      const parent = trail[trail.length - 2];
+      const parentBounds = parent?.bounds ?? (parent ? boundsFor(parent.ref) : undefined);
+      // Small seeds must return after their parent has reappeared, not to an inert magnified shell.
+      const exitWidth = parentBounds ? Math.min(140, currentFrame.bounds.width / parentBounds.width * 2000) : 140;
+      if (currentFrame.bounds.width * next.scale < exitWidth) setTrail(trail.slice(0, -1));
     }
   };
   useEffect(() => {
@@ -605,6 +615,21 @@ export const GardenView: React.FC<GardenViewProps> = ({
       <div className="garden-navigation">
         <nav aria-label="Garden breadcrumb"><button onClick={() => returnTo(0)}>Habitat</button>{trail.map((frame, index) => <React.Fragment key={`${index}:${unitKey(frame.ref)}`}><span aria-hidden="true">›</span><button aria-current={index === trail.length - 1 ? "location" : undefined} onClick={() => returnTo(index + 1)}>{frame.label}</button></React.Fragment>)}</nav>
         <div className="garden-time-lens" aria-label="Activity time lens">{(["now", "recent", "branch"] as const).map((lens) => <button key={lens} aria-pressed={timeLens === lens} title={lens === "now" ? "Newest two turns; uncertain recency retained" : lens === "recent" ? "Newest sixteen turns; uncertain recency retained" : "All changes in the workspace comparison"} onClick={() => setTimeLens(lens)}>{lens[0].toUpperCase() + lens.slice(1)}</button>)}</div>
+        {(automationsTruncated || terrain.truncatedRoots.size > 0) && <details className="garden-coverage">
+          <summary>Map coverage</summary>
+          <div>
+            {automationsTruncated && <>
+              {definitionsNextOffset != null && <p>More automation definitions are available.</p>}
+              {runsNextOffset != null && <><p>{automationSources?.runs.runs.length ?? "Some"} run records loaded. Some active or recent runs may be missing.</p>
+                <p>Only active runs and runs updated within 24 hours appear on the map. Checking more records may leave the map unchanged.</p></>}
+              <button type="button" disabled={automationLoading} onClick={() => void loadMoreAutomations()}>
+                {automationLoading ? "Checking coverage…" : definitionsNextOffset != null ? runsNextOffset != null ? "Expand map coverage" : "Load more definitions" : "Check more runs"}
+              </button>
+            </>}
+            {terrain.truncatedRoots.size > 0 && <><p>Some folders have additional contents.</p><button type="button"
+              onClick={() => void Promise.all([...terrain.truncatedRoots].map((path) => terrain.loadMoreRoot(path)))}>Load more folder contents</button></>}
+          </div>
+        </details>}
       </div>
       <section
         aria-label="Garden status legend"
@@ -670,28 +695,6 @@ export const GardenView: React.FC<GardenViewProps> = ({
           <span className="text-muted">Select to inspect · double-click or Enter to explore</span>
         )}
       </div>
-      {terrain.truncatedRoots.size > 0 && (
-        <div className="absolute bottom-3 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          <span>Folder contents load 500 items at a time.</span>{' '}
-          <button
-            type="button"
-            className="font-semibold underline disabled:opacity-50"
-            onClick={() => void Promise.all([...terrain.truncatedRoots].map((path) => terrain.loadMoreRoot(path)))}
-          >
-            Load next page
-          </button>
-        </div>
-      )}
-      {automationsTruncated && (
-        <div className="absolute bottom-14 right-3 z-10 rounded-md border border-[var(--color-wardian-warning)]/40 bg-[var(--color-wardian-warning)]/10 px-2 py-1.5 text-[11px] text-[var(--color-wardian-warning)] shadow-sm" role="status">
-          <span>More automation definitions or run history are available.</span>{' '}
-          {automationsTruncated && (
-            <button type="button" className="font-semibold underline" onClick={() => void loadMoreAutomations()}>
-              Load next page
-            </button>
-          )}
-        </div>
-      )}
       {automationError && <div className="absolute top-16 right-3 z-30 max-w-sm rounded-md border border-wardian-border bg-[var(--color-wardian-bg)] p-2 text-xs" role="status">Automation data is incomplete or stale. <button onClick={() => void refreshAutomations()}>Retry</button><details><summary>Details</summary>{automationError}</details></div>}
       {rendererActive ? <GardenCanvas
         continuousZoom

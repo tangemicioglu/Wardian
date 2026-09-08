@@ -69,6 +69,32 @@ Workbench writes while preserving the final viewing position.
 
 ## Acceptance evidence
 
+### Screenshot-driven consistency correction
+
+At habitat overview scale, ordinary automation routes and their anchors recede
+continuously instead of forming an always-visible web. Selected routes remain
+visible, and local attention markers remain available. Hidden routes have no
+pointer hit area. Connections return smoothly as the camera approaches.
+
+Map coverage is an explicit, initially collapsed disclosure beside navigation.
+It distinguishes additional automation definitions from additional run records,
+and explains that checking more records may leave the map unchanged. The run
+catalog is ordered by update time, so later records can still contain active or
+recent executions; incomplete coverage must not be presented as complete.
+Folder coverage uses a separately named action in the same disclosure. Routine
+pagination is no longer a warning floating over every level of the canvas.
+
+Organelle headings and counts share a centered alignment, with symmetric scroll
+gutters and safe insets from curved boundaries. The session action may wrap
+inside the nucleus. A selected source seed and its outline fade as the record
+membrane unfolds; the memory membrane retains an asymmetric seed shape before
+settling into a lightly tinted reading plane. Its coarse caption disappears
+before record prose appears. Memory records now anchor to the visible seed
+rather than its padded button; that captured center and width stay fixed during
+reversible camera travel. Padding and caption changes cannot reshape the source.
+
+### Validation protocol
+
 Use the same synthetic 61-agent, 43-workspace, 46-routine population that exposed
 the original stalls, including 2437 stored historical runs and the normal
 200-summary page. Measure RAF intervals, long tasks and command counts in a
@@ -83,9 +109,9 @@ WebView and real IPC results must be identified separately from browser mocks.
 
 ### Verified interaction and source behavior
 
-The frontend verifier passed all checks, including 3,618 tests with one existing
-skip across 271 files. The full browser suite passed 192 tests with 18 existing
-skips and zero retries. Its 16 Garden tests include dense 34-memory scrolling,
+The frontend verifier passed all checks, including 3,621 tests with one existing
+skip across 271 files. The full browser suite on `dadf17e2` passed 192 tests with
+18 existing skips and zero retries. The 16 Garden tests include dense 34-memory scrolling,
 unchanged pointer anchoring and reversible growth, canonical exits, placement
 dragging, narrow reading and deferred canonical reads. A separate production
 build exercised the Garden tests as well. Reader-facing screenshots were
@@ -98,7 +124,7 @@ in [#1229](https://github.com/wardian-app/Wardian/issues/1229).
 
 ### Measured rendering and refresh cost
 
-Production Chromium measurements used synthetic 61-agent, 43-workspace,
+Production Chromium measurements on `dadf17e2` used synthetic 61-agent, 43-workspace,
 46-routine fixtures at 1600 × 1000. The dense variant contained 610 skill
 deployments and 34 memories per inspected agent. In one complete cycle, dense
 wheel-in/out RAF p95 fell from 216.7 ms to 49.9/50.0 ms after the final skill
@@ -119,7 +145,7 @@ fixtures use immediate mock IPC; heap observations include instrumentation
 retention and do not establish freedom from leaks. Native population evidence
 must remain separate from dense browser interiors and real-provider throughput.
 
-The final debug Tauri build also completed a real-IPC population probe with 61
+The `dadf17e2` debug Tauri build also completed a real-IPC population probe with 61
 synthetic off agents across 43 isolated workspaces, entering an eight-agent
 district. Wheel-in/pan/out RAF p95 was 16.8 ms in each phase, with a maximum of
 17 ms and no observed long tasks during those gestures. Reverse zoom restored

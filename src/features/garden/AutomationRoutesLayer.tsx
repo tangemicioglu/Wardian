@@ -21,11 +21,14 @@ export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSel
   return <>{routes.map(({ input, points, anchor, presentation }) => {
     const ref: GardenEntityRef = { kind: "automation", id: input.id };
     const selected = selectedKey === `automation:${input.id}`;
+    const routeOpacity = selected || !continuousZoom ? 1 : revealBetween(scale, .45, 1.2);
     const labelOpacity = selected || !continuousZoom ? 1 : revealBetween(scale, .8, 1.8);
     const anchorVisible = pointInCanvasViewport(anchor, viewport, 200 / scale);
     const markerRows = new Map<string, number>();
     return <Group key={input.id} onClick={() => onSelect(ref)} onTap={() => onSelect(ref)} onDblClick={() => onOpen(ref)}>
-      {mode !== "markers" && <><Arrow points={(points.length === 1 ? [points[0], anchor] : points).flatMap((point) => [point.x, point.y])}
+      {mode !== "markers" && <Group name="automation-route" opacity={routeOpacity} visible={routeOpacity > 0} listening={routeOpacity > 0}>
+      {/* Invisible connections must not claim hit pixels; local markers remain siblings. */}
+      <Arrow points={(points.length === 1 ? [points[0], anchor] : points).flatMap((point) => [point.x, point.y])}
         perfectDrawEnabled={false}
         stroke={selected ? theme.selection : theme.labelMuted} fill={theme.labelMuted}
         strokeWidth={(selected ? 2 : 1) / scale} hitStrokeWidth={24 / scale}
@@ -33,7 +36,7 @@ export function AutomationRoutesLayer({ routes, theme, scale, selectedKey, onSel
         pointerLength={5 / scale} pointerWidth={5 / scale} />
       {anchorVisible && <Circle perfectDrawEnabled={false} x={anchor.x} y={anchor.y} radius={6 / scale} fill={theme.groundFile} stroke={selected ? theme.selection : theme.labelMuted} />}
       {anchorVisible && labelOpacity > 0 && <Text opacity={labelOpacity} x={anchor.x + 10 / scale} y={anchor.y - 6 / scale} text={presentation.summary}
-        width={200 / scale} wrap="none" ellipsis fontFamily={theme.font} fontSize={12 / scale} fill={theme.label} />}</>}
+        width={200 / scale} wrap="none" ellipsis fontFamily={theme.font} fontSize={12 / scale} fill={theme.label} />}</Group>}
       {mode !== "routes" && presentation.markers.map((marker) => {
         const positionKey = `${marker.position.x}:${marker.position.y}`;
         const labelRow = markerRows.get(positionKey) ?? 0;
