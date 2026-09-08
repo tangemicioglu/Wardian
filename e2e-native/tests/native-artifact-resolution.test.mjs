@@ -11,6 +11,7 @@ import {
   commandName,
   nativeNodeDependencyDiagnostics,
   resolveBuiltCliPath,
+  resolveExistingCliPath,
   resolveExplicitNativeApp,
   resolveNativeAppArtifact,
   resolvePackageEntry,
@@ -85,6 +86,34 @@ test("built CLI resolution fails with a classified missing-artifact error", () =
         existsSyncImpl: () => false,
       }),
       (error) => error instanceof NativeArtifactResolutionError && error.code === "CLI_ARTIFACT_MISSING",
+    );
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("existing CLI resolution stays nullable and never falls back to repo-local target", () => {
+  const root = fixtureRoot("existing-cli");
+  const effectiveTarget = path.join(root, "configured target");
+  const expected = path.join(effectiveTarget, "debug", commandName("wardian-cli", "win32"));
+  try {
+    assert.equal(
+      resolveExistingCliPath({
+        repoRoot: root,
+        platform: "win32",
+        spawnSyncImpl: () => metadataResult(effectiveTarget),
+        existsSyncImpl: (candidate) => candidate === expected,
+      }),
+      expected,
+    );
+    assert.equal(
+      resolveExistingCliPath({
+        repoRoot: root,
+        platform: "win32",
+        spawnSyncImpl: () => metadataResult(effectiveTarget),
+        existsSyncImpl: (candidate) => candidate === path.join(root, "target", "debug", "wardian-cli.exe"),
+      }),
+      null,
     );
   } finally {
     removeFixture(root);

@@ -9,12 +9,12 @@ import { By } from "selenium-webdriver";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  freezeBuiltCliForRun,
   invokeTauri,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
 } from "../lib/harness.mjs";
-import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 
 const runRealLuna = process.env.WARDIAN_E2E_REAL_CODEX_MEMORY === "1";
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
@@ -32,7 +32,7 @@ function buildCli(harness) {
     0,
     `cargo build -p wardian-cli failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
-  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
+  return freezeBuiltCliForRun(harness);
 }
 
 function runCli(cliPath, harness, args) {

@@ -8,12 +8,12 @@ import { spawnSync } from "node:child_process";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  freezeBuiltCliForRun,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
   watchStep,
 } from "../lib/harness.mjs";
-import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
@@ -40,7 +40,7 @@ function buildCli(harness) {
     `cargo build -p wardian-cli failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
 
-  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
+  return freezeBuiltCliForRun(harness);
 }
 
 function runCliWithEnv(cliPath, harness, args, extraEnv) {

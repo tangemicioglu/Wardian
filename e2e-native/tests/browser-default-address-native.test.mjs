@@ -10,12 +10,12 @@ import { By } from "selenium-webdriver";
 import {
   createNativeHarness,
   ensureNativeAppBuilt,
+  freezeBuiltCliForRun,
   invokeTauri,
   prepareIsolatedHome,
   startNativeSession,
   waitForAppShell,
 } from "../lib/harness.mjs";
-import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 import { waitForWorkbenchReady } from "../lib/workbench.mjs";
 
 /**
@@ -65,7 +65,7 @@ function buildCli(harness) {
     encoding: "utf8",
   });
   assert.equal(build.status, 0, `cargo build -p wardian-cli failed\n${build.stderr}`);
-  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
+  return freezeBuiltCliForRun(harness);
 }
 
 /**

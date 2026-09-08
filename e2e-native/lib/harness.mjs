@@ -6,14 +6,52 @@ import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { Builder, By, Capabilities, until } from "selenium-webdriver";
-import { resolveNativeAppArtifact } from "./native-artifact-resolution.mjs";
+import {
+  resolveBuiltCliPath,
+  resolveExistingCliPath,
+  resolveNativeAppArtifact,
+} from "./native-artifact-resolution.mjs";
+
+import { allocateSessionPorts, assertPortOwnedBy, portIsFree } from "./sessionPorts.mjs";
+import { FROZEN_BIN_DIR, freezeArtifact, freezeRunArtifacts } from "./frozenArtifacts.mjs";
+import {
+  NATIVE_E2E_HOME_ENV,
+  HOME_LOCK_DIRECTORY,
+  acquireHomeLock,
+  defaultNativeE2EHome,
+  nativeRunId,
+  releaseHomeLock,
+} from "./sessionHome.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
 const DEFAULT_WATCH_STEP_DELAY_MS = 750;
-const NATIVE_E2E_HOME_ENV = "WARDIAN_E2E_NATIVE_HOME";
-const DEFAULT_NATIVE_E2E_HOME = path.join(os.tmpdir(), "wardian-e2e-native-home");
+
+export { nativeRunId, releaseHomeLock };
+
+/**
+ * Identity of a binary this run consumed.
+ *
+ * The app is resolved from the configured Cargo target, which other work can
+ * rebuild. Recording size and mtime makes a mid-run swap visible in evidence
+ * instead of silently changing what was tested.
+ */
+function describeArtifact(artifactPath) {
+  if (!artifactPath) {
+    return null;
+  }
+  try {
+    const stats = fs.statSync(artifactPath);
+    return {
+      path: artifactPath,
+      bytes: stats.size,
+      modifiedAt: stats.mtime.toISOString(),
+    };
+  } catch {
+    return { path: artifactPath, bytes: null, modifiedAt: null };
+  }
+}
 
 function existingPath(candidates) {
   for (const candidate of candidates) {
@@ -80,8 +118,45 @@ function resolveTauriDriverPath() {
   return resolveCommand(["tauri-driver.exe", "tauri-driver"]);
 }
 
-function resolveIsolatedHome() {
-  return process.env[NATIVE_E2E_HOME_ENV] || DEFAULT_NATIVE_E2E_HOME;
+/**
+ * The CLI binary as built into the shared target.
+ *
+ * Returns null before it has been built. Callers that build it themselves can
+ * freeze it afterwards with `freezeRunArtifacts`.
+ */
+export function resolveSharedCliPath() {
+  return resolveExistingCliPath({ repoRoot, env: process.env });
+}
+
+/**
+ * Resolve a just-built CLI from Cargo's configured target and freeze it into
+ * this run's private home before a caller starts using it.
+ */
+export function freezeBuiltCliForRun(harness) {
+  const sourcePath = resolveBuiltCliPath({
+    repoRoot: harness.repoRoot,
+    env: process.env,
+  });
+  const frozen = freezeArtifact(
+    sourcePath,
+    path.join(harness.isolatedHome, FROZEN_BIN_DIR),
+  );
+  if (!frozen) {
+    throw new Error(`wardian-cli could not be frozen from ${sourcePath}.`);
+  }
+  harness.sharedCliPath = sourcePath;
+  harness.cliPath = frozen.path;
+  harness.cliArtifact = frozen;
+  return frozen.path;
+}
+
+function resolveIsolatedHome(runId) {
+  return process.env[NATIVE_E2E_HOME_ENV] || defaultNativeE2EHome(runId);
+}
+
+/** True when this run generated its own home rather than being handed one. */
+function ownsGeneratedHome() {
+  return !process.env[NATIVE_E2E_HOME_ENV];
 }
 
 function isPathInside(candidate, parent) {
@@ -138,10 +213,21 @@ function compactText(value, maxLength = 1200) {
 
 export async function createNativeHarness() {
   const watchMode = readBooleanEnv("WARDIAN_E2E_WATCH");
+  const runId = process.env.WARDIAN_E2E_RUN_ID || nativeRunId();
+  const appPath = resolveAppPath();
   return {
+    runId,
     repoRoot,
-    appPath: resolveAppPath(),
-    isolatedHome: resolveIsolatedHome(),
+    appPath,
+    // Attribution before freezing; `prepareIsolatedHome` replaces this with the
+    // run-private copy it actually executes.
+    appArtifact: describeArtifact(appPath),
+    // Where the CLI is built by consumers that use the shared target. Frozen
+    // per run alongside the app so a concurrent rebuild cannot replace it
+    // mid-run either.
+    sharedCliPath: resolveSharedCliPath(),
+    ownsGeneratedHome: ownsGeneratedHome(),
+    isolatedHome: resolveIsolatedHome(runId),
     tauriDriverPath: resolveTauriDriverPath(),
     nativeDriverPath: resolveNativeDriverPath(),
     platform: process.platform,
@@ -250,6 +336,13 @@ export function ensureNativeAppBuilt(harness) {
 }
 
 export function prepareIsolatedHome(harness) {
+  // Claim by run id, not pid. The runner claims the home and then spawns this
+  // process, so a pid comparison would see the live parent as a foreign holder
+  // and make the run refuse its own home.
+  harness.homeLock = acquireHomeLock({
+    home: harness.isolatedHome,
+    runId: harness.runId,
+  }).lock;
   if (!isSafeNativeE2EHome(harness.isolatedHome)) {
     throw new Error(
       `Refusing to reset unsafe native E2E home: ${harness.isolatedHome}. ` +
@@ -261,7 +354,17 @@ export function prepareIsolatedHome(harness) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      fs.rmSync(harness.isolatedHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      for (const entry of fs.readdirSync(harness.isolatedHome, { withFileTypes: true })) {
+        if (entry.name === HOME_LOCK_DIRECTORY) {
+          continue;
+        }
+        fs.rmSync(path.join(harness.isolatedHome, entry.name), {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100,
+        });
+      }
       lastError = null;
       break;
     } catch (error) {
@@ -273,6 +376,27 @@ export function prepareIsolatedHome(harness) {
     throw lastError;
   }
   fs.mkdirSync(harness.isolatedHome, { recursive: true });
+  // The exclusive lock and its metadata were preserved throughout reset, so
+  // there is no check-then-delete window in which another run can claim this
+  // home while its contents are being removed.
+
+  // Take a private copy of every binary this run executes. The normal build
+  // target is shared between worktrees, so another build can replace the app or
+  // the CLI while a session is live. Recording a hash of the shared path only
+  // says what the run started with; copying is what stops the bytes changing
+  // underneath it. This runs on the ordinary path, so no caller has to opt in.
+  harness.frozenArtifacts = freezeRunArtifacts({
+    home: harness.isolatedHome,
+    appPath: harness.appPath,
+    cliPath: harness.sharedCliPath,
+  });
+  if (harness.frozenArtifacts.app) {
+    harness.appPath = harness.frozenArtifacts.app.path;
+    harness.appArtifact = harness.frozenArtifacts.app;
+  }
+  if (harness.frozenArtifacts.cli) {
+    harness.cliPath = harness.frozenArtifacts.cli.path;
+  }
 
   // Native fixtures historically use TestClass. Keep that fixture explicitly
   // registered now that spawn_agent validates classes at the command boundary.
@@ -371,7 +495,20 @@ function waitForPort({ port, host = "127.0.0.1", timeoutMs = 15000, processRef, 
 }
 
 async function startNativeSessionAttempt(harness) {
-  const tauriDriverArgs = [];
+  const { driverPort, nativePort } = await allocateSessionPorts();
+  harness.driverPort = driverPort;
+  harness.nativeDriverPort = nativePort;
+
+  for (const [label, port] of [["driver", driverPort], ["native driver", nativePort]]) {
+    if (!(await portIsFree({ port }))) {
+      throw new Error(
+        `Refusing to start: port ${port} chosen for the ${label} is already in use by another ` +
+          `process. A listener this run did not start must never be treated as its endpoint.`,
+      );
+    }
+  }
+
+  const tauriDriverArgs = ["--port", String(driverPort), "--native-port", String(nativePort)];
   if (harness.nativeDriverPath) {
     tauriDriverArgs.push("--native-driver", harness.nativeDriverPath);
   }
@@ -399,9 +536,38 @@ async function startNativeSessionAttempt(harness) {
 
   try {
     await waitForPort({
-      port: 4444,
+      port: driverPort,
       processRef: tauriDriver,
       logs,
+    });
+    // The connect above can succeed against a listener that appeared while the
+    // driver was dying. Re-check the child so an exited driver is never
+    // reported as a live endpoint.
+    if (tauriDriver.exitCode !== null) {
+      throw new Error(
+        `tauri-driver exited (${tauriDriver.exitCode}) while port ${driverPort} became reachable; ` +
+          `refusing to use an endpoint this run does not own.\n` +
+          `--- tauri-driver stdout ---\n${logs().stdout}\n` +
+          `--- tauri-driver stderr ---\n${logs().stderr}`,
+      );
+    }
+    // Neither of the checks above proves the listener is ours, only that the
+    // port was free earlier and our child is alive. Establish actual ownership.
+    harness.driverPortOwnership = assertPortOwnedBy({
+      port: driverPort,
+      processRef: tauriDriver,
+    });
+    // The native-driver endpoint is a second externally supplied socket. It
+    // has the same free-check race as the WebDriver endpoint, so prove its
+    // listener belongs to this tauri-driver tree before Selenium can use it.
+    await waitForPort({
+      port: nativePort,
+      processRef: tauriDriver,
+      logs,
+    });
+    harness.nativeDriverPortOwnership = assertPortOwnedBy({
+      port: nativePort,
+      processRef: tauriDriver,
     });
   } catch (error) {
     await terminateChildProcess(tauriDriver);
@@ -417,7 +583,7 @@ async function startNativeSessionAttempt(harness) {
   try {
     const driver = await new Builder()
       .withCapabilities(capabilities)
-      .usingServer("http://127.0.0.1:4444/")
+      .usingServer(`http://127.0.0.1:${driverPort}/`)
       .build();
 
     return {

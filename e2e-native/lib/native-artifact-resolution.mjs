@@ -104,6 +104,35 @@ export function resolveBuiltCliPath({
 }
 
 /**
+ * Resolves the CLI from Cargo's effective target when it already exists.
+ *
+ * Native harness setup runs before some callers build the CLI, so this keeps
+ * the pre-build probe nullable without reintroducing a repo-local fallback.
+ */
+export function resolveExistingCliPath({
+  repoRoot,
+  env = process.env,
+  platform = process.platform,
+  spawnSyncImpl = spawnSync,
+  existsSyncImpl = fs.existsSync,
+} = {}) {
+  const root = path.resolve(repoRoot || "");
+  const targetDirectory = resolveCargoTargetDirectory({
+    repoRoot: root,
+    env,
+    spawnSyncImpl,
+  });
+  const executableName = commandName("wardian-cli", platform);
+  for (const profile of ["debug", "release"]) {
+    const cliPath = path.join(targetDirectory, profile, executableName);
+    if (existsSyncImpl(cliPath)) {
+      return cliPath;
+    }
+  }
+  return null;
+}
+
+/**
  * Resolves an explicitly supplied native app path relative to repoRoot, while
  * failing closed for missing paths and directories. Relative input is valid
  * because it is made deterministic before it reaches the native driver.
