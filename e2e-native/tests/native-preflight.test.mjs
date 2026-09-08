@@ -41,6 +41,24 @@ test("native preflight reports missing tauri-driver clearly", () => {
   );
 });
 
+test("native harness rejects a missing explicit app before driver startup", async () => {
+  const previousApp = process.env.WARDIAN_NATIVE_APP;
+  process.env.WARDIAN_NATIVE_APP = path.join(os.tmpdir(), `missing-wardian-app-${process.pid}.exe`);
+
+  try {
+    await assert.rejects(
+      () => createNativeHarness(),
+      (error) => error?.code === "EXPLICIT_APP_MISSING" && /WARDIAN_NATIVE_APP does not exist/.test(error.message),
+    );
+  } finally {
+    if (previousApp === undefined) {
+      delete process.env.WARDIAN_NATIVE_APP;
+    } else {
+      process.env.WARDIAN_NATIVE_APP = previousApp;
+    }
+  }
+});
+
 test("native preflight reports missing native driver clearly", () => {
   assert.throws(
     () =>
@@ -261,6 +279,31 @@ test("native harness resolves debug app from cargo metadata target directory", a
   }
 
   assert.equal(harness.appPath, sharedDebugApp);
+});
+
+test("native consumers build before asserting an app path", () => {
+  const testsRoot = path.join(process.cwd(), "e2e-native", "tests");
+  const consumerFiles = fs.readdirSync(testsRoot)
+    .filter((fileName) => fileName.endsWith("native.test.mjs"));
+
+  for (const fileName of consumerFiles) {
+    const source = fs.readFileSync(path.join(testsRoot, fileName), "utf8");
+    let assertion;
+    const assertions = /assert\.ok\(harness\.appPath\)/g;
+    while ((assertion = assertions.exec(source)) !== null) {
+      const testStart = source.lastIndexOf("test(", assertion.index);
+      const precedingBuild = source.lastIndexOf("ensureNativeAppBuilt(harness)", assertion.index);
+      assert.notEqual(
+        testStart,
+        -1,
+        `${fileName} app-path assertion is outside a test block`,
+      );
+      assert.ok(
+        precedingBuild > testStart,
+        `${fileName} asserts harness.appPath before ensuring the native app is built in its test`,
+      );
+    }
+  }
 });
 
 test("native app shell timeout explains dev server connection failures", () => {

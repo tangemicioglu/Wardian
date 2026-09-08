@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { Builder, By, Capabilities, until } from "selenium-webdriver";
+import { resolveNativeAppArtifact } from "./native-artifact-resolution.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,130 +24,15 @@ function existingPath(candidates) {
   return null;
 }
 
-function cargoTargetDirectory() {
-  const result = spawnSync(
-    "cargo",
-    ["metadata", "--format-version=1", "--no-deps"],
-    {
-      cwd: repoRoot,
-      encoding: "utf8",
-    },
-  );
-
-  if (result.status !== 0) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(result.stdout).target_directory || null;
-  } catch {
-    return null;
-  }
-}
-
 function resolveAppPath() {
-  if (process.env.WARDIAN_NATIVE_APP && fs.existsSync(process.env.WARDIAN_NATIVE_APP)) {
-    return process.env.WARDIAN_NATIVE_APP;
+  try {
+    return resolveNativeAppArtifact({ repoRoot, env: process.env }).path;
+  } catch (error) {
+    if (error?.code === "APP_ARTIFACT_MISSING") {
+      return null;
+    }
+    throw error;
   }
-
-  const metadataTargetDir = cargoTargetDirectory();
-
-  if (process.platform === "win32") {
-    return existingPath([
-      path.join(metadataTargetDir ?? "", "debug", "Wardian.exe"),
-      path.join(metadataTargetDir ?? "", "release", "Wardian.exe"),
-      path.join(repoRoot, "target", "debug", "Wardian.exe"),
-      path.join(repoRoot, "target", "release", "Wardian.exe"),
-      path.join(repoRoot, "src-tauri", "target", "debug", "Wardian.exe"),
-      path.join(repoRoot, "src-tauri", "target", "release", "Wardian.exe"),
-    ]);
-  }
-
-  if (process.platform === "darwin") {
-    return existingPath([
-      path.join(
-        metadataTargetDir ?? "",
-        "debug",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-      path.join(
-        metadataTargetDir ?? "",
-        "release",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-      path.join(
-        repoRoot,
-        "target",
-        "debug",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-      path.join(
-        repoRoot,
-        "target",
-        "release",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-      path.join(
-        repoRoot,
-        "src-tauri",
-        "target",
-        "debug",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-      path.join(
-        repoRoot,
-        "src-tauri",
-        "target",
-        "release",
-        "bundle",
-        "macos",
-        "Wardian.app",
-        "Contents",
-        "MacOS",
-        "Wardian",
-      ),
-    ]);
-  }
-
-  return existingPath([
-    path.join(metadataTargetDir ?? "", "debug", "Wardian"),
-    path.join(metadataTargetDir ?? "", "release", "Wardian"),
-    path.join(metadataTargetDir ?? "", "debug", "wardian"),
-    path.join(metadataTargetDir ?? "", "release", "wardian"),
-    path.join(repoRoot, "target", "debug", "Wardian"),
-    path.join(repoRoot, "target", "release", "Wardian"),
-    path.join(repoRoot, "target", "debug", "wardian"),
-    path.join(repoRoot, "target", "release", "wardian"),
-    path.join(repoRoot, "src-tauri", "target", "debug", "Wardian"),
-    path.join(repoRoot, "src-tauri", "target", "release", "Wardian"),
-    path.join(repoRoot, "src-tauri", "target", "debug", "wardian"),
-    path.join(repoRoot, "src-tauri", "target", "release", "wardian"),
-  ]);
 }
 
 function splitPathEntries() {

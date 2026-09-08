@@ -13,14 +13,11 @@ import {
   startNativeSession,
   waitForAppShell,
 } from "../lib/harness.mjs";
+import { resolveBuiltCliPath } from "../lib/native-artifact-resolution.mjs";
 import { workbenchSnapshot, waitForWorkbenchReady } from "../lib/workbench.mjs";
 
 const skipNativeBuild = process.env.WARDIAN_NATIVE_SKIP_BUILD === "1";
 const RUN_ID = `${process.pid}-${Date.now()}`;
-
-function commandName(name) {
-  return process.platform === "win32" ? `${name}.exe` : name;
-}
 
 function buildCli(harness) {
   const result = spawnSync("cargo", ["build", "-p", "wardian-cli", "--bin", "wardian-cli"], {
@@ -28,9 +25,7 @@ function buildCli(harness) {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `CLI build failed:\n${result.stdout}\n${result.stderr}`);
-  const cli = path.join(harness.repoRoot, "target", "debug", commandName("wardian-cli"));
-  assert.equal(fs.existsSync(cli), true, `missing CLI at ${cli}`);
-  return cli;
+  return resolveBuiltCliPath({ repoRoot: harness.repoRoot });
 }
 
 async function spawnArtifactAgent(driver, sessionId, folder) {
@@ -167,9 +162,9 @@ async function assertArtifactCanOpen(
 
 test("artifact CLI retains provenance after its origin agent is deleted", { timeout: 300_000 }, async (t) => {
   const harness = await createNativeHarness();
-  assert.ok(harness.appPath);
   try {
     if (!skipNativeBuild) ensureNativeAppBuilt(harness);
+    assert.ok(harness.appPath);
   } catch (error) {
     t.skip(String(error));
     return;
