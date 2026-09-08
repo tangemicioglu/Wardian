@@ -360,7 +360,7 @@ async function spawnProviderAgent(driver, provider) {
   return await invokeTauri(driver, "spawn_agent", {
     req: {
       sessionName: `Rendering-${provider}-${RUN_ID}`,
-      agentClass: "RenderingAudit",
+      agentClass: "QA",
       folder: workspacePath,
       resumeSession: null,
       isOff: false,
@@ -727,7 +727,7 @@ async function spawnLayoutFillerAgent(driver) {
   return await invokeTauri(driver, "spawn_agent", {
     req: {
       sessionName: `Rendering-layout-filler-${RUN_ID}`,
-      agentClass: "RenderingAudit",
+      agentClass: "QA",
       folder: workspacePath,
       resumeSession: null,
       isOff: false,
