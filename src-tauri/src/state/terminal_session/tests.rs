@@ -271,6 +271,25 @@ async fn wait_for_live_sleep_count(timer: &ManualTimer, duration: Duration, expe
     .unwrap_or_else(|_| panic!("live sleeper count never reached {expected}"));
 }
 
+async fn wait_for_pending_activation_to_clear(broker: &TerminalSessionBroker) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if broker
+                .broker_state("session-1")
+                .await
+                .expect("broker state while timeout settles")
+                .pending_activation
+                .is_none()
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("activation timeout never rolled back the pending activation");
+}
+
 #[test]
 fn actor_control_path_does_not_use_an_unbounded_channel() {
     assert!(!include_str!("actor.rs").contains("unbounded_channel"));
@@ -2749,6 +2768,7 @@ async fn superseding_activations_keep_only_the_current_timeout_signal() {
     );
 
     timer.fire(Duration::from_secs(5)).await;
+    wait_for_pending_activation_to_clear(&broker).await;
     let rolled_back = broker
         .broker_state("session-1")
         .await
