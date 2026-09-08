@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import {
   assertNativePreflight,
   createNativeHarness,
+  ensureNativeAppBuilt,
   formatAppShellTimeoutMessage,
   isRetryableNativeSessionStartError,
   nativeAppBuildArgs,
@@ -260,6 +261,70 @@ test("native app build args include explicit Cargo features from environment", (
     } else {
       process.env.WARDIAN_NATIVE_BUILD_FEATURES = previousFeatures;
     }
+  }
+});
+
+test("Windows native build transports config and features without npm environment", {
+  skip: process.platform !== "win32",
+}, () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "wardian-native-build & argv "));
+  const cliDirectory = path.join(fixture, "node_modules", "@tauri-apps", "cli");
+  const cli = path.join(cliDirectory, "tauri.js");
+  const output = path.join(fixture, "argv.json");
+  const keys = ["npm_execpath", "WARDIAN_NATIVE_BUILD_FEATURES", "WARDIAN_NATIVE_APP"];
+  const previous = keys.map((key) => process.env[key]);
+  const previousExitCode = process.exitCode;
+  try {
+    fs.mkdirSync(cliDirectory, { recursive: true });
+    fs.writeFileSync(path.join(fixture, "package.json"), JSON.stringify({
+      scripts: { tauri: "node node_modules/@tauri-apps/cli/tauri.js" },
+    }));
+    fs.writeFileSync(cli, 'require("node:fs").writeFileSync("argv.json", JSON.stringify(process.argv.slice(2)));');
+    delete process.env.npm_execpath;
+    process.env.WARDIAN_NATIVE_BUILD_FEATURES = "terminal-trace native-test";
+    // Existing file satisfies post-build discovery; this test never starts an app.
+    process.env.WARDIAN_NATIVE_APP = cli;
+
+    ensureNativeAppBuilt({ repoRoot: fixture });
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), [
+      "build", "--debug", "--no-bundle", "--config",
+      JSON.stringify({ build: { beforeBuildCommand: "npm run build && npm run stage-cli:dev" } }),
+      "--features", "terminal-trace native-test",
+    ]);
+  } finally {
+    keys.forEach((key, index) => {
+      if (previous[index] === undefined) delete process.env[key];
+      else process.env[key] = previous[index];
+    });
+    process.exitCode = previousExitCode;
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("native app build entry refreshes a cold harness from its built output", () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "wardian-native-cold-output-"));
+  const output = path.join(fixture, "Wardian.exe");
+  let buildCalls = 0;
+  try {
+    const harness = { repoRoot: fixture, appPath: null };
+    ensureNativeAppBuilt(harness, {
+      buildInvocation: { command: process.execPath, args: ["-e", ""] },
+      spawnSyncImpl: (command, args, options) => {
+        buildCalls += 1;
+        assert.equal(command, process.execPath);
+        assert.deepEqual(args, ["-e", ""]);
+        assert.equal(options.cwd, fixture);
+        fs.writeFileSync(output, "fresh native output", "utf8");
+        return { status: 0 };
+      },
+      resolveAppPathImpl: () => (fs.existsSync(output) ? output : null),
+    });
+
+    assert.equal(buildCalls, 1);
+    assert.equal(harness.appPath, output);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
   }
 });
 

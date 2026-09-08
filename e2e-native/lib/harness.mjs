@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { Builder, By, Capabilities, until } from "selenium-webdriver";
@@ -258,27 +259,20 @@ export function assertNativePreflight(harness) {
   }
 }
 
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
-function npmInvocation(args) {
-  if (process.platform === "win32" && process.env.npm_execpath && fs.existsSync(process.env.npm_execpath)) {
+function nativeBuildInvocation(root) {
+  const args = nativeAppBuildArgs();
+  if (process.platform === "win32") {
+    // cmd.exe reparses the inline JSON and treats its && as a command separator.
+    // Launch the installed CLI with Node so paths and config stay literal argv.
+    const require = createRequire(path.join(root, "package.json"));
     return {
       command: process.execPath,
-      args: [process.env.npm_execpath, ...args],
-    };
-  }
-
-  if (process.platform === "win32") {
-    return {
-      command: "cmd.exe",
-      args: ["/d", "/s", "/c", npmCommand(), ...args],
+      args: [require.resolve("@tauri-apps/cli/tauri.js"), ...args.slice(3)],
     };
   }
 
   return {
-    command: npmCommand(),
+    command: "npm",
     args,
   };
 }
@@ -306,9 +300,15 @@ export function nativeAppBuildArgs() {
   return args;
 }
 
-export function ensureNativeAppBuilt(harness) {
-  const buildInvocation = npmInvocation(nativeAppBuildArgs());
-  const build = spawnSync(
+export function ensureNativeAppBuilt(
+  harness,
+  {
+    buildInvocation = nativeBuildInvocation(harness.repoRoot),
+    spawnSyncImpl = spawnSync,
+    resolveAppPathImpl = resolveAppPath,
+  } = {},
+) {
+  const build = spawnSyncImpl(
     buildInvocation.command,
     buildInvocation.args,
     {
@@ -323,7 +323,7 @@ export function ensureNativeAppBuilt(harness) {
     );
   }
 
-  const refreshedAppPath = resolveAppPath();
+  const refreshedAppPath = resolveAppPathImpl();
   if (!refreshedAppPath) {
     throw nativeInfrastructureError(
       new Error(

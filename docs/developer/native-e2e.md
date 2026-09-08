@@ -62,6 +62,11 @@ Run the native mock-provider suite:
 npm run test:e2e:native
 ```
 
+On Windows, the harness launches the installed Tauri CLI through Node for
+builds. This preserves the inline build configuration when a test is launched
+directly with Node, without npm's environment variables. The test runner also
+passes test paths directly to Node, including paths containing spaces.
+
 For rapid iteration after you already have a current native build, reuse the
 existing binary instead of rebuilding on every run:
 
